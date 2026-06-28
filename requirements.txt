@@ -1,0 +1,26 @@
+# ============================================================================
+# Audtheia V2 — Desktop dependencies
+# Grown incrementally, one session at a time. Do not add a package here
+# speculatively — add it in the session that actually imports it, with a
+# version verified against the current PyPI release at build time (PhD-level
+# standards: no asserting fast-moving version numbers from memory).
+# ============================================================================
+
+# Session 1 (schema.sql) uses only Python's built-in sqlite3 module.
+# No third-party dependencies required yet.
+
+# --- Anticipated, NOT yet pinned (added when their session builds them) ---
+# Session 2  (database.py)        : stdlib sqlite3, uuid — no new deps expected
+# Session 4  (monitor.py)         : hailo-platform / HailoRT Python bindings (Pi only); supervision (ByteTrack)
+# Session 5  (acoustic.py)        : birdnetlib or BirdNET-Analyzer, sounddevice / PyAudio
+# Session 6  (environment.py)     : pyserial / gpsd-py3 (GPS), sensor-specific drivers
+# Session 7  (observation.py)     : none expected — deterministic engine, no LLM/VLM
+# Session 8  (verify.py)          : onnxruntime (RF-DETR verification)
+# Session 9  (dream.py)           : llama-cpp-python (desktop-only LLM)
+# Session 11 (server.py)          : fastapi, uvicorn
+# Session 17 (fetch-species-data) : requests (GBIF/IUCN APIs)
+# Session 25 (reports/generate.py): reportlab or weasyprint (PDF), built-in csv
+
+# Each addition will be version-pinned against a live PyPI check, with a
+# short comment noting platform constraints (Windows vs. Raspberry Pi OS
+# Bookworm 64-bit) where they differ.

@@ -1,0 +1,58 @@
+# ============================================================================
+# Audtheia V2 — .gitignore
+# ============================================================================
+
+# --- Local data: rolling buffer (Pi) / authoritative record (desktop) ---
+# (the double-negation pattern below keeps the directory skeleton — and its
+#  .gitkeep markers — tracked, while ignoring every actual data file)
+data/**
+!data/**/
+!data/**/.gitkeep
+
+database/**
+!database/**/
+!database/**/.gitkeep
+
+reports/**
+!reports/**/
+!reports/**/.gitkeep
+
+# --- Large model weights (downloaded, not bundled — see models/*/README.md) ---
+*.gguf
+*.hef
+*.onnx
+*.tflite
+
+# Note: the GBIF taxonomic backbone (~50MB, CC BY 4.0) is the one dataset
+# bundled with the repo (decision #15) and is intentionally NOT ignored here.
+
+# --- Secrets / credentials ---
+*.env
+.env.*
+**/secrets.json
+**/credentials.json
+config/settings.local.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- OS / editor cruft ---
+.DS_Store
+Thumbs.db
+*.swp
+.vscode/
+.idea/
+
+# --- Logs ---
+*.log
+logs/
