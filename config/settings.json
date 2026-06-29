@@ -1,0 +1,334 @@
+{
+  "settings_schema_version": "1.0.0",
+
+  "node": {
+    "role": "desktop",
+    "active_station_id": null
+  },
+
+  "paths": {
+    "db_path": "database/audtheia.db",
+    "schema_path": "audtheia/storage/schema.sql",
+    "data_dir": "data",
+    "detections_visual_dir": "data/detections/visual",
+    "detections_audio_dir": "data/detections/audio",
+    "gps_dir": "data/gps",
+    "reports_dir": "reports",
+    "models_dir": "models",
+    "gbif_backbone_path": "audtheia/resources/gbif_backbone"
+  },
+
+  "database": {
+    "wal": true,
+    "busy_timeout_ms": 5000
+  },
+
+  "sync": {
+    "batch_size": 500
+  },
+
+  "embeddings": {
+    "forward_embeddings": false,
+    "max_embedding_bytes": 8192
+  },
+
+  "buffer": {
+    "high_water_pct": 80,
+    "hard_ceiling_pct": 95,
+    "auto_sync_when_reachable": true,
+    "pause_capture_at_ceiling": true
+  },
+
+  "telemetry": {
+    "heartbeat_seconds": 300,
+    "energy_meter": {
+      "enabled": false,
+      "interface": null,
+      "address": null
+    }
+  },
+
+  "analysis": {
+    "per_observation_analysis_location": "pi"
+  },
+
+  "schedules": {
+    "reports": {
+      "schedule": "weekly",
+      "formats": ["pdf", "csv"]
+    },
+    "dream_pass": {
+      "schedule": "weekly",
+      "budget": {
+        "epoch_batch_size": 500,
+        "max_cycles_per_pass": 0,
+        "substrate_exemplar_cap": 5000,
+        "substrate_candidate_pattern_cap": 1000
+      }
+    }
+  },
+
+  "server": {
+    "host": "127.0.0.1",
+    "port": 8000
+  },
+
+  "localization": {
+    "local_timezone": "auto"
+  },
+
+  "privacy": {
+    "discard_human_detections": true
+  },
+
+  "network": {
+    "hotspot_ssid_pattern": "AUDTHEIA-{station_name}",
+    "ssh": {
+      "host": null,
+      "port": 22,
+      "username": null
+    }
+  },
+
+  "secrets": {
+    "path": "config/secrets.json"
+  },
+
+  "desktop_models": {
+    "visual_rfdetr": {
+      "path": "models/visual/desktop/porifera_rfdetr.onnx",
+      "version": null,
+      "citation": null
+    },
+    "llm": {
+      "path": "models/llm/",
+      "version": null,
+      "citation": null
+    }
+  },
+
+  "stations": [
+    {
+      "station_id": "00000000-0000-0000-0000-000000000001",
+      "station_name": "ExampleReef",
+      "environment_type": "marine",
+      "habitat": "coral_reef",
+      "target_species": [],
+      "sensors": {
+        "camera": { "enabled": true },
+        "audio": { "enabled": true },
+        "gps": { "enabled": true }
+      },
+      "channels": [
+        {
+          "id": "water_temp_c",
+          "unit": "degC",
+          "marine": true,
+          "enabled": true,
+          "driver": { "interface": "i2c", "address": "0x66", "type": "atlas_ezo_rtd" },
+          "qc": {
+            "gross_range": { "min": -2.0, "max": 40.0 },
+            "sensor_range": { "min": -5.0, "max": 50.0 },
+            "detection_limit": null
+          }
+        },
+        {
+          "id": "ph",
+          "unit": "pH",
+          "marine": true,
+          "enabled": true,
+          "driver": { "interface": "i2c", "address": "0x63", "type": "atlas_ezo_ph" },
+          "qc": {
+            "gross_range": { "min": 6.0, "max": 9.0 },
+            "sensor_range": { "min": 0.0, "max": 14.0 },
+            "detection_limit": null
+          }
+        },
+        {
+          "id": "dissolved_oxygen_mg_l",
+          "unit": "mg/L",
+          "marine": true,
+          "enabled": true,
+          "driver": { "interface": "i2c", "address": "0x61", "type": "atlas_ezo_do" },
+          "qc": {
+            "gross_range": { "min": 0.0, "max": 20.0 },
+            "sensor_range": { "min": 0.0, "max": 50.0 },
+            "detection_limit": 0.01
+          }
+        },
+        {
+          "id": "salinity_psu",
+          "unit": "PSU",
+          "marine": true,
+          "enabled": true,
+          "driver": { "interface": "i2c", "address": "0x64", "type": "atlas_ezo_ec" },
+          "qc": {
+            "gross_range": { "min": 0.0, "max": 42.0 },
+            "sensor_range": { "min": 0.0, "max": 80.0 },
+            "detection_limit": null
+          }
+        }
+      ],
+      "models": {
+        "visual_pi": {
+          "path": "models/visual/pi/yolo11_porifera.hef",
+          "version": null,
+          "citation": null
+        },
+        "acoustic": {
+          "active": "marine",
+          "options": {
+            "birdnet": {
+              "path": "models/acoustic/birdnet/BirdNET_GLOBAL_6K.tflite",
+              "version": null,
+              "citation": "Kahl et al., BirdNET, Ecological Informatics, 2021"
+            },
+            "marine": {
+              "path": null,
+              "version": null,
+              "citation": null
+            },
+            "custom": {
+              "path": null,
+              "version": null,
+              "citation": null
+            }
+          }
+        }
+      },
+      "capture": {
+        "fps": 15,
+        "resolution": { "width": 1280, "height": 720 },
+        "bytetrack": {
+          "track_activation_threshold": 0.25,
+          "minimum_matching_threshold": 0.8,
+          "track_close_frames": 30,
+          "frame_rate": 15
+        },
+        "representative_frame_rule": "highest_confidence",
+        "max_event_duration_seconds": 300,
+        "audio": {
+          "pre_roll_seconds": 2.0,
+          "post_roll_seconds": 2.0,
+          "max_clip_seconds": 30.0
+        },
+        "soundscape": {
+          "enabled": false,
+          "metrics": [],
+          "cadence_seconds": 60
+        }
+      }
+    },
+    {
+      "station_id": "00000000-0000-0000-0000-000000000002",
+      "station_name": "ExampleForest",
+      "environment_type": "terrestrial",
+      "habitat": "forest_tropical",
+      "target_species": [],
+      "sensors": {
+        "camera": { "enabled": true },
+        "audio": { "enabled": true },
+        "gps": { "enabled": true }
+      },
+      "channels": [
+        {
+          "id": "air_temp_c",
+          "unit": "degC",
+          "marine": false,
+          "enabled": true,
+          "driver": { "interface": "i2c", "address": "0x44", "type": "sht4x" },
+          "qc": {
+            "gross_range": { "min": -20.0, "max": 55.0 },
+            "sensor_range": { "min": -40.0, "max": 85.0 },
+            "detection_limit": null
+          }
+        },
+        {
+          "id": "relative_humidity_pct",
+          "unit": "%",
+          "marine": false,
+          "enabled": true,
+          "driver": { "interface": "i2c", "address": "0x44", "type": "sht4x" },
+          "qc": {
+            "gross_range": { "min": 0.0, "max": 100.0 },
+            "sensor_range": { "min": 0.0, "max": 100.0 },
+            "detection_limit": null
+          }
+        },
+        {
+          "id": "soil_moisture_pct",
+          "unit": "%",
+          "marine": false,
+          "enabled": true,
+          "driver": { "interface": "i2c", "address": "0x36", "type": "capacitive_soil" },
+          "qc": {
+            "gross_range": { "min": 0.0, "max": 100.0 },
+            "sensor_range": { "min": 0.0, "max": 100.0 },
+            "detection_limit": null
+          }
+        },
+        {
+          "id": "illuminance_lux",
+          "unit": "lux",
+          "marine": false,
+          "enabled": true,
+          "driver": { "interface": "i2c", "address": "0x23", "type": "bh1750" },
+          "qc": {
+            "gross_range": { "min": 0.0, "max": 100000.0 },
+            "sensor_range": { "min": 0.0, "max": 120000.0 },
+            "detection_limit": 1.0
+          }
+        }
+      ],
+      "models": {
+        "visual_pi": {
+          "path": "models/visual/pi/yolo11_fauna.hef",
+          "version": null,
+          "citation": null
+        },
+        "acoustic": {
+          "active": "birdnet",
+          "options": {
+            "birdnet": {
+              "path": "models/acoustic/birdnet/BirdNET_GLOBAL_6K.tflite",
+              "version": null,
+              "citation": "Kahl et al., BirdNET, Ecological Informatics, 2021"
+            },
+            "marine": {
+              "path": null,
+              "version": null,
+              "citation": null
+            },
+            "custom": {
+              "path": null,
+              "version": null,
+              "citation": null
+            }
+          }
+        }
+      },
+      "capture": {
+        "fps": 10,
+        "resolution": { "width": 1280, "height": 720 },
+        "bytetrack": {
+          "track_activation_threshold": 0.25,
+          "minimum_matching_threshold": 0.8,
+          "track_close_frames": 20,
+          "frame_rate": 10
+        },
+        "representative_frame_rule": "highest_confidence",
+        "max_event_duration_seconds": 300,
+        "audio": {
+          "pre_roll_seconds": 3.0,
+          "post_roll_seconds": 3.0,
+          "max_clip_seconds": 30.0
+        },
+        "soundscape": {
+          "enabled": false,
+          "metrics": [],
+          "cadence_seconds": 60
+        }
+      }
+    }
+  ]
+}

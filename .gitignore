@@ -56,3 +56,4 @@ Thumbs.db
 # --- Logs ---
 *.log
 logs/
+config/secrets.json
