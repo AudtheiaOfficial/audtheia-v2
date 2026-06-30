@@ -1,7 +1,10 @@
-# `audtheia/reports/` — Report generation (desktop)
+# audtheia/reports
 
-| File | Builds in | Role |
-|---|---|---|
-| `generate.py` | Session 10 | PDF + CSV generation from analyses and dream outputs. Every data point labeled by `data_source` and missing-data/QC status; dream patterns labeled as candidate hypotheses with effect size + data span — never as established findings. |
+Report generation, on the desktop hub.
 
-Scheduled (user-defined: daily / weekly / biweekly / on demand) — one of only two scheduled processes in the system, alongside the dream pass. See `audtheia-v2-master-concept.md` §5 (Reports panel).
+| File | Runs on | Role |
+|------|---------|------|
+| generate.py | Desktop hub | Produces PDF and CSV reports from the verified record and the longitudinal analysis. Every value is labeled with its source and its quality-control status, and discovered patterns are presented as candidate hypotheses with an effect size and a data span, never as established findings. |
+
+Reporting is one of only two activities in the system that run on a schedule you
+set (daily, weekly, biweekly, or on demand). The other is the longitudinal pass.

@@ -1,8 +1,12 @@
-# `docs/`
+# docs
 
-| File | Builds in | Role |
-|---|---|---|
-| `hardware.md` | Session 22 | Parts list (incl. hydrophone path), wiring diagrams, solar/power duty-cycle budget method (O2), camera anti-fouling/wiper plan (O3). |
-| `custom-models.md` | Session 23 | YOLO11→HEF (x86-Linux, Hailo-10H target), RF-DETR→ONNX, BirdNET/marine training workflows. |
-| `dream-pass.md` | Session 24 | The NREM→REM structure, the occipital gate, and candidate-hypothesis framing, explained for a research audience. |
-| field-deployment checklist | Session 26 | Mounting, power/solar duty cycle, biofouling mitigation, network/hotspot, first-sync cold-start dream, post-deployment data verification. |
+Project documentation for deploying and extending Audtheia.
+
+| File | Role |
+|------|------|
+| hardware.md | The full parts list including the hydrophone path, wiring diagrams, the solar and power duty-cycle budget method, and the camera anti-fouling plan. |
+| custom-models.md | How to train and prepare your own models: compiling a YOLO11 detector for the field accelerator, exporting an RF-DETR verifier, and training the acoustic models. |
+| dream-pass.md | The longitudinal pattern-discovery pass explained for a research audience, including how candidate hypotheses are framed. |
+| field-deployment checklist | Mounting, power, biofouling mitigation, networking, first synchronization, and post-deployment data verification. |
+
+These documents are in progress.

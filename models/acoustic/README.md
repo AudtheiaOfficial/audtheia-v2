@@ -1,7 +1,13 @@
-# `models/acoustic/` — Swappable acoustic detection models
+# models/acoustic
 
-- **`birdnet/`** — BirdNET-Analyzer **full** model (e.g. `BirdNET_GLOBAL_6K.tflite`). Terrestrial/coastal-avian default. Runs on the Pi CPU.
-- **`marine/`** — Underwater passive-acoustic-monitoring (PAM) model slot (cetaceans, fish choruses, snapping-shrimp soundscape indices). BirdNET is in-air avian and not usable on a submerged hydrophone. Default model selection is an open research item (O1, → Session 5).
-- **`custom/`** — User fine-tuned classifiers for local/regional species (e.g. Puerto Rico, Haiti terrestrial species).
+Swappable acoustic detection models. Which one is active is a setting, so changing
+it requires no code change.
 
-Model selection is a `settings.json` value — swapping requires no code change. See `audtheia-v2-master-concept.md` §7.
+- birdnet: the full BirdNET-Analyzer model (for example BirdNET_GLOBAL_6K.tflite),
+  the default for terrestrial and coastal bird sites. It runs on the field
+  station's CPU.
+- marine: the slot for an underwater passive-acoustic model (whales and dolphins,
+  fish choruses, snapping-shrimp soundscape indices). BirdNET listens for in-air
+  birds and is not suitable for a submerged hydrophone, so a marine site supplies
+  its own model here.
+- custom: a classifier you fine-tune for your own local or regional species.

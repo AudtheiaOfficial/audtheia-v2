@@ -1,7 +1,13 @@
-# `models/llm/` — Desktop-only generative model
+# models/llm
 
-Download any GGUF model here (~3B default at Q4, e.g. Qwen 2.5 3B or Llama 3.2 3B; up to ~7B on a 16GB machine). Runs via **llama.cpp on the desktop only** — the dream pass and `verify.py`'s interpretive analysis.
+The desktop-only generative model. Download any GGUF model into this folder (a
+model of roughly three billion parameters is a good default, and up to about
+seven billion runs on a 16 GB machine). It runs through llama.cpp on the desktop
+hub, where it supports the longitudinal pass and the interpretive analysis.
 
-**The field station runs no LLM/VLM at all.** The Pi-side QC/consolidation step is a deterministic predict→compare→correct engine (decision #51) — there is nothing to download or configure here for field operation.
+The field station runs no generative model at all. Its quality-control and
+consolidation step is a deterministic engine, so there is nothing to download or
+configure here for field operation.
 
-`.gguf` files are not bundled in the repository due to size — see `.gitignore`. The user downloads their chosen model directly.
+Model files are not bundled in the repository because of their size (see
+.gitignore). Download your chosen model directly into this folder.

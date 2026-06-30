@@ -1,10 +1,15 @@
-# `audtheia/storage/` — Database contract and access layer
+# audtheia/storage
 
-| File | Builds in | Role |
-|---|---|---|
-| `schema.sql` | **Session 1 (this session)** | Every table in the system. UUID PKs, `station_id`, `trigger_source` + event fields, `data_source`, missing-data/QC status, `qc_state`, salience (provisional + authoritative slots), full model/data version provenance, UTC timestamps, `synced_at`, desktop-owned ownership separation, `station_telemetry`, `dream_passes` / `patterns` / `pattern_observations`. |
-| `database.py` | Session 2 | All read/write functions; checkpointed, UUID-idempotent append-only Pi→desktop sync. |
+The database contract and the code that reads and writes it. Every other part of
+the system conforms to the schema defined here.
 
-`schema.sql` is the contract every other file in the repository conforms to — see its header comment for the full decision-by-decision mapping, and `audtheia-v2-decisions-log.md` #9–#52.
+| File | Role |
+|------|------|
+| schema.sql | Defines every table in the system: globally unique identifiers, the station and event fields, the source and quality-control status carried by every value, the provisional and authoritative salience slots, full model and data version provenance, coordinated-universal-time timestamps, the field-to-desktop sync marker, the separation between field-owned and desktop-owned tables, and the station telemetry and pattern-discovery tables. |
+| database.py | All read and write functions, plus the checkpointed, append-only synchronization that carries records from a field station up to the desktop hub without ever duplicating one. |
 
-**Local-only files, never committed** (see `.gitignore`): `database/audtheia.db`.
+The same schema and access layer run on both the field station and the desktop
+hub. The schema is the contract the rest of the repository depends on; its header
+comment documents each table in detail.
+
+Local-only files, never committed (see .gitignore): database/audtheia.db.

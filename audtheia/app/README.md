@@ -1,10 +1,16 @@
-# `audtheia/app/` — Web interface (FastAPI backend + bundled frontend)
+# audtheia/app
 
-| File / dir | Builds in | Role |
-|---|---|---|
-| `server.py` | Session 11 | FastAPI backend and all API endpoints. |
-| `static/index.html` | Session 12 | Single-page app shell. |
-| `static/style.css` | Session 13 | Design system (dark/light). |
-| `static/app.js` | Session 14 | All frontend logic. |
+The web interface: a FastAPI backend and a self-contained frontend. It serves the
+live feed, history, analytics, reports, and settings.
 
-Served locally — desktop at `localhost:8000`, Pi hotspot at `audtheia.local`. All assets bundled locally; **no CDN dependency**. See `audtheia-v2-master-concept.md` §5 for the full panel/navigation spec (Detections, Audio, Brain, GPS, Analytics, Reports, Settings).
+| File | Runs on | Role |
+|------|---------|------|
+| server.py | Desktop hub | The backend and all of its endpoints. |
+| static/index.html | Desktop hub | The single-page application shell. |
+| static/style.css | Desktop hub | The visual design, including light and dark themes. |
+| static/app.js | Desktop hub | All of the frontend logic. |
+
+The interface is served locally: on the desktop at localhost on port 8000, and on
+a field station's own hotspot. Every asset is bundled with the application, so the
+interface works with no internet connection and no external content delivery
+network.

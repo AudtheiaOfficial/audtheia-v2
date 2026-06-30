@@ -231,8 +231,7 @@ use the same software with no code change.
   and `frame_rate` matches your capture rate.
 - `representative_frame_rule`: which frame represents the event. The highest
   confidence frame is used.
-- `max_event_duration_seconds`: the longest a single event may run before it is
-  split.
+- `max_event_duration_seconds`: the longest a single stored media segment may run before the next begins. It bounds the on-disk media length only and never splits a record: one tracked animal is always one observation for the entire time it is in view.
 - `audio`: how much sound is kept around an event. `pre_roll_seconds` and
   `post_roll_seconds` are the lead-in and lead-out; `max_clip_seconds` caps the
   stored clip while the true event length is always recorded.
