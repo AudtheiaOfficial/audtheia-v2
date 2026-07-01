@@ -1,5 +1,5 @@
 {
-  "settings_schema_version": "1.0.0",
+  "settings_schema_version": "1.1.0",
 
   "node": {
     "role": "desktop",
@@ -30,6 +30,17 @@
   "embeddings": {
     "forward_embeddings": false,
     "max_embedding_bytes": 8192
+  },
+
+  "media": {
+    "image": {
+      "format": "jpg",
+      "quality": 95
+    },
+    "audio": {
+      "format": "wav",
+      "sample_width_bytes": 2
+    }
   },
 
   "buffer": {
@@ -212,6 +223,10 @@
           "post_roll_seconds": 2.0,
           "max_clip_seconds": 30.0
         },
+        "acoustic": {
+          "onset_threshold": 0.5,
+          "silence_close_seconds": 3.0
+        },
         "soundscape": {
           "enabled": false,
           "metrics": [],
@@ -322,6 +337,10 @@
           "pre_roll_seconds": 3.0,
           "post_roll_seconds": 3.0,
           "max_clip_seconds": 30.0
+        },
+        "acoustic": {
+          "onset_threshold": 0.5,
+          "silence_close_seconds": 3.0
         },
         "soundscape": {
           "enabled": false,

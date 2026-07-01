@@ -225,6 +225,29 @@ class Settings:
     def max_embedding_bytes(self) -> int:
         return self.raw["embeddings"]["max_embedding_bytes"]
 
+    # -- media encoding --------------------------------------------------
+
+    def image_encoding(self) -> dict:
+        """The stored-frame image format and quality.
+
+        Returned as a fresh dictionary so a caller cannot mutate the loaded
+        configuration by editing what it gets back.
+        """
+        return dict(self.raw["media"]["image"])
+
+    def audio_encoding(self) -> dict:
+        """The stored-clip audio format and sample width, as a fresh dictionary."""
+        return dict(self.raw["media"]["audio"])
+
+    def acoustic_tuning(self, station: dict) -> dict:
+        """The station's acoustic onset threshold and silence-close gap.
+
+        Returned as a fresh dictionary. A station that has not set these gets an
+        empty dictionary, and the acoustic capture applies its own documented
+        defaults, so a station file without the block still runs.
+        """
+        return dict(station.get("capture", {}).get("acoustic", {}))
+
     # -- node and stations ----------------------------------------------
 
     @property
@@ -408,6 +431,22 @@ def _validate(raw: dict) -> None:
     emb = _require(raw, "embeddings", "settings")
     _require_type(_require(emb, "forward_embeddings", "embeddings"), (bool,), "embeddings.forward_embeddings")
     _require_positive_number(_require(emb, "max_embedding_bytes", "embeddings"), "embeddings.max_embedding_bytes")
+
+    # -- media -----------------------------------------------------------
+    # Stored-frame and stored-clip encoding. Kept here so a deployment can tune
+    # how detections are saved without editing code, while a validated shape
+    # keeps a malformed value from reaching the capture stage.
+    media = _require(raw, "media", "settings")
+    image = _require(media, "image", "media")
+    _require_type(_require(image, "format", "media.image"), (str,), "media.image.format")
+    quality = _require(image, "quality", "media.image")
+    if isinstance(quality, bool) or not isinstance(quality, int) or not (1 <= quality <= 100):
+        raise ConfigError("media.image.quality must be an integer between 1 and 100")
+    audio = _require(media, "audio", "media")
+    _require_type(_require(audio, "format", "media.audio"), (str,), "media.audio.format")
+    sample_width = _require(audio, "sample_width_bytes", "media.audio")
+    if isinstance(sample_width, bool) or not isinstance(sample_width, int) or sample_width < 1:
+        raise ConfigError("media.audio.sample_width_bytes must be an integer of one or more")
 
     # -- buffer ----------------------------------------------------------
     buf = _require(raw, "buffer", "settings")
@@ -600,3 +639,20 @@ def _validate_capture(capture: Any, where: str) -> None:
 
     soundscape = _require(capture, "soundscape", where)
     _require_type(_require(soundscape, "enabled", f"{where}.soundscape"), (bool,), f"{where}.soundscape.enabled")
+
+    # Optional per-station acoustic sensitivity. When present, its shape is
+    # checked so the acoustic capture can rely on it; when absent, the acoustic
+    # capture applies its own documented defaults, so an older station file
+    # without this block still loads.
+    acoustic = capture.get("acoustic")
+    if acoustic is not None:
+        _require_type(acoustic, (dict,), f"{where}.acoustic")
+        onset = _require(acoustic, "onset_threshold", f"{where}.acoustic")
+        if isinstance(onset, bool) or not isinstance(onset, (int, float)) or not (0 < onset <= 1):
+            raise ConfigError(
+                f"{where}.acoustic.onset_threshold must be a number greater than 0 and at most 1"
+            )
+        _require_positive_number(
+            _require(acoustic, "silence_close_seconds", f"{where}.acoustic"),
+            f"{where}.acoustic.silence_close_seconds",
+        )

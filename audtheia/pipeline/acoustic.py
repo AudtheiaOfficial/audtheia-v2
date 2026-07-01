@@ -55,6 +55,7 @@ import numpy as np
 from audtheia.storage.database import (
     ChildDetection,
     Database,
+    EnvironmentalReading,
     Observation,
     SoundscapeReading,
     new_id,
@@ -208,6 +209,16 @@ class AcousticEvent:
     representative_frame: Optional[str] = None
     children: list[dict] = field(default_factory=list)
     visual_children: list[dict] = field(default_factory=list)
+
+    # Location and environmental sensors captured for this sound event, so an
+    # audio trigger records the same physical conditions a visual trigger does.
+    # These are filled by the shared location-and-environment capture when one is
+    # wired, and left empty on a station that has no receiver or sensors.
+    gps_latitude: Optional[float] = None
+    gps_longitude: Optional[float] = None
+    gps_elevation: Optional[float] = None
+    gps_status: Optional[str] = None
+    environmental_readings: list = field(default_factory=list)
 
 
 # ===========================================================================
@@ -599,6 +610,7 @@ class AcousticMonitor:
         audio_source: AudioSource,
         model: AcousticModel,
         visual_context: Optional[VisualContext] = None,
+        environment_capture=None,
         ring_buffer: Optional[AudioRingBuffer] = None,
         clip_writer=write_wav_pcm16,
         onset_threshold: float = DEFAULT_ONSET_THRESHOLD,
@@ -612,6 +624,11 @@ class AcousticMonitor:
         self._audio_source = audio_source
         self._model = model
         self._visual_context = visual_context or NullVisualContext()
+        # The location-and-environment capture, shared with the vision path, so a
+        # sound-triggered event records where the station is and what its sensors
+        # read exactly as a vision-triggered event does. Left unset on a station
+        # with no receiver or sensors, in which case those fields stay empty.
+        self._environment_capture = environment_capture
         self._clip_writer = clip_writer
         self._onset_threshold = float(onset_threshold)
         self._silence_close_seconds = float(silence_close_seconds)
@@ -785,6 +802,30 @@ class AcousticMonitor:
 
         snapshot = self._visual_context.snapshot(agg.first_seen)
 
+        # The shared location-and-environment capture runs for the same window,
+        # so a sound event carries where the station is and what its sensors read.
+        # A capture that is not wired, or one that fails, leaves these fields
+        # empty rather than blocking the record.
+        gps_latitude = None
+        gps_longitude = None
+        gps_elevation = None
+        gps_status = None
+        environmental_readings: list = []
+        if self._environment_capture is not None:
+            try:
+                env = self._environment_capture.capture(agg.first_seen, agg.last_seen)
+                gps_latitude = env.gps_latitude
+                gps_longitude = env.gps_longitude
+                gps_elevation = env.gps_elevation
+                gps_status = env.gps_status
+                environmental_readings = list(env.environmental_readings)
+            except Exception:  # noqa: BLE001 - an environment fault is isolated, never fatal
+                logger.exception(
+                    "environment capture failed for acoustic event %s; its "
+                    "location and sensor fields will be absent",
+                    agg.event_name,
+                )
+
         return AcousticEvent(
             observation_id=agg.observation_id,
             event_name=agg.event_name,  # type: ignore[arg-type]
@@ -800,6 +841,11 @@ class AcousticMonitor:
             representative_frame=snapshot.representative_frame,
             children=agg.children(),
             visual_children=snapshot.children,
+            gps_latitude=gps_latitude,
+            gps_longitude=gps_longitude,
+            gps_elevation=gps_elevation,
+            gps_status=gps_status,
+            environmental_readings=environmental_readings,
         )
 
     def _enqueue(self, event: AcousticEvent) -> None:
@@ -865,6 +911,10 @@ class AcousticMonitor:
             audio_clip_path=event.audio_clip_path,
             audio_true_duration_seconds=event.audio_true_duration_seconds,
             audio_capped=event.audio_capped,
+            gps_latitude=event.gps_latitude,
+            gps_longitude=event.gps_longitude,
+            gps_elevation=event.gps_elevation,
+            gps_status=event.gps_status,
         )
 
         children = [
@@ -901,7 +951,25 @@ class AcousticMonitor:
                 )
             )
 
-        self._db.insert_observation(observation, children=children)
+        # The sensor channels captured for this sound event, each carrying its
+        # own measurement status and, for marine channels, its quality flag.
+        readings = [
+            EnvironmentalReading(
+                id=new_id(),
+                observation_id=event.observation_id,
+                channel=r.channel,
+                status=r.status,
+                created_at=created_at,
+                value=r.value,
+                unit=r.unit,
+                qartod_flag=r.qartod_flag,
+            )
+            for r in event.environmental_readings
+        ]
+
+        self._db.insert_observation(
+            observation, children=children, environmental_readings=readings
+        )
 
 
 # ===========================================================================
