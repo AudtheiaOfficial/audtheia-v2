@@ -633,6 +633,21 @@ class Database:
                 (observation_id,),
             )
 
+    def insert_environmental_reading(self, reading: EnvironmentalReading) -> None:
+        """Store one environmental-channel reading for an existing observation.
+
+        Capture normally writes every channel's reading together with its
+        observation. This adds a single reading afterward, which the field
+        quality-control step uses to record a channel the station's
+        configuration expected but that produced no reading during capture: the
+        gap is filled with an explicit missing-data status rather than left
+        silent. The row is inserted exactly as the caller built it, so the
+        caller is responsible for the measurement status and never for
+        inventing a value.
+        """
+        with self.connect() as conn:
+            self._insert_row(conn, reading)
+
     def list_environmental_readings(self, observation_id: str) -> list[dict]:
         with self.connect() as conn:
             return self._all(
