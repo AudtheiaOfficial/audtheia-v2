@@ -274,6 +274,23 @@ CREATE TABLE observation_verification (
     observation_id                       TEXT PRIMARY KEY REFERENCES observations(id) ON DELETE CASCADE,
     verified                              INTEGER NOT NULL DEFAULT 0 CHECK (verified IN (0, 1)),  -- the gate the dream pass reads
     rfdetr_version                        TEXT,
+
+    -- The desktop verification verdict, kept as measured model facts so an
+    -- RF-DETR result that disagrees with the field screening call is recorded
+    -- here rather than by altering the station-owned observation row. These are
+    -- the aggregate over every frame the verifier scored for the event, which is
+    -- what lets a per-frame misclassification in a long track be caught instead
+    -- of trusting a single representative frame. All are nullable because a pure
+    -- audio event has no frame to re-score.
+    rfdetr_gbif_usage_key                 TEXT,        -- taxon the verifier resolved for the event
+    rfdetr_scientific_name                TEXT,
+    rfdetr_confidence                     REAL CHECK (rfdetr_confidence IS NULL OR
+                                            (rfdetr_confidence >= 0 AND rfdetr_confidence <= 1)),
+    rfdetr_agrees_with_field              INTEGER CHECK (rfdetr_agrees_with_field IS NULL OR
+                                            rfdetr_agrees_with_field IN (0, 1)),  -- NULL when there is no field label to compare
+    frames_scored                         INTEGER,     -- how many frames the verifier scored for this event
+    frames_in_agreement                   INTEGER,     -- of those, how many matched the resolved taxon
+
     salience_authoritative                 REAL CHECK (salience_authoritative IS NULL OR
                                             (salience_authoritative >= 0 AND salience_authoritative <= 1)),
     rarity_score                           REAL,

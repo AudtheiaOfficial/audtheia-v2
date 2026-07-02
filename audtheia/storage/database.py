@@ -264,6 +264,18 @@ class ObservationVerification:
     created_at: str
     verified: int = 0  # the gate the dream pass reads before generative work
     rfdetr_version: Optional[str] = None
+
+    # The desktop verification verdict, aggregated over every frame the verifier
+    # scored, so an RF-DETR result that disagrees with the field screening call
+    # is recorded here rather than by touching the station-owned observation row.
+    # All are optional because a pure audio event carries no frame to re-score.
+    rfdetr_gbif_usage_key: Optional[str] = None
+    rfdetr_scientific_name: Optional[str] = None
+    rfdetr_confidence: Optional[float] = None
+    rfdetr_agrees_with_field: Optional[int] = None  # None when there is no field label to compare
+    frames_scored: Optional[int] = None
+    frames_in_agreement: Optional[int] = None
+
     salience_authoritative: Optional[float] = None
     rarity_score: Optional[float] = None
     baseline_deviation: Optional[float] = None
