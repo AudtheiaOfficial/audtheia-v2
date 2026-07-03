@@ -60,6 +60,7 @@ __all__ = [
     "TelemetryError",
     "DreamPass",
     "Pattern",
+    "SiteBaseline",
     "utc_now_iso",
     "new_id",
     "run_sync_round",
@@ -356,13 +357,42 @@ class Pattern:
     created_at: str
     data_source: str = "dream"
     status: str = "candidate"  # candidate / verified / rejected
+    # The class of hypothesis, so patterns are filterable by kind.
+    pattern_type: Optional[str] = None  # temporal_shift / co_occurrence / envelope_correlation / novel_cluster
     confidence: Optional[float] = None
     effect_size: Optional[float] = None
     effect_size_type: Optional[str] = None  # r / cohens_d / log_odds
+    # The named test or method behind effect_size, for auditability.
+    statistic: Optional[str] = None  # for example spearman_rho, mann_kendall
     p_value: Optional[float] = None
     q_value: Optional[float] = None
     autocorr_adjusted: Optional[int] = None
     model_version: Optional[str] = None
+
+
+@dataclass
+class SiteBaseline:
+    id: str
+    station_id: str
+    period_granularity: str
+    period_key: str
+    group_type: str  # species / all
+    group_key: str  # a gbif usage key, or ALL when the cell pools every taxon
+    signal: str  # environmental channel id
+    data_span_start: str
+    data_span_end: str
+    updated_at: str
+    created_at: str
+    data_source: str = "dream"
+    n: int = 0
+    # Robust location and scale drive the anomaly z-score; the plain mean and
+    # standard deviation are descriptive only.
+    median: Optional[float] = None
+    mad_scaled: Optional[float] = None
+    mean: Optional[float] = None
+    sd: Optional[float] = None
+    min_value: Optional[float] = None
+    max_value: Optional[float] = None
 
 
 # Maps each row type to its table, so the generic helpers know where a
@@ -381,6 +411,7 @@ _TABLE_FOR_TYPE = {
     TelemetryError: "station_telemetry_errors",
     DreamPass: "dream_passes",
     Pattern: "patterns",
+    SiteBaseline: "site_baselines",
 }
 
 
@@ -610,6 +641,53 @@ class Database:
         with self.connect() as conn:
             return self._all(conn, f"SELECT * FROM observations{where}{tail}", tuple(params))
 
+    def list_synced_since(
+        self,
+        after_synced: Optional[str],
+        after_id: Optional[str] = None,
+        *,
+        limit: Optional[int] = None,
+        station_id: Optional[str] = None,
+    ) -> list[dict]:
+        """List events in the order the desktop received them, after a cursor.
+
+        The longitudinal pass consumes newly-arrived events in a stable order so
+        it can stop and resume without missing or repeating one. Arrival order,
+        not event time, is the right cursor: a station can sync a batch of
+        older-timestamped events late, and ordering by arrival guarantees those
+        late arrivals are still picked up on the next pass rather than falling
+        behind an event-time watermark. Only rows the desktop has confirmed
+        received (synced_at is set) are eligible.
+
+        The cursor is the composite of arrival time and identifier, because a
+        single sync stamps one identical arrival time across every row it
+        imports, so arrival time alone is not unique. Advancing on the pair means
+        a batch boundary that falls inside one sync's rows resumes at the exact
+        next row rather than skipping the remaining rows that share that arrival
+        time. Passing nothing for the cursor starts from the beginning; passing
+        an arrival time without an identifier resumes strictly after that arrival
+        time.
+        """
+        clauses = ["synced_at IS NOT NULL"]
+        params: list = []
+        if after_synced is not None and after_id is not None:
+            # Keyset predicate over (synced_at, id): strictly after the pair.
+            clauses.append("(synced_at > ? OR (synced_at = ? AND id > ?))")
+            params.extend([after_synced, after_synced, after_id])
+        elif after_synced is not None:
+            clauses.append("synced_at > ?")
+            params.append(after_synced)
+        if station_id is not None:
+            clauses.append("station_id = ?")
+            params.append(station_id)
+        where = " WHERE " + " AND ".join(clauses)
+        tail = " ORDER BY synced_at, id"
+        if limit is not None:
+            tail += " LIMIT ?"
+            params.append(limit)
+        with self.connect() as conn:
+            return self._all(conn, f"SELECT * FROM observations{where}{tail}", tuple(params))
+
     def set_observation_qc(
         self, observation_id: str, qc_state: str, qc_reason: Optional[str] = None
     ) -> None:
@@ -667,6 +745,45 @@ class Database:
                 "SELECT * FROM environmental_readings WHERE observation_id = ? ORDER BY channel",
                 (observation_id,),
             )
+
+    def list_environmental_readings_for_baseline(
+        self,
+        station_id: str,
+        channel: str,
+        *,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+    ) -> list[dict]:
+        """List one station's readings of one channel across many events.
+
+        The longitudinal pass builds a baseline cell by summarizing every
+        reading of a signal in a period, which spans many observations, so this
+        joins readings back to their parent event for the station filter and the
+        event-time window. Each row carries the reading's value, its measurement
+        status, and its QARTOD flag together with the parent event's first_seen,
+        so the caller can bin by event time and apply the pass-flag precondition
+        without a second query. Ordering by event time gives a stable, seekable
+        stream.
+        """
+        clauses = ["o.station_id = ?", "r.channel = ?"]
+        params: list = [station_id, channel]
+        if since is not None:
+            clauses.append("o.first_seen >= ?")
+            params.append(since)
+        if until is not None:
+            clauses.append("o.first_seen <= ?")
+            params.append(until)
+        where = " AND ".join(clauses)
+        sql = (
+            "SELECT r.observation_id AS observation_id, r.channel AS channel, "
+            "r.value AS value, r.unit AS unit, r.status AS status, "
+            "r.qartod_flag AS qartod_flag, o.first_seen AS first_seen "
+            "FROM environmental_readings r "
+            "JOIN observations o ON o.id = r.observation_id "
+            f"WHERE {where} ORDER BY o.first_seen, r.observation_id"
+        )
+        with self.connect() as conn:
+            return self._all(conn, sql, tuple(params))
 
     # -- soundscape index (optional continuous stream) -------------------
 
@@ -820,6 +937,38 @@ class Database:
         with self.connect() as conn:
             return [r["oid"] for r in conn.execute(sql, params).fetchall()]
 
+    def set_authoritative_salience(
+        self,
+        observation_id: str,
+        *,
+        salience_authoritative: Optional[float],
+        baseline_deviation: Optional[float] = None,
+        anomaly_magnitude_authoritative: Optional[float] = None,
+    ) -> None:
+        """Write the desktop's final authoritative salience and its ingredients.
+
+        This updates only the three salience columns on an existing
+        verification row, leaving the verification verdict, the gate, and the
+        interpreter's rarity ingredient exactly as the verification step wrote
+        them. The longitudinal pass computes salience against the full baseline,
+        which the verification step could not see, so this is where the interim
+        salience is replaced by the value derived from the site gist. The row
+        must already exist, which it does for any observation the desktop has
+        seen, so this never creates a verification record on its own.
+        """
+        with self.connect() as conn:
+            conn.execute(
+                "UPDATE observation_verification SET "
+                "salience_authoritative = ?, baseline_deviation = ?, "
+                "anomaly_magnitude_authoritative = ? WHERE observation_id = ?",
+                (
+                    salience_authoritative,
+                    baseline_deviation,
+                    anomaly_magnitude_authoritative,
+                    observation_id,
+                ),
+            )
+
     # -- interpretations (desktop-owned) ---------------------------------
 
     def insert_interpretation(self, interpretation: Interpretation) -> None:
@@ -961,6 +1110,75 @@ class Database:
                 (pattern_id,),
             ).fetchall()
             return [r["observation_id"] for r in rows]
+
+    # -- site baselines (desktop-owned, the permanent gist) --------------
+
+    def upsert_site_baseline(self, baseline: SiteBaseline) -> None:
+        """Insert or replace one baseline cell by its natural key.
+
+        A consolidation pass recomputes a cell's summary from its full
+        membership and writes the result onto the stable cell key, so re-running
+        a pass refreshes the gist in place rather than accumulating duplicates.
+        The insert carries the created_at the caller supplies for a new cell;
+        the update leaves created_at untouched and moves only the recomputed
+        summary and updated_at forward.
+        """
+        with self.connect() as conn:
+            cols = [f.name for f in dataclasses.fields(baseline)]
+            vals = [getattr(baseline, c) for c in cols]
+            placeholders = ", ".join("?" for _ in cols)
+            conflict = (
+                "station_id, period_granularity, period_key, "
+                "group_type, group_key, signal"
+            )
+            # created_at is preserved on update; everything else is refreshed.
+            updates = ", ".join(
+                f"{c} = excluded.{c}" for c in cols if c != "created_at"
+            )
+            conn.execute(
+                f"INSERT INTO site_baselines ({', '.join(cols)}) "
+                f"VALUES ({placeholders}) "
+                f"ON CONFLICT({conflict}) DO UPDATE SET {updates}",
+                vals,
+            )
+
+    def get_site_baseline(
+        self,
+        station_id: str,
+        period_granularity: str,
+        period_key: str,
+        group_type: str,
+        group_key: str,
+        signal: str,
+    ) -> Optional[dict]:
+        """Fetch one baseline cell by its full natural key, or nothing."""
+        with self.connect() as conn:
+            return self._one(
+                conn,
+                "SELECT * FROM site_baselines WHERE station_id = ? "
+                "AND period_granularity = ? AND period_key = ? "
+                "AND group_type = ? AND group_key = ? AND signal = ?",
+                (station_id, period_granularity, period_key, group_type, group_key, signal),
+            )
+
+    def list_site_baselines(
+        self, *, station_id: Optional[str] = None
+    ) -> list[dict]:
+        """List baseline cells, optionally for one station."""
+        if station_id is not None:
+            with self.connect() as conn:
+                return self._all(
+                    conn,
+                    "SELECT * FROM site_baselines WHERE station_id = ? "
+                    "ORDER BY period_granularity, period_key, group_type, group_key, signal",
+                    (station_id,),
+                )
+        with self.connect() as conn:
+            return self._all(
+                conn,
+                "SELECT * FROM site_baselines "
+                "ORDER BY station_id, period_granularity, period_key, group_type, group_key, signal",
+            )
 
     # ====================================================================
     # Append-only sync: field station to desktop

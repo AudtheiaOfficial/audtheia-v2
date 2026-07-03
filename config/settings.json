@@ -60,7 +60,14 @@
   },
 
   "analysis": {
-    "per_observation_analysis_location": "pi"
+    "per_observation_analysis_location": "pi",
+    "baseline": {
+      "period_granularity": "month"
+    },
+    "salience": {
+      "weights": { "confidence": 0.40, "anomaly": 0.60 },
+      "anomaly": { "min_effective_n": 8, "aggregator": "chi2_independent" }
+    }
   },
 
   "schedules": {

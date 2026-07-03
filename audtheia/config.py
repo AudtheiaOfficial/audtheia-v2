@@ -57,6 +57,29 @@ REPORT_FORMATS = ("pdf", "csv")
 
 REPRESENTATIVE_FRAME_RULES = ("highest_confidence",)
 
+# The recurring-period binning rules the longitudinal baseline can use. A cell
+# groups a signal's readings by one of these, so a January reading is compared
+# against other Januaries rather than against a year-round average that the
+# seasonal cycle would dominate.
+BASELINE_PERIOD_GRANULARITIES = ("month", "iso_week", "doy")
+
+# The multichannel anomaly aggregators the salience calculation can use. The
+# independent chi-square aggregator combines each qualifying channel's squared
+# robust z-score into one calibrated surprise value whose scale does not grow
+# with the number of channels a station happens to carry.
+SALIENCE_AGGREGATORS = ("chi2_independent",)
+
+# Documented defaults for the analysis blocks, applied by the accessors when a
+# configuration omits the block. These are starting values, not hardcoded
+# policy: a configuration is free to override every one. The salience weights
+# are declared prioritization priors, not empirically fitted quantities, so the
+# score they produce ranks attention and is never treated as an inferential
+# statistic.
+DEFAULT_BASELINE_PERIOD_GRANULARITY = "month"
+DEFAULT_SALIENCE_WEIGHTS = {"confidence": 0.40, "anomaly": 0.60}
+DEFAULT_SALIENCE_MIN_EFFECTIVE_N = 8
+DEFAULT_SALIENCE_AGGREGATOR = "chi2_independent"
+
 # Optional, additive site descriptor. Independent of environment_type, which is
 # the schema's fixed five-value field. A station may set one of these for a
 # richer, reviewer-legible description of where it is deployed; it is never
@@ -280,6 +303,40 @@ class Settings:
     def analysis_location(self) -> str:
         return self.raw["analysis"]["per_observation_analysis_location"]
 
+    def baseline_config(self) -> dict:
+        """The longitudinal baseline settings, with documented defaults applied.
+
+        Returned as a fresh dictionary so a caller cannot mutate the loaded
+        configuration. A configuration that omits the block still gets a
+        complete, usable set of values.
+        """
+        block = dict(self.raw.get("analysis", {}).get("baseline", {}))
+        block.setdefault("period_granularity", DEFAULT_BASELINE_PERIOD_GRANULARITY)
+        return block
+
+    def salience_config(self) -> dict:
+        """The authoritative-salience settings, with documented defaults applied.
+
+        Returned as a fresh dictionary. The weights are prioritization priors,
+        not fitted quantities; the calculation renormalizes over whichever
+        ingredients are present, so zeroing a weight cleanly drops that
+        ingredient. A configuration that omits any part gets the defaults for
+        just that part.
+        """
+        raw_block = self.raw.get("analysis", {}).get("salience", {})
+        weights = dict(DEFAULT_SALIENCE_WEIGHTS)
+        weights.update(raw_block.get("weights", {}) or {})
+        anomaly = {
+            "min_effective_n": DEFAULT_SALIENCE_MIN_EFFECTIVE_N,
+            "aggregator": DEFAULT_SALIENCE_AGGREGATOR,
+        }
+        anomaly.update(raw_block.get("anomaly", {}) or {})
+        return {"weights": weights, "anomaly": anomaly}
+
+    def dream_budget(self) -> dict:
+        """The work budget for one longitudinal pass, as a fresh dictionary."""
+        return dict(self.raw["schedules"]["dream_pass"]["budget"])
+
     # -- time base -------------------------------------------------------
 
     def resolve_timezone(self) -> tzinfo:
@@ -472,6 +529,39 @@ def _validate(raw: dict) -> None:
         ANALYSIS_LOCATIONS,
         "analysis.per_observation_analysis_location",
     )
+
+    # The baseline and salience blocks are optional: a configuration that omits
+    # them runs on the documented defaults through the accessors. When present,
+    # their shape is checked strictly so a typo is caught here, not mid-pass.
+    baseline = analysis.get("baseline")
+    if baseline is not None:
+        _require_type(baseline, (dict,), "analysis.baseline")
+        gran = baseline.get("period_granularity")
+        if gran is not None:
+            _require_choice(gran, BASELINE_PERIOD_GRANULARITIES, "analysis.baseline.period_granularity")
+
+    salience = analysis.get("salience")
+    if salience is not None:
+        _require_type(salience, (dict,), "analysis.salience")
+        weights = salience.get("weights")
+        if weights is not None:
+            _require_type(weights, (dict,), "analysis.salience.weights")
+            total = 0.0
+            for key in ("confidence", "anomaly"):
+                if key in weights:
+                    w = weights[key]
+                    if isinstance(w, bool) or not isinstance(w, (int, float)) or w < 0:
+                        raise ConfigError(f"analysis.salience.weights.{key} must be a number of zero or more")
+                    total += float(w)
+            if total <= 0:
+                raise ConfigError("analysis.salience.weights must not all be zero")
+        anomaly = salience.get("anomaly")
+        if anomaly is not None:
+            _require_type(anomaly, (dict,), "analysis.salience.anomaly")
+            if "min_effective_n" in anomaly:
+                _require_nonnegative_int(anomaly["min_effective_n"], "analysis.salience.anomaly.min_effective_n")
+            if "aggregator" in anomaly:
+                _require_choice(anomaly["aggregator"], SALIENCE_AGGREGATORS, "analysis.salience.anomaly.aggregator")
 
     # -- schedules -------------------------------------------------------
     schedules = _require(raw, "schedules", "settings")

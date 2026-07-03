@@ -17,7 +17,8 @@
 --       child_detections, environmental_readings, soundscape_index_readings,
 --       station_telemetry, station_telemetry_errors
 --   Desktop-owned (written only on desktop): observation_verification,
---       interpretations, dream_passes, patterns, pattern_observations
+--       interpretations, dream_passes, patterns, pattern_observations,
+--       site_baselines
 --   Synced desktop -> Pi (not part of the Pi -> desktop pull): skills
 --   Reference cache (written by setup/fetch scripts): species_reference
 --
@@ -418,9 +419,17 @@ CREATE TABLE patterns (
     data_source                 TEXT NOT NULL CHECK (data_source = 'dream'),
     status                       TEXT NOT NULL DEFAULT 'candidate' CHECK (status IN ('candidate', 'verified', 'rejected')),
     dream_phase                  TEXT NOT NULL CHECK (dream_phase IN ('nrem', 'rem')),
+    -- The class of hypothesis, so patterns are filterable by kind rather than
+    -- only by free-text description. Nullable so a future class can be added
+    -- without a migration; the values below are the classes produced today.
+    pattern_type                  TEXT CHECK (pattern_type IS NULL OR pattern_type IN
+                                    ('temporal_shift', 'co_occurrence', 'envelope_correlation', 'novel_cluster')),
     confidence                    REAL CHECK (confidence IS NULL OR (confidence >= 0 AND confidence <= 1)),
     effect_size                    REAL,
     effect_size_type                TEXT CHECK (effect_size_type IS NULL OR effect_size_type IN ('r', 'cohens_d', 'log_odds')),
+    -- The named test or method behind effect_size (for example spearman_rho,
+    -- mann_kendall), so the statistic that produced a candidate is auditable.
+    statistic                        TEXT,
     data_span_start                  TEXT NOT NULL,   -- UTC ISO8601
     data_span_end                     TEXT NOT NULL,   -- UTC ISO8601
     n                                INTEGER NOT NULL,
@@ -454,6 +463,65 @@ CREATE TABLE pattern_observations (
 -- "which patterns cite THIS observation?" and the ON DELETE CASCADE fired when
 -- an observation is removed both need observation_id indexed independently.
 CREATE INDEX idx_pattern_observations_observation_id ON pattern_observations(observation_id);
+
+-- ============================================================================
+-- SITE_BASELINES  (desktop-owned)
+-- The permanent, compact baseline gist the consolidation phase builds and the
+-- authoritative salience calculation reads. One row is a running statistical
+-- summary for a single cell: a station's readings of one signal, for one
+-- taxon group, within one recurring period (for example one calendar month).
+--
+-- Robust location and scale are kept alongside the ordinary mean and standard
+-- deviation. The consolidation phase recomputes the exact median and a scaled
+-- median absolute deviation over a cell's full membership each pass, because
+-- these resist the very extremes the salience anomaly term is meant to detect,
+-- where a mean and standard deviation would be dragged toward an outlier and
+-- mask it. The plain mean and standard deviation are retained as descriptive
+-- context, not as the anomaly scale.
+--
+-- This gist is permanent: it is never the target of the downscaling phase,
+-- which prunes only derived working memory. It is desktop-owned, so a
+-- station-to-desktop pull can never touch it.
+-- ============================================================================
+CREATE TABLE site_baselines (
+    id                          TEXT PRIMARY KEY,
+    station_id                    TEXT NOT NULL REFERENCES stations(id) ON DELETE CASCADE,
+
+    -- The cell key. period_granularity names the binning rule (for example
+    -- 'month'); period_key is the specific recurring bin within it (for example
+    -- '06' for June). group_type/group_key name the taxon grouping, with
+    -- 'all' / 'ALL' meaning the cell pools every taxon. signal is the
+    -- environmental channel id, drawn from the station's configured channels.
+    period_granularity             TEXT NOT NULL,
+    period_key                      TEXT NOT NULL,
+    group_type                      TEXT NOT NULL CHECK (group_type IN ('species', 'all')),
+    group_key                        TEXT NOT NULL,
+    signal                           TEXT NOT NULL,
+
+    n                                INTEGER NOT NULL DEFAULT 0,   -- readings summarized in this cell
+    median                           REAL,     -- robust center used for the anomaly z-score
+    mad_scaled                       REAL,     -- 1.4826 * median absolute deviation: robust scale
+    mean                             REAL,     -- descriptive only
+    sd                               REAL,     -- descriptive only
+    min_value                        REAL,
+    max_value                        REAL,
+
+    data_span_start                   TEXT NOT NULL,   -- UTC ISO8601 of the earliest reading in the cell
+    data_span_end                      TEXT NOT NULL,  -- UTC ISO8601 of the latest reading in the cell
+    data_source                        TEXT NOT NULL CHECK (data_source = 'dream'),
+    updated_at                          TEXT NOT NULL,
+    created_at                           TEXT NOT NULL,
+
+    -- One cell per (station, period rule, period, taxon group, signal), so a
+    -- consolidation pass upserts the recomputed summary onto a stable key.
+    UNIQUE (station_id, period_granularity, period_key, group_type, group_key, signal)
+) STRICT;
+
+-- The authoritative salience read looks a cell up by its full natural key; the
+-- UNIQUE constraint above already provides that index. This second index
+-- serves the "every cell for this station" scan a pass uses when refreshing a
+-- station's gist.
+CREATE INDEX idx_site_baselines_station_id ON site_baselines(station_id);
 
 -- ============================================================================
 -- End of schema.sql
