@@ -309,15 +309,26 @@ class VerifyEngine:
         db: Database,
         verifier,
         interpreter,
-        clear_confidence: float = DEFAULT_VERIFY_CLEAR_CONFIDENCE,
-        max_frames_scored: int = DEFAULT_MAX_FRAMES_SCORED,
+        clear_confidence: Optional[float] = None,
+        max_frames_scored: Optional[int] = None,
     ) -> None:
         self._settings = settings
         self._db = db
         self._verifier = verifier
         self._interpreter = interpreter
-        self._clear_confidence = float(clear_confidence)
-        self._max_frames_scored = int(max_frames_scored)
+        # These thresholds come from configuration, with an explicit constructor
+        # argument taking precedence when one is passed. The configured defaults
+        # reproduce the values these held before they became configurable, so an
+        # unset configuration changes nothing.
+        verification_thresholds = settings.thresholds_config()["verification"]
+        self._clear_confidence = float(
+            clear_confidence if clear_confidence is not None
+            else verification_thresholds["clear_confidence"]
+        )
+        self._max_frames_scored = int(
+            max_frames_scored if max_frames_scored is not None
+            else verification_thresholds["max_frames_scored"]
+        )
 
         # Visible counters, so a worker's progress is observable without reaching
         # into the engine.

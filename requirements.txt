@@ -1,26 +1,26 @@
 # ============================================================================
-# Audtheia V2 — Desktop dependencies
-# Grown incrementally, one session at a time. Do not add a package here
-# speculatively — add it in the session that actually imports it, with a
-# version verified against the current PyPI release at build time (PhD-level
-# standards: no asserting fast-moving version numbers from memory).
+# Audtheia V2 desktop dependencies
+#
+# This list grows incrementally as each component is built. Do not add a
+# package speculatively. Add it only when a module actually imports it, and
+# pin its version against the current PyPI release verified at build time
+# rather than asserting a fast-moving version number from memory.
 # ============================================================================
 
-# Session 1 (schema.sql) uses only Python's built-in sqlite3 module.
-# No third-party dependencies required yet.
+# The storage layer (schema.sql, database.py) uses only Python's built-in
+# sqlite3 and uuid modules, so no third-party dependency is required for it.
 
-# --- Anticipated, NOT yet pinned (added when their session builds them) ---
-# Session 2  (database.py)        : stdlib sqlite3, uuid — no new deps expected
-# Session 4  (monitor.py)         : hailo-platform / HailoRT Python bindings (Pi only); supervision (ByteTrack)
-# Session 5  (acoustic.py)        : birdnetlib or BirdNET-Analyzer, sounddevice / PyAudio
-# Session 6  (environment.py)     : pyserial / gpsd-py3 (GPS), sensor-specific drivers
-# Session 7  (observation.py)     : none expected — deterministic engine, no LLM/VLM
-# Session 8  (verify.py)          : onnxruntime (RF-DETR verification)
-# Session 9  (dream.py)           : llama-cpp-python (desktop-only LLM)
-# Session 11 (server.py)          : fastapi, uvicorn
-# Session 17 (fetch-species-data) : requests (GBIF/IUCN APIs)
-# Session 25 (reports/generate.py): reportlab or weasyprint (PDF), built-in csv
+# --- Anticipated, not yet pinned (added when the module that imports them is built) ---
+# monitor.py         : hailo-platform / HailoRT Python bindings (Raspberry Pi only); supervision (ByteTrack)
+# acoustic.py        : birdnetlib or BirdNET-Analyzer; sounddevice or PyAudio
+# environment.py     : pyserial / gpsd-py3 (GPS); sensor-specific drivers
+# observation.py     : none expected; the field quality-control engine is deterministic, with no LLM or VLM
+# verify.py          : onnxruntime (RF-DETR verification, desktop)
+# dream.py           : llama-cpp-python (desktop-only LLM)
+# server.py          : fastapi, uvicorn
+# fetch-species-data : requests (GBIF and IUCN APIs)
+# reports/generate.py: reportlab or weasyprint (PDF); built-in csv
 
-# Each addition will be version-pinned against a live PyPI check, with a
-# short comment noting platform constraints (Windows vs. Raspberry Pi OS
-# Bookworm 64-bit) where they differ.
+# Each addition is version-pinned against a live PyPI check, with a short
+# comment noting any platform constraint (Windows versus Raspberry Pi OS
+# Bookworm 64-bit) where the two differ.

@@ -65,8 +65,19 @@
       "period_granularity": "month"
     },
     "salience": {
-      "weights": { "confidence": 0.40, "anomaly": 0.60 },
+      "weights": { "confidence": 0.40, "anomaly": 0.60, "rarity": 0.20 },
       "anomaly": { "min_effective_n": 8, "aggregator": "chi2_independent" }
+    },
+    "thresholds": {
+      "field_qc": { "pass_confidence": 0.10 },
+      "verification": { "clear_confidence": 0.50, "max_frames_scored": 32 },
+      "dream": {
+        "min_periods_for_trend": 4,
+        "min_events_for_correlation": 8,
+        "min_events_for_co_occurrence": 8,
+        "min_abs_effect": 0.2,
+        "max_p_value": 0.05
+      }
     }
   },
 
@@ -96,7 +107,8 @@
   },
 
   "privacy": {
-    "discard_human_detections": true
+    "discard_human_detections": true,
+    "human_class_names": []
   },
 
   "network": {

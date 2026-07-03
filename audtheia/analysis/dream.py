@@ -432,6 +432,7 @@ class PatternFragment:
     effect_size_type: Optional[str] = None
     statistic: Optional[str] = None
     p_value: Optional[float] = None
+    q_value: Optional[float] = None
     confidence: Optional[float] = None
     model_version: Optional[str] = None
 
@@ -484,22 +485,42 @@ class DreamEngine:
         db: Database,
         narrator=None,
         clusterer=None,
-        min_periods_for_trend: int = DEFAULT_MIN_PERIODS_FOR_TREND,
-        min_events_for_correlation: int = DEFAULT_MIN_EVENTS_FOR_CORRELATION,
-        min_events_for_co_occurrence: int = DEFAULT_MIN_EVENTS_FOR_CO_OCCURRENCE,
-        min_abs_effect: float = DEFAULT_MIN_ABS_EFFECT,
-        max_p_value: float = DEFAULT_MAX_P_VALUE,
+        min_periods_for_trend: Optional[int] = None,
+        min_events_for_correlation: Optional[int] = None,
+        min_events_for_co_occurrence: Optional[int] = None,
+        min_abs_effect: Optional[float] = None,
+        max_p_value: Optional[float] = None,
     ) -> None:
         self._settings = settings
         self._db = db
         self._narrator = narrator
         self._clusterer = clusterer
 
-        self._min_periods_for_trend = int(min_periods_for_trend)
-        self._min_events_for_correlation = int(min_events_for_correlation)
-        self._min_events_for_co_occurrence = int(min_events_for_co_occurrence)
-        self._min_abs_effect = float(min_abs_effect)
-        self._max_p_value = float(max_p_value)
+        # The generative-phase floors come from configuration, with an explicit
+        # constructor argument taking precedence when one is passed. The
+        # configured defaults reproduce the values these floors held before they
+        # became configurable, so an unset configuration changes nothing.
+        dream_thresholds = settings.thresholds_config()["dream"]
+        self._min_periods_for_trend = int(
+            min_periods_for_trend if min_periods_for_trend is not None
+            else dream_thresholds["min_periods_for_trend"]
+        )
+        self._min_events_for_correlation = int(
+            min_events_for_correlation if min_events_for_correlation is not None
+            else dream_thresholds["min_events_for_correlation"]
+        )
+        self._min_events_for_co_occurrence = int(
+            min_events_for_co_occurrence if min_events_for_co_occurrence is not None
+            else dream_thresholds["min_events_for_co_occurrence"]
+        )
+        self._min_abs_effect = float(
+            min_abs_effect if min_abs_effect is not None
+            else dream_thresholds["min_abs_effect"]
+        )
+        self._max_p_value = float(
+            max_p_value if max_p_value is not None
+            else dream_thresholds["max_p_value"]
+        )
 
         # Read the tunable analysis configuration once per engine.
         baseline_cfg = settings.baseline_config()
@@ -660,9 +681,10 @@ class DreamEngine:
         # hold-out costs no extra queries per event.
         verified_ids = set(self._db.list_verified_observation_ids(station_id=station_scope))
         membership_cache: dict[tuple[str, str], dict[str, list[tuple[str, float]]]] = {}
+        station_taxon_cache: dict[str, dict] = {}
         for obs in batch:
             if obs["id"] in verified_ids:
-                self._score_salience(obs, membership_cache)
+                self._score_salience(obs, membership_cache, station_taxon_cache)
                 self.salience_scored += 1
 
     def _cell_membership(
@@ -737,13 +759,16 @@ class DreamEngine:
         self,
         obs: dict,
         membership_cache: dict[tuple[str, str], dict[str, list[tuple[str, float]]]],
+        station_taxon_cache: dict[str, dict],
     ) -> None:
         """Compute and store one event's authoritative salience.
 
         The confidence ingredient prefers the desktop verification confidence and
         falls back to the field screening confidence. The anomaly ingredient is a
         calibrated combination of the event's robust deviations across its
-        qualifying channels against the matching baseline cells. The two
+        qualifying channels against the matching baseline cells. The rarity
+        ingredient, included only when it carries weight, is the taxon's local
+        novelty: how rarely it appears in this station's own record. The
         ingredients are blended by the configured weights, renormalized over
         whichever ingredients are present, so a missing ingredient drops out
         cleanly and an event with neither is left unscored rather than assigned a
@@ -752,11 +777,18 @@ class DreamEngine:
         confidence = self._confidence_ingredient(obs)
         anomaly, signed_dev = self._anomaly_ingredient(obs, membership_cache)
 
+        # Rarity is computed only when it is weighted, so a deployment that does
+        # not weight rarity pays nothing for it and the score is unchanged.
+        rarity_weight = float(self._weights.get("rarity", 0.0))
+        rarity = self._rarity_ingredient(obs, station_taxon_cache) if rarity_weight > 0 else None
+
         present: list[tuple[float, float]] = []  # (weight, value)
         if confidence is not None:
             present.append((float(self._weights.get("confidence", 0.0)), confidence))
         if anomaly is not None:
             present.append((float(self._weights.get("anomaly", 0.0)), anomaly))
+        if rarity is not None:
+            present.append((rarity_weight, rarity))
 
         weight_sum = sum(w for w, _ in present)
         if not present or weight_sum <= 0:
@@ -830,6 +862,43 @@ class DreamEngine:
             return None, None
         anomaly = _chi2_cdf(squared_sum, dof)
         return max(0.0, min(1.0, anomaly)), strongest_signed
+
+    def _rarity_ingredient(self, obs: dict, station_taxon_cache: dict[str, dict]) -> Optional[float]:
+        """The event's local rarity: how rarely its taxa appear at this station.
+
+        A taxon seen in few of a station's events is rare there, and a rare taxon
+        should draw more attention, which is the taxonomic-channel analogue of the
+        anomaly term's novelty over the environmental channels. Each taxon's local
+        frequency is the share of the station's events it appears in; its rarity
+        is one minus that share. When an event carries more than one taxon, the
+        rarest present taxon drives the score, mirroring how the anomaly term
+        follows the strongest-deviating channel. The per-station counts are read
+        once and cached for the scoring sweep. An event with no taxon yields no
+        rarity rather than a fabricated value.
+        """
+        station_id = obs["station_id"]
+        stats = station_taxon_cache.get(station_id)
+        if stats is None:
+            stats = self._db.taxon_event_counts(station_id)
+            station_taxon_cache[station_id] = stats
+        total = stats["total_events"]
+        counts = stats["taxon_events"]
+        if total <= 0:
+            return None
+        taxa = [
+            (c.get("gbif_usage_key") or c.get("common_name"))
+            for c in self._db.list_child_detections(obs["id"])
+        ]
+        taxa = [t for t in taxa if t]
+        if not taxa:
+            return None
+        rarest: Optional[float] = None
+        for taxon in taxa:
+            share = counts.get(taxon, 0) / total
+            rarity = max(0.0, min(1.0, 1.0 - share))
+            if rarest is None or rarity > rarest:
+                rarest = rarity
+        return rarest
 
     @staticmethod
     def _reading_qualifies(reading: dict) -> bool:
@@ -917,6 +986,13 @@ class DreamEngine:
         fragments.extend(self._detect_co_occurrence(exemplars))
         fragments.extend(self._detect_novel_cluster(exemplars))
 
+        # Benjamini-Hochberg false-discovery adjustment across every test this
+        # cycle produced. It runs over the full set of p-values, before the
+        # effect and p floors select survivors, so the adjustment reflects the
+        # true number of comparisons the cycle made rather than only the ones
+        # that passed. A candidate carrying no p-value is left unadjusted.
+        self._assign_bh_q_values(fragments)
+
         emitted = 0
         for frag in fragments:
             if len(emitted_keys) >= self._candidate_cap:
@@ -938,6 +1014,30 @@ class DreamEngine:
             return False
         return True
 
+    @staticmethod
+    def _assign_bh_q_values(fragments: list[PatternFragment]) -> None:
+        """Attach Benjamini-Hochberg q-values across a cycle's tests.
+
+        A q-value is the false-discovery-adjusted p-value: the smallest false
+        discovery rate at which a candidate would still be called. Only
+        candidates that carry a p-value take part, and the number of tests is
+        exactly that set, so the adjustment is honest about how many comparisons
+        were made. The step-up pass from the largest p-value down keeps the
+        adjusted values monotone.
+        """
+        indexed = [(i, f.p_value) for i, f in enumerate(fragments) if f.p_value is not None]
+        m = len(indexed)
+        if m == 0:
+            return
+        order = sorted(indexed, key=lambda pair: pair[1])
+        running_min = 1.0
+        for rank in range(m, 0, -1):
+            frag_index, p = order[rank - 1]
+            candidate = p * m / rank
+            if candidate < running_min:
+                running_min = candidate
+            fragments[frag_index].q_value = running_min if running_min < 1.0 else 1.0
+
     def _persist(self, dream_pass_id: str, frag: PatternFragment) -> None:
         pattern = Pattern(
             id=new_id(),
@@ -954,6 +1054,8 @@ class DreamEngine:
             effect_size_type=frag.effect_size_type,
             statistic=frag.statistic,
             p_value=frag.p_value,
+            q_value=frag.q_value,
+            autocorr_adjusted=0,
             model_version=frag.model_version,
         )
         self._db.insert_pattern(pattern, observation_ids=frag.observation_ids)

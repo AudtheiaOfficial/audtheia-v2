@@ -94,11 +94,11 @@ ISO_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 # bounded. It is a starting value a deployment can raise if its disk is fast.
 DEFAULT_QUEUE_MAXSIZE = 256
 
-# Saved-frame encoding. The configuration file is the single home for tuning,
-# but it does not currently carry an image-encoding key, so these are named
-# constants here rather than silently chosen. JPEG keeps the rolling buffer
-# small while staying high enough quality for retraining; both can be promoted
-# to configuration later with no change to the rest of this loop.
+# Saved-frame encoding fallback. The media block in the configuration is the
+# home for these, and the loop reads them from there; these named constants are
+# only the fallback used when a configuration does not specify a value. JPEG
+# keeps the rolling buffer small while staying high enough quality for
+# retraining.
 DEFAULT_IMAGE_FORMAT = "jpg"
 DEFAULT_IMAGE_QUALITY = 95
 
@@ -641,8 +641,8 @@ class Monitor:
         tracker: Tracker,
         trigger_sink: TriggerSink,
         queue_maxsize: int = DEFAULT_QUEUE_MAXSIZE,
-        image_format: str = DEFAULT_IMAGE_FORMAT,
-        image_quality: int = DEFAULT_IMAGE_QUALITY,
+        image_format: Optional[str] = None,
+        image_quality: Optional[int] = None,
         image_writer=_default_image_writer,
     ) -> None:
         self._settings = settings
@@ -653,8 +653,27 @@ class Monitor:
         self._tracker = tracker
         self._trigger_sink = trigger_sink
         self._image_writer = image_writer
-        self._image_format = image_format
-        self._image_quality = image_quality
+        # Saved-frame encoding comes from the media configuration, with an
+        # explicit constructor argument taking precedence when one is passed, so
+        # the frames this loop writes and the frames the desktop verifier looks
+        # for share one configured format and quality.
+        image_encoding = settings.image_encoding()
+        self._image_format = (
+            image_format if image_format is not None
+            else image_encoding.get("format", DEFAULT_IMAGE_FORMAT)
+        )
+        self._image_quality = int(
+            image_quality if image_quality is not None
+            else image_encoding.get("quality", DEFAULT_IMAGE_QUALITY)
+        )
+
+        # Privacy: detections the deployment classes as human are discarded
+        # before any frame is written. The set is keyed off the station's own
+        # detection-model labels, so an empty set (the default) matches nothing
+        # and the discard is inert until a deployment names its human class.
+        privacy = settings.privacy_config()
+        self._discard_human = bool(privacy["discard_human_detections"])
+        self._human_class_names = set(privacy["human_class_names"])
 
         capture = station["capture"]
         self._capture = capture
@@ -689,6 +708,7 @@ class Monitor:
         self.events_failed = 0
         self.queue_saturation_events = 0
         self.observations_skipped_no_track = 0
+        self.frames_discarded_human = 0
 
     # -- public control --------------------------------------------------
 
@@ -735,6 +755,24 @@ class Monitor:
             tracked = self._tracker.update(detections, frame.index)
 
             for det in tracked:
+                class_name = class_names.get(det.class_id, str(det.class_id))
+                if self._is_human_class(class_name):
+                    # A detection the deployment classes as human is discarded
+                    # before any frame is written, so a person's image is never
+                    # stored. The discard is counted, and the running count is
+                    # logged, because an unexpectedly high count can mean the
+                    # detection model is confusing animals for people; nothing is
+                    # ever silently dropped without a trace.
+                    self.frames_discarded_human += 1
+                    if self.frames_discarded_human % 100 == 1:
+                        logger.info(
+                            "discarding frames classified as human for privacy; "
+                            "%d discarded so far this run (an unexpectedly high "
+                            "count can indicate the detection model confusing "
+                            "animals for people)",
+                            self.frames_discarded_human,
+                        )
+                    continue
                 agg = self._aggregators.get(det.track_id)
                 if agg is None:
                     agg = _TrackAggregator(
@@ -750,10 +788,20 @@ class Monitor:
                         image_quality=self._image_quality,
                     )
                     self._aggregators[det.track_id] = agg
-                class_name = class_names.get(det.class_id, str(det.class_id))
                 agg.update(frame, det, class_name, self._image_writer)
 
             self._close_stale_tracks(frame.index, class_names)
+
+    def _is_human_class(self, class_name: str) -> bool:
+        """Whether a detection's class is one the deployment treats as human.
+
+        Discarding is on by default but keyed entirely off the configured human
+        class set, which names the exact labels the station's own detection model
+        uses for people. An empty set matches nothing, so a model with no human
+        class makes this inert. The station's own model decides what is human;
+        this never guesses and never confuses an animal for a person on its own.
+        """
+        return self._discard_human and class_name in self._human_class_names
 
     def _close_stale_tracks(self, current_index: int, class_names: dict[int, str]) -> None:
         # A track whose object has not been seen for the configured number of

@@ -296,7 +296,7 @@ class QCEngine:
         settings,
         db: Database,
         flag_evaluators: Optional[dict] = None,
-        field_pass_confidence: float = DEFAULT_FIELD_PASS_CONFIDENCE,
+        field_pass_confidence: Optional[float] = None,
     ) -> None:
         self._settings = settings
         self._db = db
@@ -304,7 +304,14 @@ class QCEngine:
         # with no evaluator is one the field tier has no pure function for yet,
         # so it is skipped rather than guessed at.
         self._flag_evaluators = dict(flag_evaluators or {})
-        self._field_pass_confidence = float(field_pass_confidence)
+        # The field-pass confidence floor comes from configuration, with an
+        # explicit constructor argument taking precedence when one is passed. The
+        # configured default reproduces the value it held before it became
+        # configurable, so an unset configuration changes nothing.
+        self._field_pass_confidence = float(
+            field_pass_confidence if field_pass_confidence is not None
+            else settings.thresholds_config()["field_qc"]["pass_confidence"]
+        )
 
         # Visible counters, so a worker's progress and any pressure are
         # observable without reaching into the engine.

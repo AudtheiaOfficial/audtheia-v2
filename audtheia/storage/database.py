@@ -723,6 +723,44 @@ class Database:
                 (observation_id,),
             )
 
+    def taxon_event_counts(self, station_id: str) -> dict:
+        """Count, per taxon, how many of a station's events include that taxon.
+
+        The longitudinal pass reads this to score a taxon's local rarity: a taxon
+        present in few of a station's events is rare at that site and draws more
+        salience, mirroring the novelty basis of a saliency model. Counting is by
+        distinct event, so a taxon detected across many frames of one encounter
+        counts once, consistent with the one-event-one-record rule. The taxon is
+        keyed by its backbone usage key when one was resolved, falling back to the
+        screening model's common name, so a taxon is counted consistently whether
+        or not the taxonomic backbone lookup has filled its key yet. A detection
+        that carries neither key nor name contributes to no taxon.
+
+        Returns a fresh dictionary with total_events (the station's event count,
+        the rarity denominator) and taxon_events (each taxon key mapped to the
+        number of the station's events it appears in). Both are read in one
+        connection so the pair is internally consistent.
+        """
+        with self.connect() as conn:
+            total = conn.execute(
+                "SELECT COUNT(*) AS c FROM observations WHERE station_id = ?",
+                (station_id,),
+            ).fetchone()["c"]
+            rows = conn.execute(
+                "SELECT COALESCE(c.gbif_usage_key, c.common_name) AS taxon, "
+                "COUNT(DISTINCT c.observation_id) AS n "
+                "FROM child_detections c "
+                "JOIN observations o ON o.id = c.observation_id "
+                "WHERE o.station_id = ? "
+                "AND COALESCE(c.gbif_usage_key, c.common_name) IS NOT NULL "
+                "GROUP BY COALESCE(c.gbif_usage_key, c.common_name)",
+                (station_id,),
+            ).fetchall()
+        return {
+            "total_events": int(total),
+            "taxon_events": {r["taxon"]: int(r["n"]) for r in rows},
+        }
+
     def insert_environmental_reading(self, reading: EnvironmentalReading) -> None:
         """Store one environmental-channel reading for an existing observation.
 

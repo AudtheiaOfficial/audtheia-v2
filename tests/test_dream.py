@@ -314,12 +314,13 @@ def build_dataset(db: Database):
         ids["verified"].append(oid); ids["month6_temp_oids"].append(oid)
 
     # A verified event with no scorable ingredient: its one channel is not a
-    # measurement, and it carries no confidence, so its authoritative salience
-    # must stay null. It carries a field provisional value for the ranking
-    # fallback and both taxa so it is still a valid exemplar.
+    # measurement, it carries no confidence, and it carries no taxon, so none of
+    # the three ingredients (confidence, anomaly, rarity) can score it and its
+    # authoritative salience must stay null. It keeps a field provisional value
+    # for the ranking fallback so it is still a valid exemplar.
     null_oid = add_event(
         db, seq, month=6, day=28, temp=20.0, do=None,
-        species=(SPECIES_A, SPECIES_B), verified=True, confidence=None,
+        species=(), verified=True, confidence=None,
         provisional=0.3, temp_status="not_measured",
     )
     ids["verified"].append(null_oid)

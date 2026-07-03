@@ -76,9 +76,31 @@ SALIENCE_AGGREGATORS = ("chi2_independent",)
 # score they produce ranks attention and is never treated as an inferential
 # statistic.
 DEFAULT_BASELINE_PERIOD_GRANULARITY = "month"
-DEFAULT_SALIENCE_WEIGHTS = {"confidence": 0.40, "anomaly": 0.60}
+DEFAULT_SALIENCE_WEIGHTS = {"confidence": 0.40, "anomaly": 0.60, "rarity": 0.0}
 DEFAULT_SALIENCE_MIN_EFFECTIVE_N = 8
 DEFAULT_SALIENCE_AGGREGATOR = "chi2_independent"
+
+# Documented defaults for the analysis thresholds, applied by the accessor when
+# a configuration omits a value. Every value here equals the constant its module
+# used before these moved into configuration, so an omitted block reproduces the
+# earlier behavior exactly. A configuration is free to override any of them.
+DEFAULT_THRESHOLDS = {
+    "field_qc": {"pass_confidence": 0.10},
+    "verification": {"clear_confidence": 0.50, "max_frames_scored": 32},
+    "dream": {
+        "min_periods_for_trend": 4,
+        "min_events_for_correlation": 8,
+        "min_events_for_co_occurrence": 8,
+        "min_abs_effect": 0.2,
+        "max_p_value": 0.05,
+    },
+}
+
+# Documented defaults for the privacy block. Discarding human detections is on by
+# default; the human class set is empty by default, so with no configured human
+# class the discard matches nothing and is inert until a deployment names the
+# class or classes its own detection model uses for people.
+DEFAULT_PRIVACY = {"discard_human_detections": True, "human_class_names": []}
 
 # Optional, additive site descriptor. Independent of environment_type, which is
 # the schema's fixed five-value field. A station may set one of these for a
@@ -337,6 +359,39 @@ class Settings:
         """The work budget for one longitudinal pass, as a fresh dictionary."""
         return dict(self.raw["schedules"]["dream_pass"]["budget"])
 
+    def thresholds_config(self) -> dict:
+        """The analysis thresholds, with documented defaults applied.
+
+        Returned as a fresh dictionary. Each group (field_qc, verification,
+        dream) is merged over its defaults, so a configuration that omits the
+        block, or any value in it, gets the documented default for exactly that
+        value and nothing behaves differently from before these thresholds were
+        configurable.
+        """
+        raw_block = self.raw.get("analysis", {}).get("thresholds", {}) or {}
+        out: dict = {}
+        for group, defaults in DEFAULT_THRESHOLDS.items():
+            merged = dict(defaults)
+            merged.update(raw_block.get(group, {}) or {})
+            out[group] = merged
+        return out
+
+    def privacy_config(self) -> dict:
+        """The privacy settings, with documented defaults applied.
+
+        Returned as a fresh dictionary. discard_human_detections defaults to
+        true; human_class_names defaults to an empty list, so the discard is
+        inert until a deployment names the class or classes its own detection
+        model uses for people.
+        """
+        raw_block = self.raw.get("privacy", {}) or {}
+        return {
+            "discard_human_detections": bool(
+                raw_block.get("discard_human_detections", DEFAULT_PRIVACY["discard_human_detections"])
+            ),
+            "human_class_names": list(raw_block.get("human_class_names", []) or []),
+        }
+
     # -- time base -------------------------------------------------------
 
     def resolve_timezone(self) -> tzinfo:
@@ -547,7 +602,7 @@ def _validate(raw: dict) -> None:
         if weights is not None:
             _require_type(weights, (dict,), "analysis.salience.weights")
             total = 0.0
-            for key in ("confidence", "anomaly"):
+            for key in ("confidence", "anomaly", "rarity"):
                 if key in weights:
                     w = weights[key]
                     if isinstance(w, bool) or not isinstance(w, (int, float)) or w < 0:
@@ -562,6 +617,43 @@ def _validate(raw: dict) -> None:
                 _require_nonnegative_int(anomaly["min_effective_n"], "analysis.salience.anomaly.min_effective_n")
             if "aggregator" in anomaly:
                 _require_choice(anomaly["aggregator"], SALIENCE_AGGREGATORS, "analysis.salience.anomaly.aggregator")
+
+    # The thresholds block is optional: a configuration that omits it runs on
+    # the documented defaults through the accessor. When present, its shape is
+    # checked strictly so a typo is caught here rather than mid-pass.
+    thresholds = analysis.get("thresholds")
+    if thresholds is not None:
+        _require_type(thresholds, (dict,), "analysis.thresholds")
+        fq = thresholds.get("field_qc")
+        if fq is not None:
+            _require_type(fq, (dict,), "analysis.thresholds.field_qc")
+            if "pass_confidence" in fq:
+                pc = fq["pass_confidence"]
+                if isinstance(pc, bool) or not isinstance(pc, (int, float)) or not (0 <= pc <= 1):
+                    raise ConfigError("analysis.thresholds.field_qc.pass_confidence must be a number between 0 and 1")
+        ver = thresholds.get("verification")
+        if ver is not None:
+            _require_type(ver, (dict,), "analysis.thresholds.verification")
+            if "clear_confidence" in ver:
+                cc = ver["clear_confidence"]
+                if isinstance(cc, bool) or not isinstance(cc, (int, float)) or not (0 <= cc <= 1):
+                    raise ConfigError("analysis.thresholds.verification.clear_confidence must be a number between 0 and 1")
+            if "max_frames_scored" in ver:
+                _require_positive_number(ver["max_frames_scored"], "analysis.thresholds.verification.max_frames_scored")
+        dre = thresholds.get("dream")
+        if dre is not None:
+            _require_type(dre, (dict,), "analysis.thresholds.dream")
+            for k in ("min_periods_for_trend", "min_events_for_correlation", "min_events_for_co_occurrence"):
+                if k in dre:
+                    _require_positive_number(dre[k], f"analysis.thresholds.dream.{k}")
+            if "min_abs_effect" in dre:
+                mae = dre["min_abs_effect"]
+                if isinstance(mae, bool) or not isinstance(mae, (int, float)) or mae < 0:
+                    raise ConfigError("analysis.thresholds.dream.min_abs_effect must be a number of zero or more")
+            if "max_p_value" in dre:
+                mpv = dre["max_p_value"]
+                if isinstance(mpv, bool) or not isinstance(mpv, (int, float)) or not (0 <= mpv <= 1):
+                    raise ConfigError("analysis.thresholds.dream.max_p_value must be a number between 0 and 1")
 
     # -- schedules -------------------------------------------------------
     schedules = _require(raw, "schedules", "settings")
@@ -593,6 +685,18 @@ def _validate(raw: dict) -> None:
     # -- localization ----------------------------------------------------
     loc = _require(raw, "localization", "settings")
     _require_type(_require(loc, "local_timezone", "localization"), (str,), "localization.local_timezone")
+
+    # -- privacy (optional) ----------------------------------------------
+    privacy = raw.get("privacy")
+    if privacy is not None:
+        _require_type(privacy, (dict,), "privacy")
+        if "discard_human_detections" in privacy:
+            _require_type(privacy["discard_human_detections"], (bool,), "privacy.discard_human_detections")
+        human_names = privacy.get("human_class_names")
+        if human_names is not None:
+            _require_type(human_names, (list,), "privacy.human_class_names")
+            for i, name in enumerate(human_names):
+                _require_type(name, (str,), f"privacy.human_class_names[{i}]")
 
     # -- desktop models --------------------------------------------------
     desktop_models = _require(raw, "desktop_models", "settings")
