@@ -10,6 +10,15 @@
 # The storage layer (schema.sql, database.py) uses only Python's built-in
 # sqlite3 and uuid modules, so no third-party dependency is required for it.
 
+# --- Active dependencies (pinned against a live PyPI check at build time) ---
+
+# reports/generate.py: PDF output. Pure Python with no compiled extension, so it
+# installs and runs the same on Windows and on Raspberry Pi OS Bookworm 64-bit,
+# and it stays behind an import seam so the report module still loads and still
+# writes CSV when it is absent. The CSV output itself needs only the standard
+# library.
+fpdf2==2.8.7
+
 # --- Anticipated, not yet pinned (added when the module that imports them is built) ---
 # monitor.py         : hailo-platform / HailoRT Python bindings (Raspberry Pi only); supervision (ByteTrack)
 # acoustic.py        : birdnetlib or BirdNET-Analyzer; sounddevice or PyAudio
@@ -19,7 +28,6 @@
 # dream.py           : llama-cpp-python (desktop-only LLM)
 # server.py          : fastapi, uvicorn
 # fetch-species-data : requests (GBIF and IUCN APIs)
-# reports/generate.py: reportlab or weasyprint (PDF); built-in csv
 
 # Each addition is version-pinned against a live PyPI check, with a short
 # comment noting any platform constraint (Windows versus Raspberry Pi OS
