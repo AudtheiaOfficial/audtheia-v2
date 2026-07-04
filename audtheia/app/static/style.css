@@ -1,0 +1,785 @@
+/* Audtheia local interface: design system and themes.
+
+   Everything here is driven by CSS custom properties. The structural rules
+   (layout, spacing, component shapes) are written once against variables, and
+   each theme is a small block that only re-points those variables. Switching
+   themes is a single attribute change on the root element, so no markup and no
+   script logic changes between themes.
+
+   All assets are local. There are no web fonts, no imports, and no outside
+   references, so the interface styles fully offline.
+
+   Contents:
+     1. Theme-agnostic tokens (spacing, radius, type scale, motion)
+     2. Reset and base elements
+     3. Layout shell (sidebar, top bar, main)
+     4. Components (navigation, panels, cards, status, controls)
+     5. Responsive behavior
+     6. Themes (Ocean, Forest, Flat, Cyberpunk, Retro, Glass, Neumorph)
+*/
+
+/* ======================================================================
+   1. Theme-agnostic tokens
+   These do not change between themes. Colors live in the theme blocks near
+   the bottom of the file; everything here is structure and rhythm.
+   ====================================================================== */
+
+:root {
+  /* A system font stack, so type renders natively on Windows and on the Pi
+     with no font file to download. */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", "Segoe UI Mono", "Roboto Mono", Menlo, Consolas, monospace;
+
+  --text-xs:   0.75rem;
+  --text-sm:   0.875rem;
+  --text-base: 1rem;
+  --text-lg:   1.125rem;
+  --text-xl:   1.375rem;
+  --text-2xl:  1.75rem;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+
+  --sidebar-w: 250px;
+  --sidebar-w-compact: 74px;
+  --topbar-h: 62px;
+  --content-max: 1280px;
+
+  --transition-fast: 130ms ease;
+  --transition-base: 220ms ease;
+  --transition-slow: 380ms ease;
+
+  --border-width: 1px;
+  --focus-width: 2px;
+
+  /* Depth is expressed through two named shadows and a blur amount so themes
+     can dial their own elevation. Neumorphism and glassmorphism override
+     these to change component character without touching layout. */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-2: 0 6px 24px rgba(0, 0, 0, 0.35);
+  --panel-blur: 0px;
+}
+
+/* ======================================================================
+   2. Reset and base elements
+   ====================================================================== */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: 1.5;
+  color: var(--text);
+  background-color: var(--bg);
+  background-image: var(--bg-image, none);
+  background-attachment: fixed;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4 {
+  margin: 0;
+  line-height: 1.25;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+p {
+  margin: 0;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  background: none;
+  border: none;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+:focus-visible {
+  outline: var(--focus-width) solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--accent-contrast);
+}
+
+/* A quiet, themed scrollbar so the chrome matches each palette. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: var(--radius-pill);
+}
+
+/* Lets a keyboard user skip the navigation. It stays off-screen until it
+   receives focus. */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 50;
+  padding: var(--space-2) var(--space-4);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-radius: 0 0 var(--radius-md) 0;
+}
+
+.skip-link:focus {
+  left: 0;
+}
+
+.noscript-note {
+  margin: 0;
+  padding: var(--space-4);
+  text-align: center;
+  color: var(--warning);
+  background: var(--surface);
+}
+
+/* ======================================================================
+   3. Layout shell
+   ====================================================================== */
+
+.app-shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  height: 100vh;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: var(--space-4) var(--space-3);
+  gap: var(--space-2);
+  background: var(--surface);
+  border-right: var(--border-width) solid var(--border);
+  backdrop-filter: blur(var(--panel-blur));
+}
+
+.content {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.main {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-6);
+  /* A faint measured grid, echoing the field-science character of the V1
+     site. It sits under the content and never distracts from it. */
+  background-image:
+    linear-gradient(var(--grid-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+  background-size: 48px 48px;
+  background-position: center top;
+}
+
+/* ======================================================================
+   4. Components
+   ====================================================================== */
+
+/* Brand lockup at the top of the sidebar. */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3) var(--space-4);
+  color: var(--accent);
+}
+
+.brand-mark {
+  display: inline-flex;
+  flex: none;
+}
+
+.brand-name {
+  font-size: var(--text-lg);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+/* Primary navigation. */
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.nav-footer {
+  margin-top: auto;
+  padding-top: var(--space-3);
+  border-top: var(--border-width) solid var(--border-subtle);
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-3) var(--space-3);
+  border-radius: var(--radius-md);
+  color: var(--text-2);
+  text-align: left;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.nav-item:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.nav-item[aria-current] {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.nav-icon {
+  display: inline-flex;
+  flex: none;
+  color: currentColor;
+}
+
+.nav-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Top bar: the current view title, connection status, and theme control. */
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  height: var(--topbar-h);
+  flex: none;
+  padding: 0 var(--space-6);
+  background: var(--surface);
+  border-bottom: var(--border-width) solid var(--border);
+  backdrop-filter: blur(var(--panel-blur));
+}
+
+.view-title {
+  font-size: var(--text-xl);
+  font-weight: 650;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
+  border: var(--border-width) solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+/* Connection state is set by the application script; these hooks style it. */
+.status-pill[data-connection-status="online"] .status-dot { background: var(--ok); }
+.status-pill[data-connection-status="offline"] .status-dot { background: var(--danger); }
+.status-pill[data-connection-status="online"] { color: var(--text); }
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-md);
+  border: var(--border-width) solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-2);
+  transition: color var(--transition-fast), background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.theme-toggle:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.theme-icon {
+  display: inline-flex;
+}
+
+/* Show the moon on dark themes and the sun on light themes. The light themes
+   opt in near the bottom of the file. */
+.theme-icon-light { display: none; }
+
+/* Panels: one per section. Only the active one is visible; the rest carry the
+   hidden attribute. */
+.panel {
+  max-width: var(--content-max);
+  animation: panel-in var(--transition-base);
+}
+
+.panel[hidden],
+.subpanel[hidden] {
+  display: none;
+}
+
+.panel:focus,
+.subpanel:focus {
+  outline: none;
+}
+
+@keyframes panel-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.panel-head {
+  margin-bottom: var(--space-5);
+}
+
+.panel-head h2 {
+  font-size: var(--text-2xl);
+}
+
+.panel-lead {
+  margin-top: var(--space-2);
+  max-width: 68ch;
+  color: var(--text-2);
+}
+
+.panel-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.panel-toolbar:empty {
+  display: none;
+  margin: 0;
+}
+
+.panel-body {
+  min-height: 120px;
+}
+
+.empty-state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 160px;
+  padding: var(--space-6);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text-muted);
+  box-shadow: var(--shadow-1);
+}
+
+/* Brain sub-navigation and its three sub-panels. */
+.subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-5);
+  padding-bottom: var(--space-3);
+  border-bottom: var(--border-width) solid var(--border-subtle);
+}
+
+.subnav-item {
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-pill);
+  border: var(--border-width) solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: var(--text-sm);
+  font-weight: 550;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.subnav-item:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.subnav-item[aria-current] {
+  background: var(--accent);
+  color: var(--accent-contrast);
+  border-color: var(--accent);
+}
+
+.subpanel h3 {
+  font-size: var(--text-xl);
+  margin-bottom: var(--space-2);
+}
+
+/* Settings groups: a responsive set of cards, one per configuration area. */
+.settings-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-4);
+}
+
+.settings-group {
+  padding: var(--space-5);
+  border-radius: var(--radius-lg);
+  border: var(--border-width) solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  backdrop-filter: blur(var(--panel-blur));
+}
+
+.settings-group h3 {
+  font-size: var(--text-lg);
+  margin-bottom: var(--space-3);
+}
+
+.settings-group .panel-body {
+  min-height: 40px;
+}
+
+/* ======================================================================
+   5. Responsive behavior
+   On narrow widths the sidebar collapses to icons, then the labels and brand
+   name hide. The layout never breaks and needs no script to reflow.
+   ====================================================================== */
+
+@media (max-width: 960px) {
+  .app-shell {
+    grid-template-columns: var(--sidebar-w-compact) minmax(0, 1fr);
+  }
+
+  .brand {
+    justify-content: center;
+    padding-inline: 0;
+  }
+
+  .brand-name,
+  .nav-label {
+    display: none;
+  }
+
+  .nav-item {
+    justify-content: center;
+  }
+
+  .main {
+    padding: var(--space-5) var(--space-4);
+  }
+
+  .topbar {
+    padding-inline: var(--space-4);
+  }
+}
+
+@media (max-width: 560px) {
+  .panel-head h2 {
+    font-size: var(--text-xl);
+  }
+
+  .view-title {
+    font-size: var(--text-lg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ======================================================================
+   6. Themes
+   Each block only re-points the semantic color variables (and, for the two
+   structural styles, elevation and blur). Ocean is the default identity and
+   is applied whenever no theme is set, so the interface is never unstyled.
+   ====================================================================== */
+
+/* Shared semantic variable contract each theme fills:
+     --bg, --bg-image, --surface, --surface-2, --border, --border-subtle,
+     --grid-line, --text, --text-2, --text-muted,
+     --accent, --accent-contrast, --accent-soft, --focus-ring,
+     --ok, --warning, --danger */
+
+/* Ocean: the underwater identity, matching the V1 site. Deep near-black water,
+   teal and sky-blue accents, soft pale text. */
+:root,
+[data-theme="ocean"] {
+  color-scheme: dark;
+  --bg: #07090f;
+  --bg-image: none;
+  --surface: #0b0f1c;
+  --surface-2: #0f1627;
+  --border: #182038;
+  --border-subtle: #0d1629;
+  --grid-line: rgba(56, 189, 248, 0.045);
+  --text: #ddeaf2;
+  --text-2: #7fafc8;
+  --text-muted: #3d6278;
+  --accent: #00c9a7;
+  --accent-contrast: #04130f;
+  --accent-soft: rgba(0, 201, 167, 0.12);
+  --focus-ring: #38bdf8;
+  --ok: #00c9a7;
+  --warning: #f59e0b;
+  --danger: #f87171;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 6px 28px rgba(0, 0, 0, 0.55);
+  --panel-blur: 0px;
+}
+
+/* Forest: the light identity. Natural greens, warm paper background, canopy
+   accent. Tuned so text on surfaces clears AA contrast. */
+[data-theme="forest"] {
+  color-scheme: light;
+  --bg: #eef3e7;
+  --bg-image: none;
+  --surface: #f7faf2;
+  --surface-2: #e7efdc;
+  --border: #cbd9ba;
+  --border-subtle: #dbe6cc;
+  --grid-line: rgba(63, 125, 78, 0.06);
+  --text: #1f2a1c;
+  --text-2: #40563a;
+  --text-muted: #6d8264;
+  --accent: #2f7d4e;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgba(47, 125, 78, 0.14);
+  --focus-ring: #2f7d4e;
+  --ok: #2f7d4e;
+  --warning: #b45309;
+  --danger: #b91c1c;
+  --shadow-1: 0 1px 2px rgba(31, 42, 28, 0.12);
+  --shadow-2: 0 8px 26px rgba(31, 42, 28, 0.16);
+  --panel-blur: 0px;
+}
+
+/* Flat: a high-contrast, minimal light theme. Solid colors, crisp edges, almost
+   no elevation. The most legible option for dense data. */
+[data-theme="flat"] {
+  color-scheme: light;
+  --bg: #ffffff;
+  --bg-image: none;
+  --surface: #f4f5f7;
+  --surface-2: #e9ebef;
+  --border: #c7ccd6;
+  --border-subtle: #e2e5ea;
+  --grid-line: rgba(17, 24, 39, 0.04);
+  --text: #101828;
+  --text-2: #3b465c;
+  --text-muted: #66718a;
+  --accent: #1d4ed8;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgba(29, 78, 216, 0.12);
+  --focus-ring: #1d4ed8;
+  --ok: #047857;
+  --warning: #b45309;
+  --danger: #b91c1c;
+  --shadow-1: 0 1px 1px rgba(16, 24, 40, 0.06);
+  --shadow-2: 0 2px 6px rgba(16, 24, 40, 0.08);
+  --panel-blur: 0px;
+}
+
+/* Cyberpunk: dark base with neon magenta and cyan accents and a stronger glow.
+   Accent text stays dark on the bright accent for contrast. */
+[data-theme="cyberpunk"] {
+  color-scheme: dark;
+  --bg: #0a0612;
+  --bg-image: none;
+  --surface: #130b22;
+  --surface-2: #1c1033;
+  --border: #34215c;
+  --border-subtle: #1f1440;
+  --grid-line: rgba(244, 114, 182, 0.06);
+  --text: #f3e9ff;
+  --text-2: #b79ade;
+  --text-muted: #7a6aa8;
+  --accent: #f472b6;
+  --accent-contrast: #180420;
+  --accent-soft: rgba(244, 114, 182, 0.16);
+  --focus-ring: #22d3ee;
+  --ok: #22d3ee;
+  --warning: #fbbf24;
+  --danger: #fb7185;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-2: 0 0 28px rgba(244, 114, 182, 0.18);
+  --panel-blur: 0px;
+}
+
+/* Retro-Futurism: dark warm night with amber and hot-pink neon over a deep
+   indigo, evoking dashboards of an imagined past future. */
+[data-theme="retro"] {
+  color-scheme: dark;
+  --bg: #120a1e;
+  --bg-image: none;
+  --surface: #1a1030;
+  --surface-2: #241640;
+  --border: #3a2560;
+  --border-subtle: #241844;
+  --grid-line: rgba(255, 176, 91, 0.06);
+  --text: #ffe9d6;
+  --text-2: #d3a6c9;
+  --text-muted: #8f6f94;
+  --accent: #ffb05b;
+  --accent-contrast: #241105;
+  --accent-soft: rgba(255, 176, 91, 0.16);
+  --focus-ring: #ff5fa2;
+  --ok: #5be3c0;
+  --warning: #ffb05b;
+  --danger: #ff5f7e;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-2: 0 8px 30px rgba(255, 95, 162, 0.14);
+  --panel-blur: 0px;
+}
+
+/* Glassmorphism: a translucent, frosted look. Surfaces are semi-transparent
+   over a soft gradient field, with a blur behind panels. Text stays fully
+   opaque and light for AA legibility over the busy background. */
+[data-theme="glass"] {
+  color-scheme: dark;
+  --bg: #0c1226;
+  --bg-image:
+    radial-gradient(60% 55% at 18% 12%, rgba(56, 189, 248, 0.24), transparent 60%),
+    radial-gradient(55% 50% at 85% 20%, rgba(168, 85, 247, 0.22), transparent 60%),
+    radial-gradient(60% 60% at 60% 100%, rgba(45, 212, 191, 0.20), transparent 60%);
+  --surface: rgba(23, 32, 58, 0.55);
+  --surface-2: rgba(37, 49, 82, 0.6);
+  --border: rgba(255, 255, 255, 0.18);
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --grid-line: rgba(255, 255, 255, 0.03);
+  --text: #f2f7ff;
+  --text-2: #c4d3ec;
+  --text-muted: #93a4c4;
+  --accent: #67e8f9;
+  --accent-contrast: #062330;
+  --accent-soft: rgba(103, 232, 249, 0.18);
+  --focus-ring: #67e8f9;
+  --ok: #34d399;
+  --warning: #fbbf24;
+  --danger: #fb7185;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-2: 0 8px 32px rgba(0, 0, 0, 0.28);
+  --panel-blur: 14px;
+}
+
+/* Neumorphism: a soft, single-surface light theme where elevation comes from a
+   pair of light and dark shadows rather than borders. Borders are nearly
+   invisible by design; text is kept dark enough to clear AA on the surface. */
+[data-theme="neumorph"] {
+  color-scheme: light;
+  --bg: #e6e9ef;
+  --bg-image: none;
+  --surface: #e6e9ef;
+  --surface-2: #e0e3ea;
+  --border: rgba(163, 177, 198, 0.35);
+  --border-subtle: rgba(163, 177, 198, 0.22);
+  --grid-line: rgba(163, 177, 198, 0.12);
+  --text: #2b3040;
+  --text-2: #4a5266;
+  --text-muted: #737b8f;
+  --accent: #3f5bd6;
+  --accent-contrast: #ffffff;
+  --accent-soft: rgba(63, 91, 214, 0.14);
+  --focus-ring: #3f5bd6;
+  --ok: #2f9e6f;
+  --warning: #b4690e;
+  --danger: #c0392b;
+  --shadow-1: 6px 6px 12px rgba(163, 177, 198, 0.55), -6px -6px 12px rgba(255, 255, 255, 0.9);
+  --shadow-2: 8px 8px 18px rgba(163, 177, 198, 0.6), -8px -8px 18px rgba(255, 255, 255, 0.95);
+  --panel-blur: 0px;
+}
+
+/* Light themes show the sun icon rather than the moon in the theme toggle. */
+[data-theme="forest"] .theme-icon-dark,
+[data-theme="flat"] .theme-icon-dark,
+[data-theme="neumorph"] .theme-icon-dark {
+  display: none;
+}
+
+[data-theme="forest"] .theme-icon-light,
+[data-theme="flat"] .theme-icon-light,
+[data-theme="neumorph"] .theme-icon-light {
+  display: inline-flex;
+}
+
+/* Neumorphism replaces flat borders with sculpted shadow on its raised
+   surfaces, which is the defining trait of the style. */
+[data-theme="neumorph"] .settings-group,
+[data-theme="neumorph"] .empty-state,
+[data-theme="neumorph"] .status-pill,
+[data-theme="neumorph"] .theme-toggle,
+[data-theme="neumorph"] .subnav-item {
+  border-color: transparent;
+  box-shadow: var(--shadow-1);
+}
+
+[data-theme="neumorph"] .nav-item[aria-current] {
+  box-shadow: inset 3px 3px 7px rgba(163, 177, 198, 0.6), inset -3px -3px 7px rgba(255, 255, 255, 0.9);
+}
+
+/* Glassmorphism leans on the blurred, translucent surfaces defined above; the
+   empty-state panel joins the frosted treatment. */
+[data-theme="glass"] .empty-state {
+  background: var(--surface);
+  border-style: solid;
+  backdrop-filter: blur(var(--panel-blur));
+}

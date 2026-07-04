@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="ocean">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#0e1116">
+  <meta name="description" content="Audtheia local interface for browsing the environmental observation record.">
+  <title>Audtheia</title>
+
+  <!-- Empty icon reference so the page never asks the server for a separate
+       favicon file. Everything the interface needs is bundled locally. -->
+  <link rel="icon" href="data:,">
+
+  <!-- Local stylesheet. It sits next to this file and is served from the same
+       place, so a relative reference resolves both over the local server and
+       when this file is opened directly. -->
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+  <!-- Lets keyboard users jump straight to the main content. -->
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+
+  <div class="app-shell">
+
+    <!-- =====================================================================
+         Sidebar: the primary navigation. Each button reveals one panel in the
+         main area. The active button is marked with aria-current so assistive
+         technology and the stylesheet can both find it.
+         ===================================================================== -->
+    <aside class="sidebar" aria-label="Primary">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32" width="28" height="28" role="img" focusable="false">
+            <circle cx="16" cy="16" r="13" fill="none" stroke="currentColor" stroke-width="2"></circle>
+            <circle cx="16" cy="16" r="5" fill="currentColor"></circle>
+            <path d="M16 3 v5 M16 24 v5 M3 16 h5 M24 16 h5" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+          </svg>
+        </span>
+        <span class="brand-name">Audtheia</span>
+      </div>
+
+      <nav class="nav" aria-label="Sections">
+        <button type="button" class="nav-item" data-panel="detections" aria-current="page" aria-controls="panel-detections">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+              <circle cx="12" cy="13" r="4"></circle>
+            </svg>
+          </span>
+          <span class="nav-label">Detections</span>
+        </button>
+
+        <button type="button" class="nav-item" data-panel="audio" aria-controls="panel-audio">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+              <line x1="4" y1="12" x2="4" y2="12"></line>
+              <path d="M4 10v4 M8 7v10 M12 4v16 M16 8v8 M20 11v2"></path>
+            </svg>
+          </span>
+          <span class="nav-label">Audio</span>
+        </button>
+
+        <button type="button" class="nav-item" data-panel="brain" aria-controls="panel-brain">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+              <circle cx="18" cy="6" r="2.5"></circle>
+              <circle cx="6" cy="12" r="2.5"></circle>
+              <circle cx="18" cy="18" r="2.5"></circle>
+              <path d="M8.2 10.8 15.6 7.1 M8.2 13.2 15.6 16.9"></path>
+            </svg>
+          </span>
+          <span class="nav-label">Brain</span>
+        </button>
+
+        <button type="button" class="nav-item" data-panel="gps" aria-controls="panel-gps">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+              <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+              <circle cx="12" cy="10" r="3"></circle>
+            </svg>
+          </span>
+          <span class="nav-label">GPS</span>
+        </button>
+
+        <button type="button" class="nav-item" data-panel="analytics" aria-controls="panel-analytics">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+              <line x1="6" y1="20" x2="6" y2="13"></line>
+              <line x1="12" y1="20" x2="12" y2="4"></line>
+              <line x1="18" y1="20" x2="18" y2="9"></line>
+            </svg>
+          </span>
+          <span class="nav-label">Analytics</span>
+        </button>
+
+        <button type="button" class="nav-item" data-panel="reports" aria-controls="panel-reports">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <path d="M14 2v6h6"></path>
+              <line x1="8" y1="13" x2="16" y2="13"></line>
+              <line x1="8" y1="17" x2="16" y2="17"></line>
+            </svg>
+          </span>
+          <span class="nav-label">Reports</span>
+        </button>
+      </nav>
+
+      <div class="nav-footer">
+        <button type="button" class="nav-item" data-panel="settings" aria-controls="panel-settings">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+          </span>
+          <span class="nav-label">Settings</span>
+        </button>
+      </div>
+    </aside>
+
+    <!-- =====================================================================
+         Main area: a slim top bar with the current view title, connection
+         status, and the light and dark toggle, followed by one panel per
+         section. Only the active panel is shown; the rest carry the hidden
+         attribute until navigation reveals them.
+         ===================================================================== -->
+    <div class="content">
+      <header class="topbar">
+        <h1 class="view-title" data-view-title>Detections</h1>
+        <div class="topbar-actions">
+          <span class="status-pill" data-connection-status>
+            <span class="status-dot" aria-hidden="true"></span>
+            <span class="status-text">Checking</span>
+          </span>
+          <button type="button" class="theme-toggle" data-theme-toggle aria-label="Switch between light and dark">
+            <span class="theme-icon theme-icon-dark" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+                <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path>
+              </svg>
+            </span>
+            <span class="theme-icon theme-icon-light" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+                <circle cx="12" cy="12" r="4"></circle>
+                <path d="M12 2v2 M12 20v2 M2 12h2 M20 12h2 M4.9 4.9l1.4 1.4 M17.7 17.7l1.4 1.4 M19.1 4.9l-1.4 1.4 M6.3 17.7l-1.4 1.4"></path>
+              </svg>
+            </span>
+          </button>
+        </div>
+      </header>
+
+      <main class="main" id="main-content">
+
+        <!-- Detections: the live feed and browsable history of visual events,
+             each expandable to the full multimodal observation and its desktop
+             verification result. -->
+        <section class="panel" id="panel-detections" data-panel="detections" aria-labelledby="detections-heading" tabindex="-1">
+          <div class="panel-head">
+            <h2 id="detections-heading">Detections</h2>
+            <p class="panel-lead">Visual events as they occur, and the full history by date, site, species, and confidence.</p>
+          </div>
+          <div class="panel-toolbar" data-region="detections-filters"></div>
+          <div class="panel-body" data-region="detections-list">
+            <p class="empty-state">Loading detections.</p>
+          </div>
+        </section>
+
+        <!-- Audio: acoustic detections and playable clips tied to events,
+             with the active acoustic model and, when enabled, the soundscape
+             index. -->
+        <section class="panel" id="panel-audio" data-panel="audio" aria-labelledby="audio-heading" tabindex="-1" hidden>
+          <div class="panel-head">
+            <h2 id="audio-heading">Audio</h2>
+            <p class="panel-lead">Acoustic detections and clips tied to observation events, with the active model and true clip duration.</p>
+          </div>
+          <div class="panel-toolbar" data-region="audio-filters"></div>
+          <div class="panel-body" data-region="audio-list">
+            <p class="empty-state">Loading audio.</p>
+          </div>
+        </section>
+
+        <!-- Brain: three grouped sub-panels. Models and Memory shows the loaded
+             model and its longitudinal knowledge; Learning covers retraining and
+             audits; Skills lists the reusable behavioral rules. -->
+        <section class="panel" id="panel-brain" data-panel="brain" aria-labelledby="brain-heading" tabindex="-1" hidden>
+          <div class="panel-head">
+            <h2 id="brain-heading">Brain</h2>
+            <p class="panel-lead">Models and memory, learning and auditing, and the skill library.</p>
+          </div>
+
+          <nav class="subnav" aria-label="Brain sections">
+            <button type="button" class="subnav-item" data-subpanel="brain-models" aria-current="page" aria-controls="subpanel-brain-models">Models and Memory</button>
+            <button type="button" class="subnav-item" data-subpanel="brain-learning" aria-controls="subpanel-brain-learning">Learning / Fine-tuning / Auditing</button>
+            <button type="button" class="subnav-item" data-subpanel="brain-skills" aria-controls="subpanel-brain-skills">Skills</button>
+          </nav>
+
+          <div class="subpanel" id="subpanel-brain-models" data-subpanel="brain-models" aria-labelledby="brain-models-heading" tabindex="-1">
+            <h3 id="brain-models-heading">Models and Memory</h3>
+            <p class="panel-lead">The model loaded for the longitudinal pass, and the accumulated site baselines and species profiles, browsable and editable.</p>
+            <div class="panel-body" data-region="brain-models">
+              <p class="empty-state">Loading models and memory.</p>
+            </div>
+          </div>
+
+          <div class="subpanel" id="subpanel-brain-learning" data-subpanel="brain-learning" aria-labelledby="brain-learning-heading" tabindex="-1" hidden>
+            <h3 id="brain-learning-heading">Learning / Fine-tuning / Auditing</h3>
+            <p class="panel-lead">Detection retraining, acoustic classifier training, model improvement, and audit logs of performance over time.</p>
+            <div class="panel-body" data-region="brain-learning">
+              <p class="empty-state">Loading learning and audit history.</p>
+            </div>
+          </div>
+
+          <div class="subpanel" id="subpanel-brain-skills" data-subpanel="brain-skills" aria-labelledby="brain-skills-heading" tabindex="-1" hidden>
+            <h3 id="brain-skills-heading">Skills</h3>
+            <p class="panel-lead">Reusable behavioral rules, each with a trigger, an instruction, and the tier it runs on. Searchable and importable.</p>
+            <div class="panel-toolbar" data-region="brain-skills-filters"></div>
+            <div class="panel-body" data-region="brain-skills">
+              <p class="empty-state">Loading skills.</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- GPS: the map of detection locations, survey paths, and site
+             boundaries per station. -->
+        <section class="panel" id="panel-gps" data-panel="gps" aria-labelledby="gps-heading" tabindex="-1" hidden>
+          <div class="panel-head">
+            <h2 id="gps-heading">GPS</h2>
+            <p class="panel-lead">Detection locations, survey paths, and site boundaries per station.</p>
+          </div>
+          <div class="panel-toolbar" data-region="gps-filters"></div>
+          <div class="panel-body" data-region="gps-map">
+            <p class="empty-state">Loading spatial data.</p>
+          </div>
+        </section>
+
+        <!-- Analytics: biodiversity metrics and environmental trends computed
+             from the stored record, with dream-derived anomalies shown as
+             candidate patterns. -->
+        <section class="panel" id="panel-analytics" data-panel="analytics" aria-labelledby="analytics-heading" tabindex="-1" hidden>
+          <div class="panel-head">
+            <h2 id="analytics-heading">Analytics</h2>
+            <p class="panel-lead">Species richness, detection frequency, environmental trends, and diversity metrics per site.</p>
+          </div>
+          <div class="panel-toolbar" data-region="analytics-filters"></div>
+          <div class="panel-body" data-region="analytics-charts">
+            <p class="empty-state">Loading analytics.</p>
+          </div>
+        </section>
+
+        <!-- Reports: schedule configuration, report history, and downloads.
+             Every value is labeled by its source and quality status. -->
+        <section class="panel" id="panel-reports" data-panel="reports" aria-labelledby="reports-heading" tabindex="-1" hidden>
+          <div class="panel-head">
+            <h2 id="reports-heading">Reports</h2>
+            <p class="panel-lead">Schedule generation, browse the history, and download the PDF and CSV bundles.</p>
+          </div>
+          <div class="panel-toolbar" data-region="reports-actions"></div>
+          <div class="panel-body" data-region="reports-list">
+            <p class="empty-state">Loading reports.</p>
+          </div>
+        </section>
+
+        <!-- Settings: appearance, station and sensor management, capture
+             tuning, time, model paths, schedules, credentials, analysis
+             placement, storage status, and the setup guide. Each group is a
+             placeholder the controls attach to. -->
+        <section class="panel" id="panel-settings" data-panel="settings" aria-labelledby="settings-heading" tabindex="-1" hidden>
+          <div class="panel-head">
+            <h2 id="settings-heading">Settings</h2>
+            <p class="panel-lead">Configure appearance, stations, sensors, capture, schedules, credentials, and storage.</p>
+          </div>
+
+          <div class="settings-groups">
+            <section class="settings-group" aria-labelledby="settings-appearance-heading">
+              <h3 id="settings-appearance-heading">Appearance</h3>
+              <div class="panel-body" data-region="settings-appearance"></div>
+            </section>
+
+            <section class="settings-group" aria-labelledby="settings-stations-heading">
+              <h3 id="settings-stations-heading">Stations</h3>
+              <div class="panel-body" data-region="settings-stations"></div>
+            </section>
+
+            <section class="settings-group" aria-labelledby="settings-sensors-heading">
+              <h3 id="settings-sensors-heading">Sensors</h3>
+              <div class="panel-body" data-region="settings-sensors"></div>
+            </section>
+
+            <section class="settings-group" aria-labelledby="settings-capture-heading">
+              <h3 id="settings-capture-heading">Capture tuning</h3>
+              <div class="panel-body" data-region="settings-capture"></div>
+            </section>
+
+            <section class="settings-group" aria-labelledby="settings-time-heading">
+              <h3 id="settings-time-heading">Time and display</h3>
+              <div class="panel-body" data-region="settings-time"></div>
+            </section>
+
+            <section class="settings-group" aria-labelledby="settings-models-heading">
+              <h3 id="settings-models-heading">Model paths</h3>
+              <div class="panel-body" data-region="settings-models"></div>
+            </section>
+
+            <section class="settings-group" aria-labelledby="settings-schedules-heading">
+              <h3 id="settings-schedules-heading">Schedules</h3>
+              <div class="panel-body" data-region="settings-schedules"></div>
+            </section>
+
+            <section class="settings-group" aria-labelledby="settings-credentials-heading">
+              <h3 id="settings-credentials-heading">Species data credentials</h3>
+              <div class="panel-body" data-region="settings-credentials"></div>
+            </section>
+
+            <section class="settings-group" aria-labelledby="settings-analysis-heading">
+              <h3 id="settings-analysis-heading">Analysis placement</h3>
+              <div class="panel-body" data-region="settings-analysis"></div>
+            </section>
+
+            <section class="settings-group" aria-labelledby="settings-storage-heading">
+              <h3 id="settings-storage-heading">Storage status</h3>
+              <div class="panel-body" data-region="settings-storage"></div>
+            </section>
+
+            <section class="settings-group" aria-labelledby="settings-guide-heading">
+              <h3 id="settings-guide-heading">Setup guide</h3>
+              <div class="panel-body" data-region="settings-guide"></div>
+            </section>
+          </div>
+        </section>
+
+      </main>
+    </div>
+  </div>
+
+  <noscript>
+    <p class="noscript-note">This interface needs JavaScript enabled to load the environmental record.</p>
+  </noscript>
+
+  <!-- Local application script. It sits next to this file and runs after the
+       markup is parsed, so it can find every element it wires up. -->
+  <script src="app.js" defer></script>
+</body>
+</html>
