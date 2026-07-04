@@ -19,6 +19,18 @@
 # library.
 fpdf2==2.8.7
 
+# app/server.py: the local desktop web backend. FastAPI defines the endpoints
+# and uvicorn serves them on the loopback address; both are pure Python wheels
+# that install the same on Windows and Raspberry Pi OS Bookworm 64-bit. The
+# module imports the framework inside its application factory, so importing the
+# file needs neither package; only building or running the server does.
+fastapi==0.139.0
+uvicorn==0.50.0
+
+# Test-only: the local request test drives the app through fastapi's TestClient,
+# which uses httpx. Not needed to run the server, only to exercise it in tests.
+# httpx==0.28.1
+
 # --- Anticipated, not yet pinned (added when the module that imports them is built) ---
 # monitor.py         : hailo-platform / HailoRT Python bindings (Raspberry Pi only); supervision (ByteTrack)
 # acoustic.py        : birdnetlib or BirdNET-Analyzer; sounddevice or PyAudio
@@ -26,7 +38,6 @@ fpdf2==2.8.7
 # observation.py     : none expected; the field quality-control engine is deterministic, with no LLM or VLM
 # verify.py          : onnxruntime (RF-DETR verification, desktop)
 # dream.py           : llama-cpp-python (desktop-only LLM)
-# server.py          : fastapi, uvicorn
 # fetch-species-data : requests (GBIF and IUCN APIs)
 
 # Each addition is version-pinned against a live PyPI check, with a short
