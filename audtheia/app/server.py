@@ -239,8 +239,8 @@ def create_app(settings, database):
     # -- detections (visual events plus the desktop verification verdict) --
 
     @app.get(f"{API_PREFIX}/detections")
-    def detections(station_id=Query(default=None), since=Query(default=None),
-                   until=Query(default=None), limit=Query(default=100, ge=1, le=1000)):
+    def detections(station_id: str | None = Query(default=None), since: str | None = Query(default=None),
+                   until: str | None = Query(default=None), limit: int = Query(default=100, ge=1, le=1000)):
         rows = db.list_observations(station_id=station_id, since=since, until=until, limit=limit)
         out = []
         for obs in rows:
@@ -268,8 +268,8 @@ def create_app(settings, database):
     # -- audio -----------------------------------------------------------
 
     @app.get(f"{API_PREFIX}/audio")
-    def audio(station_id=Query(default=None), since=Query(default=None),
-              until=Query(default=None), limit=Query(default=100, ge=1, le=1000)):
+    def audio(station_id: str | None = Query(default=None), since: str | None = Query(default=None),
+              until: str | None = Query(default=None), limit: int = Query(default=100, ge=1, le=1000)):
         rows = db.list_observations(station_id=station_id, since=since, until=until, limit=limit)
         out = []
         for obs in rows:
@@ -291,8 +291,8 @@ def create_app(settings, database):
     # -- gps -------------------------------------------------------------
 
     @app.get(f"{API_PREFIX}/gps")
-    def gps(station_id=Query(default=None), since=Query(default=None),
-            until=Query(default=None), limit=Query(default=500, ge=1, le=5000)):
+    def gps(station_id: str | None = Query(default=None), since: str | None = Query(default=None),
+            until: str | None = Query(default=None), limit: int = Query(default=500, ge=1, le=5000)):
         rows = db.list_observations(station_id=station_id, since=since, until=until, limit=limit)
         out = []
         for obs in rows:
