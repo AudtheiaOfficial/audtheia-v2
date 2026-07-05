@@ -5,6 +5,12 @@
 # package speculatively. Add it only when a module actually imports it, and
 # pin its version against the current PyPI release verified at build time
 # rather than asserting a fast-moving version number from memory.
+#
+# These are the desktop hub's runtime dependencies. Field-station-only packages
+# (the accelerator runtime, the camera stack, the acoustic model libraries) are
+# installed on the Raspberry Pi by the Pi setup path, not from this file, so the
+# desktop install stays small and the two device roles do not drag in each
+# other's hardware libraries.
 # ============================================================================
 
 # The storage layer (schema.sql, database.py) uses only Python's built-in
@@ -27,18 +33,37 @@ fpdf2==2.8.7
 fastapi==0.139.0
 uvicorn==0.50.0
 
+# analysis/verify.py: desktop RF-DETR verification through ONNX Runtime. The
+# verifier is injected, so verify.py itself imports nothing here; this is the
+# runtime the desktop adapter loads to score the ONNX model. The wheel ships for
+# Windows (amd64) and Linux aarch64 (Raspberry Pi OS Bookworm 64-bit), so one
+# pin covers both roles a desktop hub can run on. Its wheels require Python 3.11
+# or newer, which the setup bootstrap checks before installing.
+onnxruntime==1.27.0
+
+# analysis/dream.py: the desktop-only generative model, run through llama.cpp.
+# This project publishes no prebuilt wheels on PyPI, so a plain install compiles
+# it from source and needs a C++ toolchain. The setup bootstrap installs this
+# pin from the maintainer's prebuilt CPU wheel index instead, and treats a
+# failure as non-fatal so the rest of the desktop still installs and runs; the
+# longitudinal pass simply waits until the model runtime is present. On the
+# Raspberry Pi its aarch64 wheel comes from the system's own wheel index.
+llama-cpp-python==0.3.32
+
+# scripts/fetch-species-data: the per-species occurrence and conservation fetch
+# talks to the GBIF and IUCN web APIs over HTTPS under the operator's own
+# credentials. Pure Python wheel, identical on both platforms.
+requests==2.34.2
+
 # Test-only: the local request test drives the app through fastapi's TestClient,
 # which uses httpx. Not needed to run the server, only to exercise it in tests.
 # httpx==0.28.1
 
 # --- Anticipated, not yet pinned (added when the module that imports them is built) ---
 # monitor.py         : hailo-platform / HailoRT Python bindings (Raspberry Pi only); supervision (ByteTrack)
-# acoustic.py        : birdnetlib or BirdNET-Analyzer; sounddevice or PyAudio
+# acoustic.py        : tensorflow or tflite-runtime (BirdNET / SurfPerch, Raspberry Pi only); sounddevice or PyAudio
 # environment.py     : pyserial / gpsd-py3 (GPS); sensor-specific drivers
 # observation.py     : none expected; the field quality-control engine is deterministic, with no LLM or VLM
-# verify.py          : onnxruntime (RF-DETR verification, desktop)
-# dream.py           : llama-cpp-python (desktop-only LLM)
-# fetch-species-data : requests (GBIF and IUCN APIs)
 
 # Each addition is version-pinned against a live PyPI check, with a short
 # comment noting any platform constraint (Windows versus Raspberry Pi OS

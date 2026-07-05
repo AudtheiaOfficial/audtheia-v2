@@ -1,0 +1,66 @@
+{
+  "manifest_version": "1.0.0",
+  "description": "Download sources for the base models and the taxonomic backbone that the desktop setup fetches. Kept out of settings.json so that no internet address ever travels to an offline field station, and so every download can be checked against a size and, when available, a checksum. Setup reads this file; nothing at runtime does. An entry whose url is empty is a known model with no public download: setup reports where to place the file by hand and continues, so a clean install never fails on a model it cannot fetch. Each destination is a path relative to the repository root, matching where the configuration expects the file. A sha256 of null means the checksum is not yet recorded, in which case setup verifies the download by size when a size is given and otherwise trusts a completed transfer; fill in a sha256 to make the check exact.",
+  "models": {
+    "llm": {
+      "role": "desktop",
+      "tier": "essential",
+      "kind": "file",
+      "destination": "models/llm/Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+      "url": "https://huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF/resolve/main/Qwen2.5-3B-Instruct-Q4_K_M.gguf",
+      "sha256": null,
+      "size_bytes": null,
+      "license": "Qwen Research License",
+      "citation": "Qwen Team, Qwen2.5 Technical Report, 2024; GGUF conversion by bartowski",
+      "note": "Roughly three billion parameters at a four-bit quantization, a good default that fits an eight gigabyte machine and runs through llama.cpp on the desktop. The Qwen Research License permits research and non-commercial use; for a fully permissive alternative of similar size, replace this entry's url and destination with Phi-3.5-mini-instruct (MIT) at https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf and set desktop_models.llm.path in settings.json to the matching file."
+    },
+    "visual_rfdetr": {
+      "role": "desktop",
+      "tier": "essential",
+      "kind": "file",
+      "destination": "models/visual/desktop/porifera_rfdetr.onnx",
+      "url": "",
+      "sha256": null,
+      "size_bytes": null,
+      "license": null,
+      "citation": null,
+      "note": "The high-accuracy desktop verification model, the marine-sponge classifier carried forward from the earlier platform, exported to ONNX. It is not fetched automatically because it is served through an authenticated model platform rather than a public direct download. Export it once to ONNX and either host it at a stable URL and set that url here, or drop the file at the destination path by hand. Setup will report it as pending and continue without error."
+    },
+    "gbif_backbone": {
+      "role": "desktop",
+      "tier": "essential",
+      "kind": "gzip",
+      "destination": "audtheia/resources/gbif_backbone/simple.txt",
+      "url": "https://hosted-datasets.gbif.org/datasets/backbone/current/simple.txt.gz",
+      "sha256": null,
+      "size_bytes": null,
+      "license": "CC BY 4.0",
+      "citation": "GBIF Secretariat: GBIF Backbone Taxonomy. https://doi.org/10.15468/39omei",
+      "note": "The GBIF taxonomic backbone, the simple tab-delimited export, which carries the usage key, scientific name, rank, taxonomic status, and the higher classification that a name-to-key resolver needs. The compressed download is large (on the order of several hundred megabytes) and is decompressed in place to the destination. This is the one taxonomic dataset the desktop keeps locally so the system resolves names with no internet at runtime."
+    },
+    "acoustic_birdnet": {
+      "role": "pi",
+      "tier": "full",
+      "kind": "file",
+      "destination": "models/acoustic/birdnet/BirdNET_GLOBAL_6K.tflite",
+      "url": "",
+      "sha256": null,
+      "size_bytes": null,
+      "license": "CC BY-NC-SA 4.0",
+      "citation": "Kahl et al., BirdNET, Ecological Informatics, 2021",
+      "note": "The default terrestrial and avian acoustic model, a TFLite file that runs on the field station's CPU. Staged on the desktop only so the Pi setup can push it to an offline station over the local network; the desktop itself does not run it. Fetched only in full mode. Set a url to a stable download, or place the file by hand; setup reports it as pending otherwise."
+    },
+    "acoustic_surfperch": {
+      "role": "pi",
+      "tier": "full",
+      "kind": "file",
+      "destination": "models/acoustic/marine/surfperch",
+      "url": "",
+      "sha256": null,
+      "size_bytes": null,
+      "license": "Apache-2.0",
+      "citation": "Williams et al., SurfPerch, a reef-adapted bioacoustic model, Google Research, 2024",
+      "note": "The default marine passive-acoustic model, a TensorFlow SavedModel directory read through its reef head at five-second windows and thirty-two kilohertz. Staged on the desktop only for the Pi to receive; the desktop does not run it. Fetched only in full mode. Because it ships as a SavedModel directory rather than one file, record its exact packaging and url before enabling automatic fetch; until then setup reports it as pending, and its settings.json marine path stays unset so a marine station wires it deliberately once the file is in place."
+    }
+  }
+}
