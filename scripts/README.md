@@ -1,25 +1,34 @@
 # scripts
 
-Setup and launch scripts.
+Setup, provisioning, and launch scripts.
 
 | File | Runs on | Role |
 |------|---------|------|
-| setup.sh | Desktop hub (Linux, macOS, Raspberry Pi OS) | Thin wrapper that runs the setup bootstrap. |
-| setup.bat | Desktop hub (Windows) | Thin wrapper that runs the setup bootstrap. |
-| bootstrap_setup.py | Desktop hub | The setup itself: an isolated environment, the pinned dependencies, the database, the credentials file, and the base models. Standard library only, so it runs on a brand-new machine. |
-| setup-pi.sh | Pushed to the field station | Configures a Raspberry Pi field station remotely over SSH from the desktop application. |
+| setup.sh | Desktop hub (Linux, macOS, Raspberry Pi OS) | Thin wrapper that runs the desktop setup bootstrap. |
+| setup.bat | Desktop hub (Windows) | Thin wrapper that runs the desktop setup bootstrap. |
+| bootstrap_setup.py | Desktop hub | The desktop setup: an isolated environment, the pinned dependencies, the database, the credentials file, and the base models. Standard library only. |
+| connect-pi.sh | Desktop hub (Linux, macOS, Raspberry Pi OS) | Thin wrapper that runs the field-station provisioning orchestrator. |
+| connect-pi.bat | Desktop hub (Windows) | Thin wrapper that runs the field-station provisioning orchestrator. |
+| bootstrap_setup_pi.py | Desktop hub | Provisions a Raspberry Pi field station over SSH: sends the code, the station's configuration and models, and runs the Pi-side setup. Standard library only. |
+| setup-pi.sh | Raspberry Pi field station | Sent to the Pi and run there: unpacks the code, creates the environment, initializes the store, configures the hotspot, and installs the boot service. |
 | fetch-species-data.sh | Desktop hub | Fetches the per-species occurrence and conservation data under your own credentials, with a documented path to refresh it later. |
 | start.sh | Desktop hub | A one-command launcher, with a system-tray launcher for Windows, macOS, and Linux. |
 
-Run setup once on a fresh machine:
+Set up the desktop once on a fresh machine:
 
 ```
 ./setup.sh          # Linux, macOS, Raspberry Pi OS
 setup.bat           # Windows
 ```
 
-Useful options, forwarded to the bootstrap: `--full` also downloads the
-field-station models the desktop stages for a Pi, `--skip-models` sets up the
-environment and database without downloading models, `--deps-only` installs just
-the dependencies, and `--models-only` fetches models into an existing setup. The
-download sources live in `config/model_sources.json`.
+Then stand up a field station. Flash a Raspberry Pi with Raspberry Pi OS using
+Raspberry Pi Imager, with SSH and Wi-Fi enabled, and boot it on the same network.
+Then, from the desktop:
+
+```
+./connect-pi.sh --station-id <id> --host <pi-address> --user <pi-user>
+connect-pi.bat --station-id <id> --host <pi-address> --user <pi-user>
+```
+
+Add `--dry-run` to preview every action without contacting a Pi. The desktop
+setup download sources live in `config/model_sources.json`.
