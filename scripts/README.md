@@ -14,7 +14,10 @@ Setup, provisioning, and launch scripts.
 | fetch-species-data.sh | Desktop hub (Linux, macOS, Raspberry Pi OS) | Thin wrapper that runs the species reference fetch. |
 | fetch-species-data.bat | Desktop hub (Windows) | Thin wrapper that runs the species reference fetch. |
 | bootstrap_fetch_species.py | Desktop hub | Fetches each target species' GBIF taxonomy and occurrence count and its IUCN Red List status, once, and caches it locally for offline use. |
-| start.sh | Desktop hub | A one-command launcher, with a system-tray launcher for Windows, macOS, and Linux. |
+| start.sh | Desktop hub (Linux, macOS) | Thin wrapper that runs the launcher. |
+| start.command | Desktop hub (macOS) | Double-clickable launcher for Finder. |
+| start.bat | Desktop hub (Windows) | Double-clickable launcher. |
+| bootstrap_start.py | Desktop hub | Starts the application, waits until it answers, shows the local address, and offers to open the browser; an optional system-tray icon with Open and Quit is available. |
 
 Set up the desktop once on a fresh machine:
 
