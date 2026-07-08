@@ -1,0 +1,60 @@
+# ============================================================================
+# Audtheia V2 test and development dependencies
+#
+# Install this to bring a machine to a full, green test run in one step, with no
+# build toolchain and no special package index. Run the suite from the
+# repository root with the environment this creates:
+#
+#     .venv/bin/python tests/run_all.py            (macOS, Linux, Raspberry Pi OS)
+#     .venv\Scripts\python tests\run_all.py         (Windows)
+#
+# This lists exactly the libraries the checks import. It deliberately does not
+# pull in the full desktop runtime, because the suite injects stand-ins for the
+# two inference runtimes (the ONNX Runtime verifier and the llama.cpp generative
+# model), so it needs neither to run. Keeping them out means a plain
+# "pip install -r requirements-dev.txt" always succeeds: the generative runtime
+# has no ready-to-install package on the main index and would otherwise try to
+# build from source. The complete desktop runtime, including those two runtimes,
+# is installed by the setup bootstrap, which handles the generative runtime's
+# separate prebuilt-wheel index and treats its absence as non-fatal.
+#
+# Python 3.11 or newer, the same floor as the runtime. Every pin below was
+# verified against a live package index at build time, with a wheel present for
+# both Windows amd64 and Raspberry Pi OS aarch64 across Python 3.11 through 3.13.
+# ============================================================================
+
+# numpy: imported by the pipeline and analysis checks (the environment, acoustic,
+# and detection-loop checks) and by the field modules those checks exercise.
+# Pinned to the 2.4 series, the last that publishes wheels for Python 3.11, the
+# project's supported floor. The 2.5 series dropped Python 3.11. Wheels verified
+# for Windows amd64 and Raspberry Pi OS aarch64.
+numpy==2.4.6
+
+# The report and interface checks import these. fpdf2, fastapi, and uvicorn also
+# appear in requirements.txt as runtime pins; the versions here mirror those and
+# move together with them. All three are pure-Python wheels, identical on both
+# platforms.
+fpdf2==2.8.7
+fastapi==0.139.0
+uvicorn==0.50.0
+
+# httpx: the interface checks drive the application through FastAPI's TestClient,
+# which is built on httpx. Pure-Python wheel, identical on both platforms.
+httpx==0.28.1
+
+# supervision: the detection-loop check needs the ByteTrack tracker this package
+# provides. When it is absent that one check is reported skipped, not failed, so
+# a minimal machine still gets a clean pass on everything else. It is a pure
+# Python wheel, but it pulls numpy, opencv-python, scipy, and matplotlib as
+# dependencies, all of which ship aarch64 wheels for the Pi. On Windows the
+# optional detection-loop check imports matplotlib through this package, so a
+# machine without supervision skips that check rather than failing on the import.
+supervision==0.29.0
+
+# tzdata: Windows does not ship the IANA time-zone database, so the checks that
+# use a named zone (the report and interface time checks) need this package to
+# resolve a zone such as "America/New_York" on a clean Windows machine. The
+# product's default time zone setting "auto" never needs it; only a machine
+# configured with a named zone, or these tests, do. Pure data package, identical
+# on every platform.
+tzdata==2026.2

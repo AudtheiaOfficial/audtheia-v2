@@ -1,0 +1,56 @@
+# ============================================================================
+# Audtheia V2 field-station (Raspberry Pi) dependencies
+#
+# This manifest is installed together with a station's hardware drivers, not by
+# the base field setup. A bare station runs on the Python standard library
+# alone: the field runner reaches a running state with no third-party package,
+# and it imports the vision and acoustic modules only inside the branch that a
+# camera or audio driver has been installed. The libraries below are the
+# analysis libraries those modules need once such a driver is present.
+#
+# The hardware and operating-system driver stack itself is documented at the
+# foot of this file rather than pinned, because the concrete drivers module
+# chooses it for the specific hardware a station carries. That is the same
+# reason the desktop defers its inference runtimes: a manifest does not pin a
+# version for hardware it cannot see.
+#
+# Python 3.11 or newer. Raspberry Pi OS Bookworm 64-bit ships Python 3.11. These
+# are installed into the station's virtual environment, which is created with
+# access to the system site packages so the apt-provided accelerator and camera
+# packages stay importable. Every pin below was verified against a live package
+# index at build time, with an aarch64 wheel present.
+# ============================================================================
+
+# --- Field analysis libraries (installed with the vision and acoustic drivers) ---
+
+# numpy: the array maths the detection and acoustic modules use. Pinned to the
+# 2.4 series, the last that publishes wheels for Python 3.11, the project's
+# supported floor. The aarch64 wheel is verified for Raspberry Pi OS.
+numpy==2.4.6
+
+# supervision: the ByteTrack multi-object tracker that turns per-frame detections
+# into one track per animal, which the station records as one observation with
+# one identifier. It is a pure-Python wheel and pulls numpy, opencv-python,
+# scipy, and matplotlib, all of which ship aarch64 wheels for Raspberry Pi OS.
+supervision==0.29.0
+
+# --- Hardware and operating-system driver stack (installed with the concrete
+#     drivers module, not pinned here) ---
+#
+# These belong to a station's specific hardware and are installed alongside the
+# audtheia.pipeline.drivers module described in the hardware guide, not from this
+# file, so no version is pinned for hardware this manifest cannot see:
+#
+#   HailoRT and hailo-platform    the accelerator runtime and its Python
+#                                 bindings, from the Raspberry Pi apt archive as
+#                                 a system package.
+#   picamera2                     the camera stack, apt-provided and imported
+#                                 through the system site packages.
+#   tflite-runtime or tensorflow  the acoustic model runtime for BirdNET or the
+#                                 marine model.
+#   sounddevice or PyAudio        audio capture from a hydrophone or microphone.
+#   pyserial or gpsd-py3          the GPS receiver.
+#
+# When a driver is built, pin its packages here against a live check, with a note
+# on any aarch64 constraint, the same way the analysis libraries above are
+# pinned.

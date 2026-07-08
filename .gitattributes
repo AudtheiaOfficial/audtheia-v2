@@ -1,0 +1,29 @@
+# Audtheia V2 line-ending and binary policy.
+#
+# Shell scripts are pinned to LF because they are the one real cross-platform
+# risk in this project. The desktop archives the working tree and copies it to a
+# Raspberry Pi, where a script checked out with Windows line endings will not run
+# under the Pi's shell. Pinning these to LF keeps a station's setup and launch
+# scripts valid no matter what a contributor's core.autocrlf setting is. They are
+# already stored with LF, so declaring this changes no committed content.
+*.sh        text eol=lf
+*.command   text eol=lf
+
+# Windows batch files are launched only on Windows, where the command processor
+# reads them whatever their line endings, and they are never sent to a field
+# station, so they carry no cross-platform risk. They are left to a contributor's
+# own checkout settings rather than being renormalized here, which keeps this
+# change additive.
+
+# Never translate line endings inside binary artifacts, so a model, database, or
+# image that ever sits beside the code stays byte-for-byte intact. Version
+# control ignores these today; the rule is a safeguard for anything staged by
+# hand later, such as a tray or web icon.
+*.hef       binary
+*.onnx      binary
+*.gguf      binary
+*.tflite    binary
+*.db        binary
+*.png       binary
+*.jpg       binary
+*.ico       binary
