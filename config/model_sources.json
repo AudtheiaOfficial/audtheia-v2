@@ -26,6 +26,18 @@
       "citation": null,
       "note": "The high-accuracy desktop verification model, the marine-sponge classifier carried forward from the earlier platform, exported to ONNX. It is not fetched automatically because it is served through an authenticated model platform rather than a public direct download. Export it once to ONNX and either host it at a stable URL and set that url here, or drop the file at the destination path by hand. Setup will report it as pending and continue without error."
     },
+    "visual_desktop_demo": {
+      "role": "desktop",
+      "tier": "essential",
+      "kind": "file",
+      "destination": "models/visual/desktop/screen_demo.onnx",
+      "url": "",
+      "sha256": null,
+      "size_bytes": null,
+      "license": "Apache-2.0",
+      "citation": "RF-DETR, Roboflow, 2025",
+      "note": "The desktop hardware-free mode's screening detector: an RF-DETR model pretrained on the COCO object set, exported to ONNX. RF-DETR is Apache-2.0, so it ships as the desktop demo without affecting the project's MIT license. There is no single public ONNX download, so produce one with 'pip install rfdetr[onnx]' and then model.export(format=onnx) on a base or small COCO checkpoint, and either host the file at a stable url set here or place it at the destination path by hand. Setup reports it as pending and continues without error. This detector runs only in the desktop mode; a Raspberry Pi field station screens with a YOLO model compiled to the accelerator format instead."
+    },
     "gbif_backbone": {
       "role": "desktop",
       "tier": "essential",
