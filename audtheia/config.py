@@ -293,6 +293,23 @@ class Settings:
         """
         return dict(station.get("capture", {}).get("acoustic", {}))
 
+    def capture_source(self, station: dict) -> dict:
+        """The station's desktop capture source (video and optional audio).
+
+        Returned as a fresh dictionary. A station with no desktop source gets an
+        empty dictionary, which the desktop drivers read as no source configured,
+        so a field-only station is simply not run as a desktop capture.
+        """
+        return dict(station.get("capture", {}).get("source", {}))
+
+    def desktop_visual_model(self, station: dict) -> dict:
+        """The station's desktop screening-model entry (path, version, citation).
+
+        Returned as a fresh dictionary. A station with no desktop screening model
+        gets an empty dictionary.
+        """
+        return dict(station.get("models", {}).get("visual_desktop", {}))
+
     # -- node and stations ----------------------------------------------
 
     @property
@@ -774,6 +791,13 @@ def _validate_station(station: Any, index: int, seen_ids: set, seen_names: set) 
     acoustic = _require(models, "acoustic", f"{where}.models")
     _require(acoustic, "active", f"{where}.models.acoustic")
 
+    # Optional desktop screening model. A desktop node that runs capture without
+    # field hardware detects with this model through ONNX Runtime. When absent, a
+    # station has no desktop screening model, so a field-only station still loads.
+    visual_desktop = models.get("visual_desktop")
+    if visual_desktop is not None:
+        _require(visual_desktop, "path", f"{where}.models.visual_desktop")
+
     capture = _require(station, "capture", where)
     _validate_capture(capture, f"{where}.capture")
 
@@ -850,3 +874,16 @@ def _validate_capture(capture: Any, where: str) -> None:
             _require(acoustic, "silence_close_seconds", f"{where}.acoustic"),
             f"{where}.acoustic.silence_close_seconds",
         )
+
+    # Optional desktop capture source. When present, a desktop node can run this
+    # station's capture against an ordinary webcam, network stream, or video file
+    # instead of field hardware; its shape is checked so the desktop drivers can
+    # rely on it. When absent, a station has no desktop source and is simply not
+    # run on the desktop, so a field-only station file still loads unchanged.
+    source = capture.get("source")
+    if source is not None:
+        _require_type(source, (dict,), f"{where}.source")
+        _require_type(_require(source, "video", f"{where}.source"), (str,), f"{where}.source.video")
+        audio = source.get("audio")
+        if audio is not None:
+            _require_type(audio, (str,), f"{where}.source.audio")

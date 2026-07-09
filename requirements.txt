@@ -55,6 +55,20 @@ llama-cpp-python==0.3.32
 # credentials. Pure Python wheel, identical on both platforms.
 requests==2.34.2
 
+# --- Desktop capture (a station with no field hardware) ---
+# These let the desktop run the detection pipeline against an ordinary webcam, a
+# network stream, or a video file, with the screening model run through ONNX
+# Runtime, so the platform is usable with no Raspberry Pi present. The detection
+# loop imports numpy and Pillow directly, and the desktop capture drivers add
+# OpenCV for video; onnxruntime is already pinned above and doubles as the
+# desktop detector runtime. All three ship wheels for Windows amd64 and Raspberry
+# Pi OS aarch64, pinned to the same numpy the tests and the field tier use. The
+# headless OpenCV build carries no desktop-GUI libraries, which is correct for a
+# service that only reads frames.
+numpy==2.4.6
+pillow==12.3.0
+opencv-python-headless==5.0.0.93
+
 # Test-only: the local request test drives the app through fastapi's TestClient,
 # which uses httpx. Not needed to run the server, only to exercise it in tests.
 # httpx==0.28.1
