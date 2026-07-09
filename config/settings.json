@@ -320,6 +320,11 @@
           "version": null,
           "citation": null
         },
+        "visual_desktop": {
+          "path": "models/visual/desktop/screen_demo.onnx",
+          "version": null,
+          "citation": null
+        },
         "acoustic": {
           "active": "birdnet",
           "options": {
@@ -365,6 +370,10 @@
           "enabled": false,
           "metrics": [],
           "cadence_seconds": 60
+        },
+        "source": {
+          "video": "webcam:0",
+          "audio": null
         }
       }
     }
