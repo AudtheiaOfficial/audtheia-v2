@@ -69,6 +69,15 @@ numpy==2.4.6
 pillow==12.3.0
 opencv-python-headless==5.0.0.93
 
+# yt-dlp resolves a web-page video address (a YouTube or Pixcams live page, for
+# example) down to the direct stream address that OpenCV then reads, so a desktop
+# station can watch a public wildlife livestream with no field hardware. It is
+# used only for a source given as "stream:<page-address>"; a direct camera, file,
+# or stream URL never needs it. Pure Python, identical on both platforms. This is
+# the one dependency that benefits from periodic updates, since it tracks changes
+# on the sites it reads.
+yt-dlp==2026.7.4
+
 # Test-only: the local request test drives the app through fastapi's TestClient,
 # which uses httpx. Not needed to run the server, only to exercise it in tests.
 # httpx==0.28.1

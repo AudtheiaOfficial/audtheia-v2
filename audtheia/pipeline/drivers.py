@@ -139,6 +139,8 @@ def _parse_video_spec(spec: str) -> tuple:
     if lowered.startswith("webcam"):
         rest = s.split(":", 1)[1].strip() if ":" in s else ""
         return (int(rest) if rest.isdigit() else 0), True
+    if lowered.startswith("stream:"):
+        return s.split(":", 1)[1].strip(), True
     if lowered.startswith("url:"):
         return s.split(":", 1)[1].strip(), True
     if lowered.startswith("file:"):
@@ -148,6 +150,57 @@ def _parse_video_spec(spec: str) -> tuple:
     if lowered.startswith(("rtsp://", "http://", "https://", "udp://", "tcp://")):
         return s, True
     return s, False
+
+
+def _best_stream_url(info: dict) -> str:
+    """Pick a directly-readable video stream address from yt-dlp's page info.
+
+    yt-dlp returns either a single resolved address or a list of formats. A
+    format that carries video and has an address is preferred, choosing the
+    highest resolution, so the live feed OpenCV opens is the best one the page
+    offers rather than an audio-only or thumbnail track.
+    """
+    if not info:
+        raise CaptureError("the stream page returned no information to open")
+    if info.get("url"):
+        return info["url"]
+    formats = info.get("formats") or []
+    candidates = [f for f in formats if f.get("url") and f.get("vcodec") not in (None, "none")]
+    if not candidates:
+        raise CaptureError("the stream page offered no video stream to open")
+    candidates.sort(key=lambda f: (f.get("height") or 0, f.get("tbr") or 0), reverse=True)
+    return candidates[0]["url"]
+
+
+def _resolve_stream_url(page_url: str, *, ydl_factory=None) -> str:
+    """Resolve a web-page video address to a direct stream address via yt-dlp.
+
+    The extractor is created through a small factory so a test can supply its own
+    without reaching the network. When yt-dlp is not installed, a clear message
+    names it; when the page cannot be resolved, the reason is reported rather than
+    failing obscurely deep inside OpenCV.
+    """
+    if ydl_factory is None:
+        try:
+            from yt_dlp import YoutubeDL  # imported here so this module loads without yt-dlp
+        except Exception as exc:  # noqa: BLE001
+            raise CaptureDependencyError(
+                "yt-dlp is required to read a 'stream:' page address (for example a "
+                "YouTube or Pixcams live page), but it is not installed. Install yt-dlp, "
+                "or give a direct camera, file, or stream URL instead."
+            ) from exc
+
+        def ydl_factory():  # noqa: E306 - a tiny default factory
+            return YoutubeDL({"quiet": True, "skip_download": True, "noplaylist": True})
+
+    try:
+        with ydl_factory() as ydl:
+            info = ydl.extract_info(page_url, download=False)
+    except CaptureError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - any extractor failure is reported plainly
+        raise CaptureError(f"yt-dlp could not resolve a stream from {page_url!r}: {exc}") from exc
+    return _best_stream_url(info)
 
 
 class OpenCVFrameSource:
@@ -210,6 +263,10 @@ def build_frame_source(settings, station: dict) -> OpenCVFrameSource:
         )
 
     target, live = _parse_video_spec(video)
+    if video.strip().lower().startswith("stream:"):
+        # A page address (a YouTube or Pixcams live page) is not a media stream
+        # OpenCV can open; yt-dlp resolves it to the direct stream first.
+        target = _resolve_stream_url(target)
     cv2 = _import_cv2()
     capture = cv2.VideoCapture(target)
     if not capture.isOpened():

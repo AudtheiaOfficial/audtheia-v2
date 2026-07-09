@@ -39,6 +39,8 @@ from audtheia.pipeline.drivers import (
     OpenCVFrameSource,
     OnnxYoloDetector,
     _parse_video_spec,
+    _resolve_stream_url,
+    _best_stream_url,
 )
 
 
@@ -145,6 +147,46 @@ def test_parse_video_spec():
     assert _parse_video_spec("file:/data/clip.mp4") == ("/data/clip.mp4", False)
     assert _parse_video_spec("/data/clip.mp4") == ("/data/clip.mp4", False)
     assert _parse_video_spec("3") == (3, True)
+    assert _parse_video_spec("stream:https://youtu.be/2CP8QA_xKx4") == ("https://youtu.be/2CP8QA_xKx4", True)
+
+
+class _FakeYDL:
+    """A stand-in for yt-dlp's extractor, so stream resolution is tested without
+    reaching the network."""
+
+    def __init__(self, info):
+        self._info = info
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def extract_info(self, url, download=False):
+        return self._info
+
+
+def test_stream_resolution_and_best_url():
+    # A single resolved address is returned as is.
+    assert _best_stream_url({"url": "https://cdn.example/live.m3u8"}) == "https://cdn.example/live.m3u8"
+    # From a list of formats, the highest-resolution video stream is chosen and an
+    # audio-only track is ignored.
+    info = {
+        "formats": [
+            {"url": "low", "vcodec": "avc1", "height": 360},
+            {"url": "high", "vcodec": "avc1", "height": 1080},
+            {"url": "audio", "vcodec": "none", "height": None},
+        ]
+    }
+    assert _best_stream_url(info) == "high"
+    # End to end through an injected extractor: a page address resolves to a direct
+    # stream address that OpenCV would then open.
+    resolved = _resolve_stream_url(
+        "https://youtu.be/2CP8QA_xKx4",
+        ydl_factory=lambda: _FakeYDL({"url": "https://cdn.example/stream"}),
+    )
+    assert resolved == "https://cdn.example/stream"
 
 
 def test_frame_source_converts_bgr_and_ends():
@@ -260,6 +302,7 @@ def test_end_to_end_capture_to_qc():
 def main() -> int:
     checks = [
         test_parse_video_spec,
+        test_stream_resolution_and_best_url,
         test_frame_source_converts_bgr_and_ends,
         test_detector_decodes_one_box,
         test_end_to_end_capture_to_qc,
