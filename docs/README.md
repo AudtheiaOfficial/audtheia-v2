@@ -4,9 +4,7 @@ Project documentation for deploying and extending Audtheia.
 
 | File | Role |
 |------|------|
-| hardware.md | The full parts list including the hydrophone path, wiring diagrams, the solar and power duty-cycle budget method, and the camera anti-fouling plan. |
-| custom-models.md | How to train and prepare your own models: compiling a YOLO11 detector for the field accelerator, exporting an RF-DETR verifier, and training the acoustic models. |
+| hardware.md | The parts list including the hydrophone path, the reference builds, the solar and power duty-cycle budget method, and the camera anti-fouling plan. |
+| custom-models.md | How to train and prepare your own models: compiling a field detector to the accelerator, exporting the desktop RF-DETR verifier, and training the acoustic models. |
 | dream-pass.md | The longitudinal pattern-discovery pass explained for a research audience, including how candidate hypotheses are framed. |
-| field-deployment checklist | Mounting, power, biofouling mitigation, networking, first synchronization, and post-deployment data verification. |
-
-These documents are in progress.
+| field-deployment-checklist.md | The step-by-step checklist to stand up a real station and confirm it records trustworthy data: bench checks, power and autonomy, biofouling, network and hotspot, the first sync and cold-start dream pass, and post-deployment data verification. |
