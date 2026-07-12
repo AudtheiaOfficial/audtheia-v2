@@ -153,6 +153,74 @@ def run() -> None:
         skills = client.get("/api/brain/skills").json()
         check(len(skills) == 1 and skills[0]["tier"] == "deterministic_flag", "brain skills did not serve the skill")
 
+        # -- skills write arc: create, edit, delete, and validation -----
+        created = client.post("/api/brain/skills", json={
+            "title": "Note sponge near coral",
+            "trigger_condition": "a sponge is detected close to coral",
+            "instruction": "note potential competition for substrate",
+            "tier": "interpretive",
+        })
+        check(created.status_code == 201, "authoring a skill did not return created")
+        new_skill = created.json()
+        check(new_skill["tier"] == "interpretive" and new_skill["id"], "the authored skill came back malformed")
+        check(len(client.get("/api/brain/skills").json()) == 2, "the authored skill was not stored")
+
+        edited = client.put(f"/api/brain/skills/{new_skill['id']}", json={
+            "title": "Note sponge near coral",
+            "trigger_condition": "a sponge is detected within one metre of coral",
+            "instruction": "note potential competition for substrate",
+            "tier": "interpretive",
+        })
+        check(edited.status_code == 200 and "one metre" in edited.json()["trigger_condition"],
+              "editing a skill did not take")
+        check(edited.json()["created_at"] == new_skill["created_at"], "editing a skill changed its creation time")
+
+        # A bad type and a missing field are refused before anything is stored.
+        check(client.post("/api/brain/skills", json={
+            "title": "x", "trigger_condition": "y", "instruction": "z", "tier": "not_a_tier",
+        }).status_code == 422, "an invalid skill type was accepted")
+        check(client.post("/api/brain/skills", json={
+            "title": "", "trigger_condition": "y", "instruction": "z", "tier": "interpretive",
+        }).status_code == 422, "an empty skill title was accepted")
+        check(client.put("/api/brain/skills/none", json={
+            "title": "a", "trigger_condition": "b", "instruction": "c", "tier": "interpretive",
+        }).status_code == 404, "editing an unknown skill was not a 404")
+
+        deleted = client.delete(f"/api/brain/skills/{new_skill['id']}")
+        check(deleted.status_code == 200 and deleted.json()["status"] == "deleted", "deleting a skill did not take")
+        check(len(client.get("/api/brain/skills").json()) == 1, "the deleted skill was not removed")
+        check(client.delete("/api/brain/skills/none").status_code == 404, "deleting an unknown skill was not a 404")
+
+        # -- language model management: list, select, and guards --------
+        llm0 = client.get("/api/brain/llm").json()
+        check(all(k in llm0 for k in ("available", "active", "runtime_available", "directory")),
+              "the language model view was missing fields")
+
+        # Point the language model folder at a temp directory holding two models,
+        # so listing and selection act on something real.
+        llm_dir = tmp / "llm_models"
+        llm_dir.mkdir()
+        (llm_dir / "alpha.gguf").write_bytes(b"a")
+        (llm_dir / "beta.gguf").write_bytes(b"b")
+        settings.raw["desktop_models"]["llm"]["path"] = str(llm_dir)
+
+        listed = client.get("/api/brain/llm").json()
+        check([m["name"] for m in listed["available"]] == ["alpha.gguf", "beta.gguf"],
+              "installed models did not list in name order")
+        check(listed["active"] == "alpha.gguf", "the first model was not reported active")
+
+        chosen = client.post("/api/brain/llm/select", json={"name": "beta.gguf"})
+        check(chosen.status_code == 200 and chosen.json()["active"] == "beta.gguf", "selecting a model did not take")
+        check(settings.raw["desktop_models"]["llm"]["path"].endswith("beta.gguf"),
+              "the selected model was not written into the configuration")
+
+        check(client.post("/api/brain/llm/select", json={"name": ""}).status_code == 422,
+              "an empty model name was accepted")
+        check(client.post("/api/brain/llm/select", json={"name": "../escape.gguf"}).status_code == 400,
+              "a model path escaping the folder was accepted")
+        check(client.post("/api/brain/llm/select", json={"name": "missing.gguf"}).status_code == 404,
+              "an unknown model name was accepted")
+
         # -- dream status and controls ----------------------------------
         status = client.get("/api/dream/status").json()
         check(status["active"] and status["active"]["id"] == running_id, "running pass not reported active")

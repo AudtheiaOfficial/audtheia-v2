@@ -124,12 +124,14 @@ class DesktopStation:
         station = cls._resolve_station(settings, station_id)
         db = Database(settings.db_path(), **settings.database_kwargs())
         verifier = cls._build_verifier(settings)
+        interpreter, narrator = cls._build_llm_backends(settings)
         return cls(
             settings=settings,
             station=station,
             db=db,
             verifier=verifier,
-            interpreter=NullInterpreter(),
+            interpreter=interpreter,
+            narrator=narrator,
         )
 
     @staticmethod
@@ -159,6 +161,38 @@ class DesktopStation:
                 exc,
             )
             return NullVerifier()
+
+    @staticmethod
+    def _build_llm_backends(settings):
+        """Wire the desktop language model into an interpreter and a narrator.
+
+        One GGUF model is loaded once and shared, so verification interpretation
+        and dream narration do not each load their own copy. When the model is
+        absent, or its runtime is not installed, this degrades to an interpreter
+        that adds no points and no narrator, so the pipeline still runs and gains
+        interpretation and narration the moment a model is placed. The clustering
+        backend is left unset, so the dream pass simply contributes no novel
+        groupings until one is provided.
+        """
+        try:
+            from audtheia.inference.gguf_llm import (
+                load_completer,
+                build_interpreter,
+                build_narrator,
+            )
+
+            completer = load_completer(settings)
+        except Exception as exc:  # noqa: BLE001 - a missing model must not stop the desktop
+            logger.warning(
+                "the desktop language model is not available (%s); running without "
+                "interpretation and narration until a GGUF model is placed.",
+                exc,
+            )
+            return NullInterpreter(), None
+
+        interpreter = build_interpreter(settings, completer=completer)
+        narrator = build_narrator(settings, completer=completer)
+        return interpreter, narrator
 
     # -- composable stages -----------------------------------------------
 

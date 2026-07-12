@@ -44,6 +44,7 @@
     lastLight: "audtheia.theme.lastLight",
     panel: "audtheia.panel",
     subpanel: "audtheia.subpanel",
+    settingsGroup: "audtheia.settingsGroup",
     timezone: "audtheia.timezone",
     station: "audtheia.station"
   };
@@ -565,7 +566,9 @@
 
       host.appendChild(el("h3", { text: "Models" }));
       var deskModels = models.desktop_models || {};
-      var mkeys = Object.keys(deskModels);
+      // The language model has its own section below, so it is left out of this
+      // list to avoid showing it in two places.
+      var mkeys = Object.keys(deskModels).filter(function (k) { return k !== "llm"; });
       var mlist = el("div", { class: "kv-list" });
       if (mkeys.length) {
         mkeys.forEach(function (k) {
@@ -578,7 +581,11 @@
         mlist.appendChild(el("p", { class: "card-note", text: "No desktop models are declared in the configuration." }));
       }
       host.appendChild(mlist);
-      host.appendChild(deferredNote("Selecting or plugging in a model writes the configuration, which arrives with the settings write path."));
+
+      host.appendChild(el("h3", { text: "Language model" }));
+      var llmHost = el("div", { class: "llm-manager" });
+      host.appendChild(llmHost);
+      renderLlmManager(llmHost);
 
       host.appendChild(el("h3", { text: "Site memory" }));
       var baselines = memory.site_baselines || [];
@@ -598,6 +605,65 @@
     if (m.path) { bits.push(m.path); }
     if (m.citation) { bits.push(m.citation); }
     return bits.join(" · ") || JSON.stringify(m);
+  }
+
+  // The desktop language model that powers the dream pass and interpretation:
+  // what is installed, which one is active, and controls to select a model or
+  // learn how to drop a new one in. A model change applies on the next start.
+  function renderLlmManager(host) {
+    clear(host);
+    host.appendChild(el("p", { class: "card-note", text: "Loading language model." }));
+    apiGet("/brain/llm").then(function (info) {
+      clear(host);
+      host.appendChild(el("p", { class: "card-note", text:
+        (info.runtime_available
+          ? "The model runtime is installed. "
+          : "The model runtime (llama-cpp-python) is not installed yet, so the model cannot run until it is. ") +
+        (info.note || "") }));
+
+      var available = info.available || [];
+      if (!available.length) {
+        host.appendChild(el("p", { class: "card-note", text:
+          "No GGUF model is installed. Drop a .gguf file into " + info.directory + " and reload." }));
+        return;
+      }
+
+      var list = el("div", { class: "kv-list" });
+      available.forEach(function (m) {
+        var isActive = m.name === info.active;
+        list.appendChild(el("div", { class: "kv-row" }, [
+          el("span", { class: "kv-key" }, [
+            el("span", { text: m.name }),
+            isActive ? badge("active", "source") : null
+          ]),
+          el("span", { class: "kv-val" }, [
+            el("span", { class: "card-meta", text: fmtBytes(m.size_bytes) }),
+            isActive ? null : el("button", {
+              type: "button", class: "btn btn-small", text: "Use this model",
+              onclick: function () { selectLlm(host, m.name); }
+            })
+          ])
+        ]));
+      });
+      host.appendChild(list);
+      host.appendChild(el("p", { class: "form-hint", text:
+        "To add a model, drop a .gguf file into " + info.directory +
+        " and reload. Changing the model applies the next time the station starts." }));
+    }).catch(function (e) { setState(host, "card-note", "Could not load the language model: " + e.message); });
+  }
+
+  function selectLlm(host, name) {
+    apiSend("/brain/llm/select", "POST", { name: name }).then(function () {
+      renderLlmManager(host);
+    }).catch(function (e) { window.alert("Could not select the model: " + e.message); });
+  }
+
+  function fmtBytes(n) {
+    if (n === null || n === undefined) { return "size unknown"; }
+    var units = ["B", "KB", "MB", "GB"];
+    var v = Number(n), i = 0;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+    return v.toFixed(i ? 1 : 0) + " " + units[i];
   }
 
   // Build one profile card per taxon from the detection record: how many
@@ -716,7 +782,16 @@
     return wrap;
   }
 
-  // Brain, Skills: the reusable rules, filterable by tier.
+  // Brain, Skills: user-authored rules, filterable by tier, with create and edit.
+  // Skills are always written by a person here; nothing on this panel generates
+  // one. Each skill carries a type that decides which tier evaluates it, which is
+  // what keeps a measured flag and an interpretive note on their proper sides.
+  //
+  // The Brain panel refreshes on a timer for its live parts. This flag tells that
+  // refresh to leave an open create or edit form alone, so typing is never wiped
+  // out by a background reload.
+  var skillFormOpen = false;
+
   function loadBrainSkills() {
     var host = region("brain-skills");
     var filters = region("brain-skills-filters");
@@ -727,28 +802,107 @@
       });
       sel.addEventListener("change", function () { renderSkills(host, sel.value); });
       filters.appendChild(el("label", { class: "filter-field" }, [el("span", { text: "Tier" }), sel]));
-      filters.appendChild(deferredNote("Creating and editing skills writes stored rules, which arrives with the skills write path."));
+      filters.appendChild(el("button", {
+        type: "button", class: "btn btn-primary", text: "New skill",
+        onclick: function () { showSkillForm(host, sel.value, null); }
+      }));
     }
-    renderSkills(host, "");
+    // A background refresh must not close a form the person is filling in.
+    if (!skillFormOpen) { renderSkills(host, ""); }
   }
 
   function renderSkills(host, tier) {
+    // Showing the list means no form is open, so the background refresh may
+    // repaint the panel again.
+    skillFormOpen = false;
     clear(host);
     host.appendChild(el("p", { class: "empty-state", text: "Loading skills." }));
     apiGet("/brain/skills" + query({ tier: tier })).then(function (skills) {
       clear(host);
-      if (!skills.length) { setState(host, "empty-state", "No skills defined yet."); return; }
+      if (!skills.length) { setState(host, "empty-state", "No skills defined yet. Use New skill to author one."); return; }
       var grid = el("div", { class: "card-grid" });
       skills.forEach(function (s) {
         grid.appendChild(el("article", { class: "card" }, [
           el("div", { class: "badge-row" }, [badge(s.tier === "interpretive" ? "desktop" : "field", "source"), badge(s.tier, "status")]),
           el("div", { class: "card-title", text: s.title }),
           el("div", { class: "card-stats", text: "When: " + s.trigger_condition }),
-          el("div", { class: "card-stats", text: "Do: " + s.instruction })
+          el("div", { class: "card-stats", text: "Do: " + s.instruction }),
+          el("div", { class: "card-actions" }, [
+            el("button", { type: "button", class: "btn btn-small", text: "Edit", onclick: function () { showSkillForm(host, tier, s); } }),
+            el("button", { type: "button", class: "btn btn-small", text: "Delete", onclick: function () { deleteSkill(host, tier, s); } })
+          ])
         ]));
       });
       host.appendChild(grid);
     }).catch(function (e) { setState(host, "empty-state", "Could not load skills: " + e.message); });
+  }
+
+  // The create and edit form. With no existing skill it authors a new one;
+  // given one it edits it in place, keeping the skill's identity.
+  function showSkillForm(host, tier, existing) {
+    // Mark a form as open so the background refresh does not repaint over it.
+    skillFormOpen = true;
+    clear(host);
+    var isEdit = !!existing;
+
+    function field(labelText, control) {
+      return el("label", { class: "form-field" }, [el("span", { class: "form-label", text: labelText }), control]);
+    }
+
+    var titleInput = el("input", { type: "text", class: "form-input", maxLength: 200, value: existing ? existing.title : "" });
+    var triggerInput = el("textarea", { class: "form-input", rows: 2 });
+    triggerInput.value = existing ? existing.trigger_condition : "";
+    var instructionInput = el("textarea", { class: "form-input", rows: 3 });
+    instructionInput.value = existing ? existing.instruction : "";
+
+    var tierSelect = el("select", { class: "form-input", "aria-label": "Skill type" });
+    [["deterministic_flag", "Field, deterministic flag (runs on the station)"],
+     ["interpretive", "Desktop, interpretive (runs on the desktop)"]].forEach(function (o) {
+      var opt = el("option", { value: o[0], text: o[1] });
+      if (existing && existing.tier === o[0]) { opt.selected = true; }
+      tierSelect.appendChild(opt);
+    });
+
+    var message = el("p", { class: "form-message" });
+    var save = el("button", { type: "button", class: "btn btn-primary", text: isEdit ? "Save changes" : "Create skill" });
+    save.addEventListener("click", function () {
+      var body = {
+        title: titleInput.value.trim(),
+        trigger_condition: triggerInput.value.trim(),
+        instruction: instructionInput.value.trim(),
+        tier: tierSelect.value
+      };
+      if (!body.title || !body.trigger_condition || !body.instruction) {
+        message.textContent = "Title, trigger, and instruction are all required.";
+        return;
+      }
+      save.disabled = true;
+      message.textContent = "Saving.";
+      var req = isEdit
+        ? apiSend("/brain/skills/" + encodeURIComponent(existing.id), "PUT", body)
+        : apiSend("/brain/skills", "POST", body);
+      req.then(function () { renderSkills(host, tier); })
+         .catch(function (e) { save.disabled = false; message.textContent = "Could not save: " + e.message; });
+    });
+    var cancel = el("button", { type: "button", class: "btn", text: "Cancel", onclick: function () { renderSkills(host, tier); } });
+
+    host.appendChild(el("div", { class: "skill-form card" }, [
+      el("div", { class: "card-title", text: isEdit ? "Edit skill" : "New skill" }),
+      field("Title", titleInput),
+      field("When to use (trigger)", triggerInput),
+      field("How to apply (instruction)", instructionInput),
+      field("Type", tierSelect),
+      el("p", { class: "form-hint", text: "A deterministic flag is a pure function of a measured value and runs on the station. An interpretive skill reasons on the desktop, and its output is recorded as labeled inference." }),
+      message,
+      el("div", { class: "form-actions" }, [save, cancel])
+    ]));
+  }
+
+  function deleteSkill(host, tier, s) {
+    if (!window.confirm('Delete the skill "' + s.title + '"?')) { return; }
+    apiSend("/brain/skills/" + encodeURIComponent(s.id), "DELETE").then(function () {
+      renderSkills(host, tier);
+    }).catch(function (e) { setState(host, "empty-state", "Could not delete: " + e.message); });
   }
 
   // Reports: existing bundles, and a form that asks the backend to produce a
@@ -821,9 +975,49 @@
     "settings-storage": "Buffer limits and how the field buffer is kept."
   };
 
+  // Settings subjects shown one at a time through a tab bar, so the page stays
+  // short: the person picks a subject and sees only that subject. The tabs are
+  // built from the subject sections already in the page, so adding or removing a
+  // section needs no change here.
+  var settingsTabs = [];
+
+  function buildSettingsSubnav() {
+    var nav = region("settings-subnav");
+    if (!nav) { return; }
+    clear(nav);
+    settingsTabs = [];
+    var groupsContainer = $(".settings-groups");
+    if (groupsContainer) { groupsContainer.classList.add("tabbed"); }
+
+    $all(".settings-group").forEach(function (group) {
+      var heading = $("h3", group);
+      var label = heading ? heading.textContent : "Settings";
+      var key = group.getAttribute("aria-labelledby") || label;
+      var btn = el("button", { type: "button", class: "subnav-item", text: label });
+      btn.addEventListener("click", function () { showSettingsGroup(key); });
+      nav.appendChild(btn);
+      settingsTabs.push({ key: key, group: group, btn: btn });
+    });
+
+    var saved = store(STORE.settingsGroup);
+    var hasSaved = settingsTabs.some(function (t) { return t.key === saved; });
+    showSettingsGroup(hasSaved ? saved : (settingsTabs[0] && settingsTabs[0].key));
+  }
+
+  function showSettingsGroup(key) {
+    settingsTabs.forEach(function (t) {
+      var active = t.key === key;
+      t.group.hidden = !active;
+      if (active) { t.btn.setAttribute("aria-current", "page"); }
+      else { t.btn.removeAttribute("aria-current"); }
+    });
+    if (key) { store(STORE.settingsGroup, key); }
+  }
+
   // Settings: an appearance chooser and a display timezone that persist in the
   // browser, plus a friendly, labeled view of the current configuration.
   loaders.settings = function () {
+    buildSettingsSubnav();
     renderAppearance();
     renderTimezone();
     apiGet("/settings").then(function (s) {
@@ -892,12 +1086,20 @@
     if (value === null || value === undefined) { container.appendChild(el("p", { class: "card-note", text: "Not set." })); return; }
     if (Array.isArray(value)) {
       if (!value.length) { container.appendChild(el("p", { class: "card-note", text: "None." })); return; }
+      // Each entry (a station, a channel) becomes a uniform, rounded card that is
+      // collapsed by default, and the cards tile several across, so a long list
+      // of stations or channels reads as a short, scannable row rather than a
+      // wall of nested fields. Native details elements handle open and close, so
+      // nothing here can leave a card half-open.
+      var grid = el("div", { class: "config-grid" });
       value.forEach(function (item, i) {
-        var title = (item && (item.station_name || item.name)) || ("Item " + (i + 1));
-        var sub = el("div", { class: "subgroup" }, [el("h4", { text: title })]);
-        appendFields(sub, item);
-        container.appendChild(sub);
+        var title = (item && (item.station_name || item.name || item.id)) || ("Item " + (i + 1));
+        var card = el("details", { class: "config-card" }, [el("summary", { text: title })]);
+        if (item !== null && typeof item === "object") { appendFields(card, item); }
+        else { card.appendChild(fieldRow("Value", item)); }
+        grid.appendChild(card);
       });
+      container.appendChild(grid);
       return;
     }
     if (typeof value === "object") {

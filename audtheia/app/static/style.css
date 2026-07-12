@@ -496,6 +496,50 @@ a:hover {
   min-height: 40px;
 }
 
+/* When the settings subjects are shown one at a time through the tab bar, the
+   active subject uses the full width instead of sitting in a multi-column grid. */
+.settings-groups.tabbed {
+  display: block;
+}
+
+.settings-groups.tabbed .settings-group {
+  max-width: none;
+}
+
+/* Uniform, rounded, collapsible cards for list-style configuration such as the
+   stations and their channels. Each card is collapsed by default and the cards
+   tile several across, so a long list reads as a short, scannable row rather than
+   a wall of nested fields. */
+.config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: var(--space-3);
+  margin: var(--space-2) 0 var(--space-3);
+}
+
+.config-card {
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  padding: var(--space-2) var(--space-3);
+}
+
+.config-card > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-2);
+  list-style: none;
+}
+
+.config-card > summary::-webkit-details-marker {
+  display: none;
+}
+
+.config-card[open] > summary {
+  margin-bottom: var(--space-2);
+  color: var(--text);
+}
+
 /* ======================================================================
    5. Responsive behavior
    On narrow widths the sidebar collapses to icons, then the labels and brand
@@ -986,6 +1030,82 @@ input:hover {
   align-self: center;
   color: var(--text-muted);
   font-size: var(--text-sm);
+}
+
+/* The authored-skill form and the per-card actions. The inputs reuse the same
+   surface, border, and radius tokens as the filters, so a form matches every
+   theme without a palette of its own. */
+textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface-2);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+textarea:hover {
+  border-color: var(--accent);
+}
+
+.skill-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 640px;
+}
+
+.form-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.form-label {
+  font-size: var(--text-sm);
+  color: var(--text-2);
+}
+
+.form-input {
+  width: 100%;
+}
+
+.form-hint {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.form-message {
+  min-height: 1.2em;
+  font-size: var(--text-sm);
+  color: var(--text-2);
+}
+
+.form-actions {
+  display: flex;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.card-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.btn-small {
+  padding: 5px 10px;
+  font-size: var(--text-sm);
+}
+
+/* The language-model rows align their name, badge, size, and action inline so a
+   model list reads as a tidy table within the Models and Memory panel. */
+.llm-manager .kv-key,
+.llm-manager .kv-val {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .kv-list {

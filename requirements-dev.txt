@@ -38,9 +38,15 @@ fpdf2==2.8.7
 fastapi==0.139.0
 uvicorn==0.50.0
 
-# httpx: the interface checks drive the application through FastAPI's TestClient,
-# which is built on httpx. Pure-Python wheel, identical on both platforms.
+# httpx and httpx2: the interface checks drive the application through FastAPI's
+# TestClient. The pinned starlette that FastAPI serves through uses the httpx2
+# client, and httpx is kept alongside it for the other checks. Both are
+# pure-Python wheels, identical on both platforms. starlette is pinned to the
+# exact version this release is tested against, so a fresh install reproduces the
+# same working set instead of drifting to a newer one with a different client.
+starlette==1.3.1
 httpx==0.28.1
+httpx2==2.5.0
 
 # supervision: the detection-loop check needs the ByteTrack tracker this package
 # provides. When it is absent that one check is reported skipped, not failed, so

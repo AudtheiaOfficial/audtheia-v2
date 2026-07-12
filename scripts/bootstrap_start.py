@@ -55,6 +55,15 @@ LOGO_CANDIDATES = (
 # when a person asks for the tray, never as part of the ordinary install.
 TRAY_PACKAGES = ("pystray>=0.19", "Pillow>=10")
 
+# The optional package that draws the desktop app window. It wraps the operating
+# system's own web view, so it needs no browser tab. Like the tray, it is
+# installed only when a person asks for the window, never as part of the ordinary
+# install, and the daily launch never depends on it. It is installed into the
+# same environment that runs the server, which is also where the window runs, so
+# a fresh install is usable at once with no second launch.
+WINDOW_PACKAGE = "pywebview>=5"
+WINDOW_MODULE = "audtheia.app.window"
+
 # How long to wait for the backend to start answering before giving up.
 STARTUP_TIMEOUT_SECONDS = 30
 
@@ -221,6 +230,64 @@ def run_with_tray(interpreter: Path, url: str, proc) -> None:
 
 
 # ---------------------------------------------------------------------------
+# The optional desktop app window.
+# ---------------------------------------------------------------------------
+
+
+def _window_available(interpreter: Path) -> bool:
+    """Whether the environment can open a desktop window.
+
+    The window runs in the environment that has the app's packages, so
+    availability is checked by asking that environment's interpreter to import the
+    window package, not this launcher's own interpreter.
+    """
+    try:
+        subprocess.run(
+            [str(interpreter), "-c", "import webview"],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    except Exception:  # noqa: BLE001 - any failure means the window is unavailable
+        return False
+
+
+def install_window(interpreter: Path) -> bool:
+    """Install the window package into the environment. Returns success."""
+    _info("Installing the app-window package: " + WINDOW_PACKAGE)
+    try:
+        subprocess.run(
+            [str(interpreter), "-m", "pip", "install", WINDOW_PACKAGE],
+            check=True,
+        )
+        return True
+    except subprocess.CalledProcessError:
+        _info("the app-window package could not be installed; continuing in the browser.")
+        return False
+
+
+def run_with_window(interpreter: Path, url: str, proc) -> None:
+    """Open the interface in a desktop window, then stop the server when it closes.
+
+    The window is a separate process run by the environment's interpreter, so it
+    has the app's packages and owns its own main thread, which is where a desktop
+    web view must run. When the person closes the window that process ends, and
+    the server is stopped so nothing is left running.
+    """
+    window = subprocess.Popen(
+        [str(interpreter), "-m", WINDOW_MODULE, url],
+        cwd=str(REPO_ROOT),
+    )
+    try:
+        window.wait()
+    except KeyboardInterrupt:
+        _stop_process(window)
+    finally:
+        _stop_process(proc)
+
+
+# ---------------------------------------------------------------------------
 # Shutdown.
 # ---------------------------------------------------------------------------
 
@@ -274,6 +341,21 @@ def launch(args) -> int:
             "make sure setup completed and the database was initialized."
         )
 
+    want_window = args.window or args.install_window
+    if want_window:
+        if not _window_available(interpreter):
+            print("")
+            _info("The app window needs one extra package that is not installed yet.")
+            _info("With it, Audtheia opens in its own desktop window instead of a browser tab.")
+            if args.install_window or _ask_yes_no("    Install it now?", default=True):
+                install_window(interpreter)
+        if _window_available(interpreter):
+            offer_browser(url, mode="none")
+            _info("Opening Audtheia in a desktop window. Close the window to stop it.")
+            run_with_window(interpreter, url, proc)
+            return 0
+        _info("Continuing in the browser.")
+
     if want_tray and _tray_available():
         offer_browser(url, mode="none")
         _info("Audtheia is in the system tray. Use its icon to open or quit.")
@@ -296,6 +378,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="start",
         description="Start the Audtheia desktop application and open the interface.",
+    )
+    parser.add_argument("--window", action="store_true", help="Open Audtheia in a desktop app window when available.")
+    parser.add_argument(
+        "--install-window", action="store_true",
+        help="Install the optional app-window package, then open the window.",
     )
     parser.add_argument("--tray", action="store_true", help="Run with a system-tray icon when available.")
     parser.add_argument(

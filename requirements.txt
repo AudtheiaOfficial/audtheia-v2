@@ -33,6 +33,13 @@ fpdf2==2.8.7
 fastapi==0.139.0
 uvicorn==0.50.0
 
+# starlette is the framework FastAPI serves through. FastAPI accepts a range of
+# starlette versions, so it is pinned here to the exact version this release is
+# built and tested against, which keeps a fresh install reproducible instead of
+# letting it drift to a newer starlette that expects a different HTTP client.
+# Pure Python wheel, identical on both platforms.
+starlette==1.3.1
+
 # analysis/verify.py: desktop RF-DETR verification through ONNX Runtime. The
 # verifier is injected, so verify.py itself imports nothing here; this is the
 # runtime the desktop adapter loads to score the ONNX model. The wheel ships for
@@ -55,19 +62,35 @@ llama-cpp-python==0.3.32
 # credentials. Pure Python wheel, identical on both platforms.
 requests==2.34.2
 
-# --- Desktop capture (a station with no field hardware) ---
-# These let the desktop run the detection pipeline against an ordinary webcam, a
-# network stream, or a video file, with the screening model run through ONNX
-# Runtime, so the platform is usable with no Raspberry Pi present. The detection
-# loop imports numpy and Pillow directly, and the desktop capture drivers add
-# OpenCV for video; onnxruntime is already pinned above and doubles as the
-# desktop detector runtime. All three ship wheels for Windows amd64 and Raspberry
-# Pi OS aarch64, pinned to the same numpy the tests and the field tier use. The
-# headless OpenCV build carries no desktop-GUI libraries, which is correct for a
-# service that only reads frames.
+# --- Desktop capture and tracking (a station with no field hardware) ---
+# These let the desktop run the full detection pipeline against an ordinary
+# webcam, a network stream, or a video file, with the screening model run through
+# ONNX Runtime, so the platform is usable with no Raspberry Pi present. The
+# detection loop imports numpy and Pillow directly, the desktop capture drivers
+# add OpenCV for video, and supervision provides the ByteTrack tracker that turns
+# per-frame detections into one track per animal. onnxruntime is already pinned
+# above and doubles as the desktop detector runtime. These ship wheels for Windows
+# amd64 and Raspberry Pi OS aarch64, pinned to the same numpy the tests and the
+# field tier use.
+#
+# OpenCV is the full build rather than the headless one because supervision
+# requires the full opencv-python distribution; using it here keeps a single,
+# consistent OpenCV on the desktop instead of two builds that would clash. On a
+# desktop with no graphical environment the full build wants the system OpenGL
+# library (libGL), which a personal computer with a display already has.
 numpy==2.4.6
 pillow==12.3.0
-opencv-python-headless==5.0.0.93
+opencv-python==5.0.0.93
+
+# supervision: the ByteTrack multi-object tracker the detection loop uses to
+# aggregate per-frame detections into one event per animal, so the desktop
+# hardware-free capture path tracks exactly as a field station does. It is a
+# pure-Python wheel that pulls matplotlib, scipy, and opencv-python as
+# dependencies, all of which ship wheels for Windows amd64 and Raspberry Pi OS
+# aarch64. Note for Windows: some antivirus tools raise a heuristic false positive
+# on one compiled matplotlib file (ft2font); it is a known false alarm on a
+# legitimate library, and the setup notes explain how to allow it.
+supervision==0.29.0
 
 # yt-dlp resolves a web-page video address (a YouTube or Pixcams live page, for
 # example) down to the direct stream address that OpenCV then reads, so a desktop
@@ -78,12 +101,22 @@ opencv-python-headless==5.0.0.93
 # on the sites it reads.
 yt-dlp==2026.7.4
 
-# Test-only: the local request test drives the app through fastapi's TestClient,
-# which uses httpx. Not needed to run the server, only to exercise it in tests.
-# httpx==0.28.1
+# tzdata: Windows does not ship the IANA time-zone database, so a station whose
+# display time zone is set to a named zone (for example "America/Puerto_Rico"
+# rather than the default "auto") needs this package to resolve it. Pure data
+# package, identical on every platform.
+tzdata==2026.2
+
+# Built-in verification suite: the interface checks drive the app through
+# fastapi's TestClient. The pinned starlette above uses the httpx2 client, and
+# httpx is kept alongside it for the other checks. Both are pure-Python wheels,
+# identical on both platforms. Installing them with the app means one setup brings
+# up an environment where the bundled tests run green with no second install step.
+httpx==0.28.1
+httpx2==2.5.0
 
 # --- Anticipated, not yet pinned (added when the module that imports them is built) ---
-# monitor.py         : hailo-platform / HailoRT Python bindings (Raspberry Pi only); supervision (ByteTrack)
+# monitor.py         : hailo-platform / HailoRT Python bindings (Raspberry Pi only)
 # acoustic.py        : tensorflow or tflite-runtime (BirdNET / SurfPerch, Raspberry Pi only); sounddevice or PyAudio
 # environment.py     : pyserial / gpsd-py3 (GPS); sensor-specific drivers
 # observation.py     : none expected; the field quality-control engine is deterministic, with no LLM or VLM
