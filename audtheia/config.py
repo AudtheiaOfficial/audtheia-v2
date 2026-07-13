@@ -51,8 +51,8 @@ NODE_ROLES = ("desktop", "pi")
 
 ANALYSIS_LOCATIONS = ("pi", "desktop")
 
-REPORT_SCHEDULES = ("daily", "weekly", "biweekly", "on_demand")
-DREAM_SCHEDULES = ("daily", "weekly", "biweekly", "manual")
+REPORT_SCHEDULES = ("hourly", "daily", "weekly", "biweekly", "monthly")
+DREAM_SCHEDULES = ("hourly", "daily", "weekly", "biweekly", "monthly")
 REPORT_FORMATS = ("pdf", "csv")
 
 REPRESENTATIVE_FRAME_RULES = ("highest_confidence",)

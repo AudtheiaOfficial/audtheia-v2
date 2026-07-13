@@ -84,6 +84,16 @@
           <span class="nav-label">GPS</span>
         </button>
 
+        <button type="button" class="nav-item" data-panel="sensors" aria-controls="panel-sensors">
+          <span class="nav-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+              <path d="M12 3a3 3 0 0 0-3 3v7.5a4 4 0 1 0 6 0V6a3 3 0 0 0-3-3z"></path>
+              <path d="M12 9v6"></path>
+            </svg>
+          </span>
+          <span class="nav-label">Sensors</span>
+        </button>
+
         <button type="button" class="nav-item" data-panel="analytics" aria-controls="panel-analytics">
           <span class="nav-icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" focusable="false">
@@ -232,6 +242,20 @@
           <div class="panel-toolbar" data-region="gps-filters"></div>
           <div class="panel-body" data-region="gps-map">
             <p class="empty-state">Loading spatial data.</p>
+          </div>
+        </section>
+
+        <!-- Sensors: a per-station overview of the environmental channels and
+             each one's latest reading, alongside the device inputs (camera,
+             audio, GPS) each station records. Channels are managed in Settings. -->
+        <section class="panel" id="panel-sensors" data-panel="sensors" aria-labelledby="sensors-heading" tabindex="-1" hidden>
+          <div class="panel-head">
+            <h2 id="sensors-heading">Sensors</h2>
+            <p class="panel-lead">Environmental channels per station and their latest measured readings. Add or edit channels in Settings, Sensors.</p>
+          </div>
+          <div class="panel-toolbar" data-region="sensors-filters"></div>
+          <div class="panel-body" data-region="sensors-overview">
+            <p class="empty-state">Loading sensors.</p>
           </div>
         </section>
 

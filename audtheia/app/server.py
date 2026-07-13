@@ -36,8 +36,11 @@ running the application requires it. That keeps the module importable for tests
 and tooling that do not need a live server.
 """
 
+import copy
 import json
 import os
+import subprocess
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -76,6 +79,15 @@ class BackendError(RuntimeError):
 
 class BackendDependencyError(BackendError):
     """The web framework needed to build or run the app is not installed."""
+
+
+class SettingsUpdateError(BackendError):
+    """A requested configuration change is not allowed or not valid.
+
+    Raised while a settings edit is being checked, before anything is written,
+    so a rejected change leaves the saved configuration untouched. The route
+    turns this into a clear client error rather than a server fault.
+    """
 
 
 # ===========================================================================
@@ -265,6 +277,503 @@ def _persist_settings(settings) -> None:
         raise
 
 
+# The credential keys a person may set from the interface. These are the
+# species-data credentials only; the hotspot and SSH passwords belong to station
+# provisioning and are never editable through this path.
+SPECIES_SECRET_KEYS = ("iucn_api_key", "gbif_username", "gbif_password")
+
+
+def _secrets_file_path(settings) -> Path:
+    """The resolved path to the local, uncommitted secrets file."""
+    ref = settings.raw.get("secrets", {}).get("path", "config/secrets.json")
+    path = Path(ref)
+    if not path.is_absolute():
+        path = Path(settings.repo_root) / path
+    return path
+
+
+def _read_secrets_file(path: Path) -> dict:
+    """Read the secrets file if present, returning an empty map otherwise."""
+    if not path.exists():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - a malformed file is treated as empty here
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _write_secrets_file(path: Path, secrets: dict) -> None:
+    """Write the secrets file atomically, creating its directory if needed."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".secrets-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(secrets, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp_name, str(path))
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+        raise
+
+
+def _species_secret_status(settings) -> dict:
+    """Which species-data credentials are set, never their values."""
+    secrets = getattr(settings, "secrets", {}) or {}
+    return {key: bool(str(secrets.get(key) or "").strip()) for key in SPECIES_SECRET_KEYS}
+
+
+# In-progress field-station provisioning runs, keyed by station id. Each entry
+# holds the running process and the log file its output streams to, so the
+# interface can poll a connection without blocking the request that started it.
+_PROVISION_JOBS: dict = {}
+
+
+def _new_station_dict(station_id: str, name: str, environment: str, habitat: Optional[str]) -> dict:
+    """A complete, valid station configuration with sensible defaults.
+
+    The identifier is generated, the device sensors default to on, the channel
+    list starts empty (environmental sensors are added from the Sensors settings),
+    and the capture and model blocks carry the same defaults as the reference
+    stations, so a new station validates and runs without further editing.
+    """
+    station = {
+        "station_id": station_id,
+        "station_name": name,
+        "environment_type": environment,
+        "target_species": [],
+        "sensors": {"camera": {"enabled": True}, "audio": {"enabled": True}, "gps": {"enabled": True}},
+        "channels": [],
+        "models": {
+            "visual_pi": {"path": "models/visual/pi/yolo11.hef", "version": None, "citation": None},
+            "acoustic": {
+                "active": "birdnet",
+                "options": {
+                    "birdnet": {"path": "models/acoustic/birdnet/BirdNET_GLOBAL_6K.tflite", "version": None, "citation": "Kahl et al., BirdNET, Ecological Informatics, 2021"},
+                    "marine": {"path": None, "version": None, "citation": None},
+                    "custom": {"path": None, "version": None, "citation": None},
+                },
+            },
+        },
+        "capture": {
+            "fps": 10,
+            "resolution": {"width": 1280, "height": 720},
+            "bytetrack": {"track_activation_threshold": 0.25, "minimum_matching_threshold": 0.8, "track_close_frames": 20, "frame_rate": 10},
+            "representative_frame_rule": "highest_confidence",
+            "max_event_duration_seconds": 300,
+            "audio": {"pre_roll_seconds": 3.0, "post_roll_seconds": 3.0, "max_clip_seconds": 30.0},
+            "acoustic": {"onset_threshold": 0.5, "silence_close_seconds": 3.0},
+            "soundscape": {"enabled": False, "metrics": [], "cadence_seconds": 60},
+        },
+    }
+    if habitat:
+        station["habitat"] = habitat
+    return station
+
+
+# ===========================================================================
+# The guarded settings write path
+#
+# Editing configuration from the interface is deliberately narrow. Only the
+# fields listed in the allowlist below can be changed, so a system-owned value
+# such as a station's identifier or a derived path is never reachable from a
+# request; a field that is not listed is simply refused. Each listed field
+# carries a small validator, and after every change in a batch is applied to a
+# working copy the whole configuration is validated once more and written
+# atomically through the same path the rest of the backend uses. A rejected
+# change leaves the saved file exactly as it was.
+# ===========================================================================
+
+
+def _v_bool(value: Any, where: str) -> bool:
+    if not isinstance(value, bool):
+        raise SettingsUpdateError(f"{where} must be true or false")
+    return value
+
+
+def _v_number(value: Any, where: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SettingsUpdateError(f"{where} must be a number")
+    return value
+
+
+def _v_positive_number(value: Any, where: str) -> float:
+    number = _v_number(value, where)
+    if number <= 0:
+        raise SettingsUpdateError(f"{where} must be greater than zero")
+    return number
+
+
+def _v_nonnegative_number(value: Any, where: str) -> float:
+    number = _v_number(value, where)
+    if number < 0:
+        raise SettingsUpdateError(f"{where} must be zero or greater")
+    return number
+
+
+def _v_unit_interval(value: Any, where: str) -> float:
+    number = _v_number(value, where)
+    if not (0 <= number <= 1):
+        raise SettingsUpdateError(f"{where} must be between 0 and 1")
+    return number
+
+
+def _v_positive_int(value: Any, where: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise SettingsUpdateError(f"{where} must be a whole number of one or more")
+    return value
+
+
+def _v_nonnegative_int(value: Any, where: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise SettingsUpdateError(f"{where} must be a whole number of zero or more")
+    return value
+
+
+def _v_int_range(low: int, high: int):
+    def _inner(value: Any, where: str) -> int:
+        if isinstance(value, bool) or not isinstance(value, int) or not (low <= value <= high):
+            raise SettingsUpdateError(f"{where} must be a whole number between {low} and {high}")
+        return value
+    return _inner
+
+
+def _v_nonempty_str(value: Any, where: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise SettingsUpdateError(f"{where} must be a non-empty text value")
+    return value.strip()
+
+
+def _v_str_or_null(value: Any, where: str) -> Optional[str]:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise SettingsUpdateError(f"{where} must be text, or empty to clear it")
+    trimmed = value.strip()
+    return trimmed or None
+
+
+def _v_choice(choices):
+    def _inner(value: Any, where: str):
+        if value not in choices:
+            raise SettingsUpdateError(f"{where} must be one of: {', '.join(choices)}")
+        return value
+    return _inner
+
+
+def _v_report_formats(value: Any, where: str) -> list:
+    from audtheia.config import REPORT_FORMATS
+
+    if not isinstance(value, list) or not value:
+        raise SettingsUpdateError(f"{where} must list at least one format")
+    out: list = []
+    for fmt in value:
+        if fmt not in REPORT_FORMATS:
+            raise SettingsUpdateError(f"{where} entries must be one of: {', '.join(REPORT_FORMATS)}")
+        if fmt not in out:
+            out.append(fmt)
+    return out
+
+
+def _v_timezone(value: Any, where: str) -> str:
+    """Accept only a time zone the host can actually resolve, or 'auto'.
+
+    This mirrors what the runtime does when it localizes a timestamp, so a value
+    that saves here is a value the interface can display with, rather than one
+    that validates as text but fails the first time it is used.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise SettingsUpdateError(f"{where} must be a time zone name or 'auto'")
+    name = value.strip()
+    if name == "auto":
+        return name
+    try:
+        from zoneinfo import ZoneInfo
+
+        ZoneInfo(name)
+    except Exception as exc:  # noqa: BLE001 - reported as a clear client error
+        raise SettingsUpdateError(
+            f"{where} {name!r} is not a resolvable time zone; use 'auto' or a name "
+            f"like 'America/Puerto_Rico'"
+        ) from None
+    return name
+
+
+def _editable_field_specs() -> dict:
+    """The allowlist of user-editable fields, grouped by scope.
+
+    Each entry maps a stable field key the interface sends to the location of the
+    value and the validator that guards it. Anything absent from this map cannot
+    be changed through the interface.
+    """
+    from audtheia.config import (
+        REPORT_SCHEDULES,
+        DREAM_SCHEDULES,
+        ANALYSIS_LOCATIONS,
+        BASELINE_PERIOD_GRANULARITIES,
+    )
+
+    return {
+        "global": {
+            "reports_schedule": {"path": ["schedules", "reports", "schedule"], "validate": _v_choice(REPORT_SCHEDULES)},
+            "reports_formats": {"path": ["schedules", "reports", "formats"], "validate": _v_report_formats},
+            "dream_schedule": {"path": ["schedules", "dream_pass", "schedule"], "validate": _v_choice(DREAM_SCHEDULES)},
+            "local_timezone": {"path": ["localization", "local_timezone"], "validate": _v_timezone},
+            "visual_rfdetr_path": {"path": ["desktop_models", "visual_rfdetr", "path"], "validate": _v_nonempty_str, "is_path": True},
+            "visual_rfdetr_version": {"path": ["desktop_models", "visual_rfdetr", "version"], "validate": _v_str_or_null},
+            "visual_rfdetr_citation": {"path": ["desktop_models", "visual_rfdetr", "citation"], "validate": _v_str_or_null},
+            "analysis_location": {"path": ["analysis", "per_observation_analysis_location"], "validate": _v_choice(ANALYSIS_LOCATIONS)},
+            "baseline_period_granularity": {"path": ["analysis", "baseline", "period_granularity"], "validate": _v_choice(BASELINE_PERIOD_GRANULARITIES)},
+            "salience_weight_confidence": {"path": ["analysis", "salience", "weights", "confidence"], "validate": _v_nonnegative_number},
+            "salience_weight_anomaly": {"path": ["analysis", "salience", "weights", "anomaly"], "validate": _v_nonnegative_number},
+            "salience_weight_rarity": {"path": ["analysis", "salience", "weights", "rarity"], "validate": _v_nonnegative_number},
+            "salience_min_effective_n": {"path": ["analysis", "salience", "anomaly", "min_effective_n"], "validate": _v_nonnegative_int},
+            "field_qc_pass_confidence": {"path": ["analysis", "thresholds", "field_qc", "pass_confidence"], "validate": _v_unit_interval},
+            "verification_clear_confidence": {"path": ["analysis", "thresholds", "verification", "clear_confidence"], "validate": _v_unit_interval},
+            "verification_max_frames_scored": {"path": ["analysis", "thresholds", "verification", "max_frames_scored"], "validate": _v_positive_number},
+            "dream_min_periods_for_trend": {"path": ["analysis", "thresholds", "dream", "min_periods_for_trend"], "validate": _v_positive_number},
+            "dream_min_events_for_correlation": {"path": ["analysis", "thresholds", "dream", "min_events_for_correlation"], "validate": _v_positive_number},
+            "dream_min_events_for_co_occurrence": {"path": ["analysis", "thresholds", "dream", "min_events_for_co_occurrence"], "validate": _v_positive_number},
+            "dream_min_abs_effect": {"path": ["analysis", "thresholds", "dream", "min_abs_effect"], "validate": _v_nonnegative_number},
+            "dream_max_p_value": {"path": ["analysis", "thresholds", "dream", "max_p_value"], "validate": _v_unit_interval},
+            "media_image_format": {"path": ["media", "image", "format"], "validate": _v_nonempty_str},
+            "media_image_quality": {"path": ["media", "image", "quality"], "validate": _v_int_range(1, 100)},
+            "media_audio_format": {"path": ["media", "audio", "format"], "validate": _v_nonempty_str},
+            "media_audio_sample_width_bytes": {"path": ["media", "audio", "sample_width_bytes"], "validate": _v_positive_int},
+            "buffer_high_water_pct": {"path": ["buffer", "high_water_pct"], "validate": _v_positive_number},
+            "buffer_hard_ceiling_pct": {"path": ["buffer", "hard_ceiling_pct"], "validate": _v_positive_number},
+            "buffer_auto_sync_when_reachable": {"path": ["buffer", "auto_sync_when_reachable"], "validate": _v_bool},
+            "buffer_pause_capture_at_ceiling": {"path": ["buffer", "pause_capture_at_ceiling"], "validate": _v_bool},
+        },
+        "station": {
+            "station_name": {"path": ["station_name"], "validate": _v_nonempty_str},
+            "capture_source_video": {"path": ["capture", "source", "video"], "validate": _v_str_or_null},
+            "capture_source_audio": {"path": ["capture", "source", "audio"], "validate": _v_str_or_null},
+            "sensor_camera_enabled": {"path": ["sensors", "camera", "enabled"], "validate": _v_bool},
+            "sensor_audio_enabled": {"path": ["sensors", "audio", "enabled"], "validate": _v_bool},
+            "sensor_gps_enabled": {"path": ["sensors", "gps", "enabled"], "validate": _v_bool},
+            "visual_pi_path": {"path": ["models", "visual_pi", "path"], "validate": _v_nonempty_str, "is_path": True},
+            "visual_desktop_path": {"path": ["models", "visual_desktop", "path"], "validate": _v_nonempty_str, "is_path": True},
+            "capture_fps": {"path": ["capture", "fps"], "validate": _v_positive_number},
+            "resolution_width": {"path": ["capture", "resolution", "width"], "validate": _v_positive_number},
+            "resolution_height": {"path": ["capture", "resolution", "height"], "validate": _v_positive_number},
+            "bytetrack_track_activation_threshold": {"path": ["capture", "bytetrack", "track_activation_threshold"], "validate": _v_positive_number},
+            "bytetrack_minimum_matching_threshold": {"path": ["capture", "bytetrack", "minimum_matching_threshold"], "validate": _v_positive_number},
+            "bytetrack_track_close_frames": {"path": ["capture", "bytetrack", "track_close_frames"], "validate": _v_positive_number},
+            "bytetrack_frame_rate": {"path": ["capture", "bytetrack", "frame_rate"], "validate": _v_positive_number},
+            "max_event_duration_seconds": {"path": ["capture", "max_event_duration_seconds"], "validate": _v_positive_number},
+        },
+        "channel": {
+            "enabled": {"path": ["enabled"], "validate": _v_bool},
+            "unit": {"path": ["unit"], "validate": _v_nonempty_str},
+            "marine": {"path": ["marine"], "validate": _v_bool},
+            "driver_interface": {"path": ["driver", "interface"], "validate": _v_nonempty_str},
+            "driver_address": {"path": ["driver", "address"], "validate": _v_str_or_null},
+            "driver_type": {"path": ["driver", "type"], "validate": _v_nonempty_str},
+            "qc_gross_min": {"path": ["qc", "gross_range", "min"], "validate": _v_number},
+            "qc_gross_max": {"path": ["qc", "gross_range", "max"], "validate": _v_number},
+            "qc_sensor_min": {"path": ["qc", "sensor_range", "min"], "validate": _v_number},
+            "qc_sensor_max": {"path": ["qc", "sensor_range", "max"], "validate": _v_number},
+        },
+    }
+
+
+def _set_nested(target: dict, segments: list, value: Any) -> None:
+    """Set value at a nested key path, creating intermediate objects as needed."""
+    cursor = target
+    for segment in segments[:-1]:
+        nxt = cursor.get(segment)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cursor[segment] = nxt
+        cursor = nxt
+    cursor[segments[-1]] = value
+
+
+def _find_station_in(draft: dict, station_id: Any) -> dict:
+    if not station_id or not isinstance(station_id, str):
+        raise SettingsUpdateError("a station_id is required for this change")
+    for station in draft.get("stations", []):
+        if station.get("station_id") == station_id:
+            return station
+    raise SettingsUpdateError(f"no station with id {station_id}")
+
+
+def _find_channel_in(station: dict, channel_id: Any) -> dict:
+    if not channel_id or not isinstance(channel_id, str):
+        raise SettingsUpdateError("a channel_id is required for this change")
+    for channel in station.get("channels", []):
+        if channel.get("id") == channel_id:
+            return channel
+    raise SettingsUpdateError(f"no channel with id {channel_id}")
+
+
+def _apply_setting_change(draft: dict, change: Any, specs: dict, warnings: list, repo_root) -> None:
+    """Validate one change and apply it to the working configuration copy."""
+    if not isinstance(change, dict):
+        raise SettingsUpdateError("each change must be an object")
+    scope = change.get("scope")
+    field = change.get("field")
+    scope_specs = specs.get(scope)
+    if scope_specs is None:
+        raise SettingsUpdateError(f"unknown change scope {scope!r}")
+    spec = scope_specs.get(field)
+    if spec is None:
+        raise SettingsUpdateError(f"{field!r} is not an editable field")
+
+    where = f"{scope}.{field}"
+    value = spec["validate"](change.get("value"), where)
+
+    if scope == "global":
+        target = draft
+    elif scope == "station":
+        target = _find_station_in(draft, change.get("station_id"))
+    else:
+        station = _find_station_in(draft, change.get("station_id"))
+        target = _find_channel_in(station, change.get("channel_id"))
+
+    _set_nested(target, spec["path"], value)
+
+    # A model path that names a file not yet present is allowed and noted, not
+    # refused, so a person can point at a model they are about to add.
+    if spec.get("is_path") and isinstance(value, str):
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            candidate = Path(repo_root) / candidate
+        if not candidate.exists():
+            warnings.append(f"{where}: no file is present yet at {value}")
+
+
+# How many recent observations to scan when finding each channel's most recent
+# reading for the sensors overview. Readings are captured at detection events, so
+# a few hundred recent observations covers the latest value per channel without a
+# new storage query.
+_READING_SCAN_LIMIT = 300
+
+
+def _commit_draft(settings, draft: dict) -> None:
+    """Swap a validated working copy in as the live configuration, or roll back.
+
+    The draft becomes the live configuration only if it passes the full validator
+    and writes; any failure restores the previous configuration untouched.
+    """
+    original = settings.raw
+    settings.raw = draft
+    try:
+        _persist_settings(settings)
+    except BackendError:
+        settings.raw = original
+        raise
+
+
+def _clean_channel_request(request) -> dict:
+    """Validate and shape a new environmental channel from a request.
+
+    A channel is an environmental sensor a station records: an identifier, a unit,
+    whether it is a marine channel (which carries an oceanographic quality flag),
+    whether it is enabled, its hardware driver, and optional quality-control bounds.
+    The shape mirrors the channels already in the configuration so a new one reads
+    and validates exactly like the reference ones.
+    """
+    channel_id = request.id
+    if not isinstance(channel_id, str) or not channel_id.strip():
+        raise SettingsUpdateError("a channel id is required")
+
+    channel: dict = {
+        "id": channel_id.strip(),
+        "unit": _v_nonempty_str(request.unit, "channel.unit"),
+        "marine": request.marine if isinstance(request.marine, bool) else False,
+        "enabled": request.enabled if isinstance(request.enabled, bool) else True,
+    }
+
+    driver = request.driver
+    if driver is not None:
+        if not isinstance(driver, dict):
+            raise SettingsUpdateError("channel.driver must be an object")
+        cleaned_driver: dict = {}
+        for key in ("interface", "address", "type"):
+            if driver.get(key) not in (None, ""):
+                cleaned_driver[key] = str(driver[key])
+        if cleaned_driver:
+            channel["driver"] = cleaned_driver
+
+    qc = request.qc
+    if qc is not None:
+        if not isinstance(qc, dict):
+            raise SettingsUpdateError("channel.qc must be an object")
+        cleaned_qc: dict = {}
+        for range_key in ("gross_range", "sensor_range"):
+            rng = qc.get(range_key)
+            if isinstance(rng, dict):
+                bounds: dict = {}
+                for bound in ("min", "max"):
+                    if rng.get(bound) is not None:
+                        bounds[bound] = _v_number(rng[bound], f"channel.qc.{range_key}.{bound}")
+                if bounds:
+                    cleaned_qc[range_key] = bounds
+        if qc.get("detection_limit") is not None:
+            cleaned_qc["detection_limit"] = _v_number(qc["detection_limit"], "channel.qc.detection_limit")
+        if cleaned_qc:
+            channel["qc"] = cleaned_qc
+
+    return channel
+
+
+def _latest_channel_readings(db, station_id) -> dict:
+    """The most recent stored reading for each channel of one station.
+
+    Built from the existing readers rather than a new query: it scans recent
+    observations and keeps the newest reading seen per channel. A station with no
+    captured readings yet returns an empty map, which the interface shows as a
+    channel that is configured but has not reported.
+    """
+    latest: dict = {}
+    try:
+        observations = db.list_observations(station_id=station_id, limit=_READING_SCAN_LIMIT)
+    except Exception:  # noqa: BLE001 - an unreadable record must not break the overview
+        return latest
+    for obs in observations:
+        for reading in db.list_environmental_readings(obs["id"]):
+            channel = reading.get("channel")
+            if channel is None:
+                continue
+            stamp = reading.get("created_at") or ""
+            current = latest.get(channel)
+            if current is None or stamp > (current.get("created_at") or ""):
+                latest[channel] = {
+                    "value": reading.get("value"),
+                    "unit": reading.get("unit"),
+                    "status": reading.get("status"),
+                    "qartod_flag": reading.get("qartod_flag"),
+                    "created_at": reading.get("created_at"),
+                }
+    return latest
+
+
+def _dir_size(path: Path) -> Optional[int]:
+    """Total size in bytes of every file under a directory, or None if unreadable.
+
+    A missing directory reports zero, which is the honest figure before any data
+    has been captured.
+    """
+    if not path.exists():
+        return 0
+    total = 0
+    try:
+        for entry in path.rglob("*"):
+            try:
+                if entry.is_file():
+                    total += entry.stat().st_size
+            except OSError:
+                continue
+    except Exception:  # noqa: BLE001 - an unreadable tree reports unknown, not an error
+        return None
+    return total
+
+
 def _list_report_bundles(reports_dir: Path) -> list:
     """List report bundles already on disk, newest first."""
     if not reports_dir.exists():
@@ -330,6 +839,30 @@ def create_app(settings, database):
 
     class LlmSelectRequest(BaseModel):
         name: Optional[str] = None
+
+    class SettingsUpdateRequest(BaseModel):
+        changes: Optional[list] = None
+
+    class ChannelRequest(BaseModel):
+        id: Optional[str] = None
+        unit: Optional[str] = None
+        marine: Optional[bool] = None
+        enabled: Optional[bool] = None
+        driver: Optional[dict] = None
+        qc: Optional[dict] = None
+
+    class SecretsRequest(BaseModel):
+        values: Optional[dict] = None
+
+    class StationCreateRequest(BaseModel):
+        station_name: Optional[str] = None
+        environment_type: Optional[str] = None
+        habitat: Optional[str] = None
+
+    class ProvisionRequest(BaseModel):
+        host: Optional[str] = None
+        user: Optional[str] = None
+        port: Optional[int] = None
 
     # -- meta ------------------------------------------------------------
 
@@ -699,15 +1232,358 @@ def create_app(settings, database):
             raise HTTPException(status_code=404, detail="no such report file")
         return FileResponse(str(target))
 
-    # -- settings (read-only view; secrets never leave the desktop) -------
+    # -- settings (a read view, and a guarded edit for allowlisted fields) --
 
     @app.get(f"{API_PREFIX}/settings")
     def get_settings():
         return {
             "config": _redact(settings.raw),
             "secrets_configured": bool(getattr(settings, "secrets", None)),
-            "note": "read-only view; editing configuration is a separate, guarded operation",
+            "secrets_status": _species_secret_status(settings),
+            "node_role": settings.node_role,
+            "editable_fields": {scope: sorted(fields.keys()) for scope, fields in _editable_field_specs().items()},
+            "note": "secrets are never returned; a listed field can be changed through the settings update path",
         }
+
+    @app.post(f"{API_PREFIX}/settings/secrets")
+    def update_secrets(request: SecretsRequest):
+        """Set or clear the species-data credentials in the local secrets file.
+
+        Only the species credentials can be set here, and only their presence is
+        ever reported back, never their values. An empty string clears a
+        credential. The file is written atomically and stays out of the committed
+        configuration.
+        """
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="credentials are managed on the desktop; this node is not the desktop.")
+        values = request.values
+        if not isinstance(values, dict) or not values:
+            raise HTTPException(status_code=422, detail="no credential values were provided")
+
+        path = _secrets_file_path(settings)
+        current = _read_secrets_file(path)
+        for key, value in values.items():
+            if key not in SPECIES_SECRET_KEYS:
+                raise HTTPException(status_code=422, detail=f"{key!r} is not an editable credential")
+            if not isinstance(value, str):
+                raise HTTPException(status_code=422, detail=f"{key} must be text")
+            current[key] = value
+            settings.secrets[key] = value
+
+        _write_secrets_file(path, current)
+        return {
+            "secrets_status": _species_secret_status(settings),
+            "note": "credentials saved to the local secrets file; they are never committed.",
+        }
+
+    @app.post(f"{API_PREFIX}/settings/update")
+    def update_settings(request: SettingsUpdateRequest):
+        """Apply one or more allowlisted configuration changes, or reject them all.
+
+        Only fields named in the allowlist can be changed, so a system-owned value
+        is never reachable here. The batch is applied to a working copy, the whole
+        configuration is validated, and only then is it written atomically through
+        the shared persist path. Any invalid change leaves the saved file untouched.
+        """
+        if settings.node_role != "desktop":
+            raise HTTPException(
+                status_code=403,
+                detail="configuration is edited on the desktop; this node is not the desktop.",
+            )
+
+        changes = request.changes
+        if not isinstance(changes, list) or not changes:
+            raise HTTPException(status_code=422, detail="no changes were provided")
+
+        specs = _editable_field_specs()
+        draft = copy.deepcopy(settings.raw)
+        warnings: list = []
+        try:
+            for change in changes:
+                _apply_setting_change(draft, change, specs, warnings, settings.repo_root)
+        except SettingsUpdateError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        original = settings.raw
+        settings.raw = draft
+        try:
+            _persist_settings(settings)
+        except BackendError as exc:
+            settings.raw = original
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        return {
+            "config": _redact(settings.raw),
+            "warnings": warnings,
+            "note": "saved; capture, model, and schedule changes take effect the next time the station starts.",
+        }
+
+    def _draft_station(station_id):
+        """A deep copy of the configuration and the target station within it."""
+        draft = copy.deepcopy(settings.raw)
+        for station in draft.get("stations", []):
+            if station.get("station_id") == station_id:
+                return draft, station
+        raise HTTPException(status_code=404, detail=f"no station with id {station_id}")
+
+    @app.post(f"{API_PREFIX}/settings/stations/{{station_id}}/channels", status_code=201)
+    def add_channel(station_id, request: ChannelRequest):
+        """Add an environmental channel (a sensor) to a station.
+
+        The channel is shaped and checked, appended to a working copy, and the
+        whole configuration is validated before it is written, so a duplicate
+        identifier or a malformed channel is refused with the file left untouched.
+        """
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="stations are configured on the desktop; this node is not the desktop.")
+        try:
+            channel = _clean_channel_request(request)
+        except SettingsUpdateError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        draft, station = _draft_station(station_id)
+        station.setdefault("channels", []).append(channel)
+        try:
+            _commit_draft(settings, draft)
+        except BackendError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"config": _redact(settings.raw), "note": "channel added; it takes effect the next time the station starts."}
+
+    @app.delete(f"{API_PREFIX}/settings/stations/{{station_id}}/channels/{{channel_id}}")
+    def remove_channel(station_id, channel_id):
+        """Remove an environmental channel from a station."""
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="stations are configured on the desktop; this node is not the desktop.")
+        draft, station = _draft_station(station_id)
+        channels = station.get("channels", [])
+        kept = [c for c in channels if c.get("id") != channel_id]
+        if len(kept) == len(channels):
+            raise HTTPException(status_code=404, detail=f"no channel with id {channel_id}")
+        station["channels"] = kept
+        try:
+            _commit_draft(settings, draft)
+        except BackendError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"config": _redact(settings.raw), "note": "channel removed."}
+
+    @app.get(f"{API_PREFIX}/sensors")
+    def sensors_overview(station_id: str | None = Query(default=None)):
+        """A per-station view of environmental channels and each one's latest reading.
+
+        The configured channels come from settings; the latest value, unit,
+        quality status, and marine quality flag come from the stored record. A
+        channel with no readings yet is returned with a null reading, which the
+        interface shows as configured but not yet reporting.
+        """
+        stations_out = []
+        for station in settings.stations():
+            sid = station.get("station_id")
+            if station_id and sid != station_id:
+                continue
+            latest = _latest_channel_readings(db, sid)
+            channels = []
+            for channel in station.get("channels", []):
+                channels.append({
+                    "id": channel.get("id"),
+                    "unit": channel.get("unit"),
+                    "marine": channel.get("marine"),
+                    "enabled": channel.get("enabled"),
+                    "driver": channel.get("driver"),
+                    "latest_reading": latest.get(channel.get("id")),
+                })
+            stations_out.append({
+                "station_id": sid,
+                "station_name": station.get("station_name"),
+                "environment_type": station.get("environment_type"),
+                "sensors": station.get("sensors", {}),
+                "channels": channels,
+            })
+        return {
+            "stations": stations_out,
+            "note": "environmental readings are captured at each detection; a channel appears here once its station is capturing.",
+        }
+
+    @app.get(f"{API_PREFIX}/storage")
+    def storage_status():
+        """Live storage figures for the store this node keeps.
+
+        Disk capacity comes from the filesystem that holds the data; the database
+        and folder sizes are measured on disk; the sync backlog is the count of
+        records not yet confirmed elsewhere. Reading these never changes anything.
+        """
+        import shutil
+
+        db_path = Path(settings.db_path())
+        data_dir = Path(settings.path("data_dir"))
+        reports_dir = Path(settings.path("reports_dir"))
+
+        anchor = next((p for p in (data_dir, db_path.parent, Path(settings.repo_root)) if p.exists()), Path("."))
+        disk = {"total": None, "used": None, "free": None}
+        try:
+            usage = shutil.disk_usage(str(anchor))
+            disk = {"total": usage.total, "used": usage.used, "free": usage.free}
+        except Exception:  # noqa: BLE001 - a platform without the call reports unknown
+            pass
+
+        try:
+            db_size = db_path.stat().st_size if db_path.exists() else None
+        except OSError:
+            db_size = None
+
+        try:
+            unsynced = db.count_unsynced()
+        except Exception:  # noqa: BLE001 - a store without the syncable tables reports none
+            unsynced = {}
+
+        return {
+            "role": settings.node_role,
+            "disk": disk,
+            "database": {"path": str(db_path), "size": db_size},
+            "data": {"path": str(data_dir), "size": _dir_size(data_dir)},
+            "reports": {"path": str(reports_dir), "size": _dir_size(reports_dir)},
+            "unsynced": unsynced,
+            "total_unsynced": sum(unsynced.values()) if unsynced else 0,
+            "note": "syncing and cleaning a field station's buffer run when a Pi is connected.",
+        }
+
+    # -- stations: add and remove (desktop-authored configuration) ---------
+
+    @app.post(f"{API_PREFIX}/settings/stations", status_code=201)
+    def add_station(request: StationCreateRequest):
+        """Create a new station with a generated identifier and safe defaults."""
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="stations are configured on the desktop; this node is not the desktop.")
+        from audtheia.config import ENVIRONMENT_TYPES, ALLOWED_HABITATS
+        from audtheia.storage.database import new_id
+
+        name = (request.station_name or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="a station name is required")
+        environment = request.environment_type
+        if environment not in ENVIRONMENT_TYPES:
+            raise HTTPException(status_code=422, detail=f"environment_type must be one of: {', '.join(ENVIRONMENT_TYPES)}")
+        habitat = (request.habitat or "").strip() or None
+        if habitat and habitat not in ALLOWED_HABITATS:
+            raise HTTPException(status_code=422, detail="habitat is not in the allowed list; leave it blank or choose a listed value")
+
+        station = _new_station_dict(new_id(), name, environment, habitat)
+        draft = copy.deepcopy(settings.raw)
+        draft.setdefault("stations", []).append(station)
+        try:
+            _commit_draft(settings, draft)
+        except BackendError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"config": _redact(settings.raw), "station_id": station["station_id"], "note": "station added; add its sensors and connect its Pi from here."}
+
+    @app.delete(f"{API_PREFIX}/settings/stations/{{station_id}}")
+    def remove_station(station_id):
+        """Remove a station, keeping at least one defined."""
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="stations are configured on the desktop; this node is not the desktop.")
+        draft = copy.deepcopy(settings.raw)
+        stations = draft.get("stations", [])
+        kept = [s for s in stations if s.get("station_id") != station_id]
+        if len(kept) == len(stations):
+            raise HTTPException(status_code=404, detail=f"no station with id {station_id}")
+        if not kept:
+            raise HTTPException(status_code=409, detail="at least one station must remain")
+        draft["stations"] = kept
+        try:
+            _commit_draft(settings, draft)
+        except BackendError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"config": _redact(settings.raw), "note": "station removed."}
+
+    # -- guided Pi provisioning (key-first, no password) -------------------
+
+    def _require_station(station_id):
+        for station in settings.stations():
+            if station.get("station_id") == station_id:
+                return station
+        raise HTTPException(status_code=404, detail=f"no station with id {station_id}")
+
+    def _pi_script() -> Path:
+        return Path(settings.repo_root) / "scripts" / "bootstrap_setup_pi.py"
+
+    @app.get(f"{API_PREFIX}/stations/{{station_id}}/provision/key")
+    def provision_key(station_id):
+        """The desktop's public key for a station, to authorize on the Pi at flash time."""
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="provisioning runs from the desktop; this node is not the desktop.")
+        _require_station(station_id)
+        try:
+            proc = subprocess.run(
+                [sys.executable, str(_pi_script()), "--station-id", station_id, "--show-key"],
+                capture_output=True, text=True, cwd=str(settings.repo_root), timeout=30,
+            )
+        except Exception as exc:  # noqa: BLE001 - reported as a clear server error
+            raise HTTPException(status_code=500, detail=f"could not produce the key: {exc}") from exc
+        if proc.returncode != 0 or not proc.stdout.strip():
+            raise HTTPException(status_code=500, detail=(proc.stderr or "could not produce the key").strip()[:300])
+        return {
+            "public_key": proc.stdout.strip(),
+            "note": "authorize this key on the Pi: paste it into Raspberry Pi Imager's public-key field when flashing, or append it to ~/.ssh/authorized_keys on the Pi.",
+        }
+
+    @app.post(f"{API_PREFIX}/stations/{{station_id}}/provision")
+    def start_provision(station_id, request: ProvisionRequest):
+        """Begin connecting a station's Pi in the background, using key authentication."""
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="provisioning runs from the desktop; this node is not the desktop.")
+        _require_station(station_id)
+        host = (request.host or "").strip()
+        user = (request.user or "").strip()
+        port = int(request.port or 22)
+        if not host:
+            raise HTTPException(status_code=422, detail="the Pi's address is required (an IP, or a name ending in .local)")
+        if not user:
+            raise HTTPException(status_code=422, detail="the Pi's login user is required")
+
+        existing = _PROVISION_JOBS.get(station_id)
+        if existing and existing["proc"].poll() is None:
+            raise HTTPException(status_code=409, detail="a connection is already in progress for this station")
+
+        # Remember the connection target on the station so it need not be entered
+        # again. This is additive and never required for the configuration to load.
+        draft = copy.deepcopy(settings.raw)
+        for station in draft.get("stations", []):
+            if station.get("station_id") == station_id:
+                station["provisioning"] = {"host": host, "user": user, "port": port}
+        try:
+            _commit_draft(settings, draft)
+        except BackendError:
+            pass
+
+        log_path = Path(tempfile.gettempdir()) / f"audtheia-provision-{station_id}.log"
+        log = open(log_path, "w", encoding="utf-8")
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, str(_pi_script()), "--station-id", station_id,
+                 "--host", host, "--user", user, "--port", str(port), "--key-auth"],
+                stdout=log, stderr=subprocess.STDOUT, cwd=str(settings.repo_root),
+            )
+        finally:
+            log.close()
+        _PROVISION_JOBS[station_id] = {"proc": proc, "log": str(log_path), "started": _utc_now_iso()}
+        return {"state": "running", "note": "connecting to the Pi; poll the status endpoint for progress."}
+
+    @app.get(f"{API_PREFIX}/stations/{{station_id}}/provision/status")
+    def provision_status(station_id):
+        """Report progress of an in-flight or finished provisioning run."""
+        job = _PROVISION_JOBS.get(station_id)
+        if not job:
+            return {"state": "idle", "log": ""}
+        returncode = job["proc"].poll()
+        try:
+            log_text = Path(job["log"]).read_text(encoding="utf-8")
+        except OSError:
+            log_text = ""
+        if returncode is None:
+            state = "running"
+        elif returncode == 0:
+            state = "succeeded"
+        else:
+            state = "failed"
+        return {"state": state, "returncode": returncode, "started": job.get("started"), "log": log_text}
 
     # -- static frontend (served locally, present from a later step) ------
 

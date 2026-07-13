@@ -512,7 +512,9 @@ a:hover {
    a wall of nested fields. */
 .config-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  /* auto-fit rather than auto-fill so two or three station cards expand to fill
+     the row cleanly instead of leaving empty tracks; four or more are unchanged. */
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: var(--space-3);
   margin: var(--space-2) 0 var(--space-3);
 }
@@ -1206,6 +1208,60 @@ textarea:hover {
   color: var(--text-2);
 }
 
+/* Inside a station or channel card, each item sits in its own quiet, rounded
+   container with even spacing, so the eye tracks one item at a time rather than
+   reading a run of rows against a single divider line. The treatment is
+   deliberately faint: a subtle border and a half-step of surface contrast, with
+   no heavy shading, so the uniform card look is preserved. */
+.config-card .field-row {
+  margin-bottom: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.config-card .field-row:last-child {
+  margin-bottom: 0;
+}
+
+.config-card .subgroup {
+  margin: var(--space-3) 0 var(--space-2);
+}
+
+.config-card .subgroup > h4 {
+  margin-bottom: var(--space-2);
+}
+
+/* A read-only status indicator for a boolean shown in the configuration view. It
+   is a labeled pill with a state dot, kept visibly distinct from the interactive
+   switch so a value that only reflects saved configuration never looks operable. */
+.status-value {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 2px 10px;
+  border-radius: var(--radius-pill);
+  border: var(--border-width) solid var(--border-subtle);
+  background: var(--surface-2);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.status-value-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.status-value.is-on { color: var(--ok); border-color: var(--ok); }
+.status-value.is-on .status-value-dot { background: var(--ok); }
+.status-value.is-off { color: var(--text-muted); }
+
+/* The interactive switch, used where a boolean is user-owned and editable
+   through the settings update path. */
 .toggle {
   position: relative;
   display: inline-flex;
@@ -1244,4 +1300,341 @@ textarea:hover {
   flex-wrap: wrap;
   align-items: flex-end;
   gap: var(--space-3);
+}
+
+/* Editable settings: an operable switch, a locked system value, form spacing
+   inside a station card, and the channel and format editors. These reuse the
+   existing surface, border, and radius tokens so every theme styles them with no
+   palette of their own. */
+.toggle {
+  cursor: pointer;
+}
+
+.config-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.config-card-body .form-field,
+.channel-edit .form-field {
+  margin-bottom: var(--space-2);
+}
+
+.switch-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.field-value.locked {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.lock-badge {
+  flex: none;
+  white-space: nowrap;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  border: var(--border-width) solid var(--border-subtle);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.edit-advanced {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.edit-advanced > summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.channel-edit {
+  margin-top: var(--space-3);
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+
+.channel-edit-title {
+  margin-bottom: var(--space-2);
+  font-weight: 650;
+  color: var(--text);
+}
+
+.format-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.format-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-2);
+}
+
+/* Sensors overview and the environmental-channel manager. Each station gets a
+   quiet shaded panel so stations are easy to tell apart, and each channel reads
+   as one tidy line: identifier, latest reading with its quality flag, and its
+   enabled state. */
+.sensor-station {
+  margin-bottom: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+  box-shadow: var(--shadow-1);
+}
+
+.sensor-station-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.sensor-station-name {
+  font-size: var(--text-lg);
+  font-weight: 650;
+}
+
+.sensor-devices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  margin-bottom: var(--space-3);
+}
+
+.sensor-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-2);
+}
+
+.sensor-channels {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.sensor-channel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.sensor-channel.is-off { opacity: 0.6; }
+
+.sensor-channel-main,
+.channel-row-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sensor-channel-id {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text);
+}
+
+.sensor-channel-unit {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.sensor-channel-reading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.sensor-value {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text);
+}
+
+.sensor-value.muted { color: var(--text-muted); }
+
+.sensor-config-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.config-card-body h4 {
+  margin: var(--space-3) 0 var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--text-2);
+}
+
+.channel-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.channel-row-actions {
+  display: flex;
+  gap: var(--space-2);
+}
+
+/* Species-data credential entry: an input, an optional clear, and a status pill,
+   on one line where space allows. */
+.cred-field {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.cred-field .form-field {
+  flex: 1 1 260px;
+}
+
+.cred-clear {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--text-2);
+  font-size: var(--text-sm);
+}
+
+.cred-status {
+  align-self: center;
+}
+
+/* Live storage-status panel: a capacity bar and a row of size metrics above the
+   editable buffer limits. */
+.storage-panel {
+  margin-bottom: var(--space-5);
+}
+
+.storage-panel h3 {
+  font-size: var(--text-lg);
+  margin-bottom: var(--space-2);
+}
+
+.storage-bar {
+  height: 12px;
+  margin: var(--space-2) 0;
+  border-radius: var(--radius-pill);
+  border: var(--border-width) solid var(--border);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.storage-bar-fill {
+  height: 100%;
+  min-width: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  transition: width var(--transition-base);
+}
+
+/* Add a station, and the guided key-first flow to connect its Raspberry Pi. */
+.add-station {
+  margin-top: var(--space-4);
+}
+
+.connect-step {
+  margin: var(--space-3) 0;
+  padding: var(--space-3) var(--space-4);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+
+.connect-step-title {
+  margin-bottom: var(--space-2);
+  font-weight: 650;
+  color: var(--text-2);
+}
+
+.connect-log {
+  margin: var(--space-2) 0 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Add-a-source control in the Detections and Audio toolbars, and the built-in
+   setup guide. */
+.source-control {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.source-form {
+  width: 100%;
+  max-width: 560px;
+}
+
+.guide-title {
+  margin: var(--space-4) 0 var(--space-2);
+  font-size: var(--text-base);
+  color: var(--text);
+}
+
+.guide-steps {
+  margin: 0 0 var(--space-2);
+  padding-left: var(--space-5);
+  color: var(--text-2);
+}
+
+.guide-steps li {
+  margin-bottom: var(--space-2);
+  line-height: 1.5;
 }

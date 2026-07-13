@@ -256,36 +256,52 @@ def provision(
     work_dir: Path,
     make_key: bool = True,
     generate_key: bool = True,
+    preauthorized_key: Optional[Path] = None,
 ) -> None:
-    """Send everything a station needs and run the Pi-side setup, through the runner."""
+    """Send everything a station needs and run the Pi-side setup, through the runner.
+
+    When a preauthorized key is given, the desktop's key is already trusted by the
+    Pi (it was added when the card was flashed), so the connection is key-based
+    from the first step and no password is ever needed, which is what lets the
+    guided flow run without a terminal prompt.
+    """
     station = settings.station(station_id)
     _info(f"Station: {station.get('station_name')} ({station_id})")
 
     runner.check_tools()
 
-    _step("Confirming the Pi is reachable")
-    runner.run("echo audtheia-reachable", use_key=False)
-
-    if make_key:
-        _step("Installing a per-station key on the Pi")
-        if generate_key:
-            private, public = ensure_station_key(settings, station_id)
-        else:
-            # A preview creates no real key on disk; a nominal path stands in so
-            # the steps that would send and authorize it can still be shown.
-            private, public = None, work_dir / "station_key.pub"
-            public.write_text("(preview)\n", encoding="utf-8")
-        runner.put(public, f"{REMOTE_ROOT}/station_key.pub", use_key=False)
-        # Append the key to the authorized set, once, over the first password
-        # connection; later steps use the key.
-        runner.run(
-            f"mkdir -p ~/.ssh {REMOTE_ROOT} && "
-            f"cat ~/{REMOTE_ROOT}/station_key.pub >> ~/.ssh/authorized_keys && "
-            f"chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys",
-            use_key=False,
-        )
-        if private is not None and hasattr(runner, "key_path"):
-            runner.key_path = private
+    if preauthorized_key is not None:
+        # Key-first: the desktop's key is already authorized on the Pi, so every
+        # step uses the key and no password is asked for.
+        if hasattr(runner, "key_path"):
+            runner.key_path = preauthorized_key
+        send_with_key = True
+        _step("Confirming the Pi is reachable")
+        runner.run("echo audtheia-reachable", use_key=True)
+    else:
+        send_with_key = make_key
+        _step("Confirming the Pi is reachable")
+        runner.run("echo audtheia-reachable", use_key=False)
+        if make_key:
+            _step("Installing a per-station key on the Pi")
+            if generate_key:
+                private, public = ensure_station_key(settings, station_id)
+            else:
+                # A preview creates no real key on disk; a nominal path stands in so
+                # the steps that would send and authorize it can still be shown.
+                private, public = None, work_dir / "station_key.pub"
+                public.write_text("(preview)\n", encoding="utf-8")
+            runner.put(public, f"{REMOTE_ROOT}/station_key.pub", use_key=False)
+            # Append the key to the authorized set, once, over the first password
+            # connection; later steps use the key.
+            runner.run(
+                f"mkdir -p ~/.ssh {REMOTE_ROOT} && "
+                f"cat ~/{REMOTE_ROOT}/station_key.pub >> ~/.ssh/authorized_keys && "
+                f"chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys",
+                use_key=False,
+            )
+            if private is not None and hasattr(runner, "key_path"):
+                runner.key_path = private
 
     _step("Preparing the files to send")
     archive = build_code_archive(work_dir)
@@ -295,19 +311,19 @@ def provision(
     _info(f"code archive, station configuration, and {len(models)} model file(s)")
 
     _step("Sending the files to the Pi")
-    runner.run(f"mkdir -p ~/{REMOTE_ROOT}", use_key=make_key)
-    runner.put(archive, f"{REMOTE_ROOT}/audtheia-code.tar.gz", use_key=make_key)
-    runner.put(pi_settings, f"{REMOTE_ROOT}/settings.json", use_key=make_key)
+    runner.run(f"mkdir -p ~/{REMOTE_ROOT}", use_key=send_with_key)
+    runner.put(archive, f"{REMOTE_ROOT}/audtheia-code.tar.gz", use_key=send_with_key)
+    runner.put(pi_settings, f"{REMOTE_ROOT}/settings.json", use_key=send_with_key)
     if pi_secrets is not None:
-        runner.put(pi_secrets, f"{REMOTE_ROOT}/secrets.json", use_key=make_key)
-    runner.put(PI_PAYLOAD, f"{REMOTE_ROOT}/setup-pi.sh", use_key=make_key)
+        runner.put(pi_secrets, f"{REMOTE_ROOT}/secrets.json", use_key=send_with_key)
+    runner.put(PI_PAYLOAD, f"{REMOTE_ROOT}/setup-pi.sh", use_key=send_with_key)
     for local, rel in models:
         parent = str(Path(rel).parent.as_posix())
-        runner.run(f"mkdir -p ~/{REMOTE_ROOT}/{parent}", use_key=make_key)
-        runner.put(local, f"{REMOTE_ROOT}/{rel}", use_key=make_key)
+        runner.run(f"mkdir -p ~/{REMOTE_ROOT}/{parent}", use_key=send_with_key)
+        runner.put(local, f"{REMOTE_ROOT}/{rel}", use_key=send_with_key)
 
     _step("Running the Pi-side setup")
-    runner.run(f"bash ~/{REMOTE_ROOT}/setup-pi.sh", use_key=make_key)
+    runner.run(f"bash ~/{REMOTE_ROOT}/setup-pi.sh", use_key=send_with_key)
 
     _step("Done")
     _info(f"The station is configured. It answers on the network at {station.get('station_name')}.")
@@ -349,18 +365,42 @@ def main(argv: Optional[list[str]] = None) -> int:
         action="store_true",
         help="Skip installing a per-station key and use the password path throughout.",
     )
+    parser.add_argument(
+        "--show-key",
+        action="store_true",
+        help="Print the desktop's public key for this station and exit, for authorizing it on the Pi at flash time.",
+    )
+    parser.add_argument(
+        "--key-auth",
+        action="store_true",
+        help="Connect using the station's already-authorized key, with no password (the guided flow uses this).",
+    )
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     try:
         from audtheia.config import load_settings
 
         settings = load_settings()
+
+        if args.show_key:
+            _private, public = ensure_station_key(settings, args.station_id)
+            sys.stdout.write(public.read_text(encoding="utf-8"))
+            return 0
+
         host, user, port = _resolve_target(settings, args)
 
         print("Audtheia field-station provisioning")
         print(f"Target: {user}@{host}:{port}")
 
-        runner = LoggingRunner(host, user, port) if args.dry_run else SshRunner(host, user, port)
+        preauthorized = None
+        if args.key_auth:
+            if args.dry_run:
+                preauthorized = REPO_ROOT / ".keys" / f"station_{args.station_id}"
+            else:
+                private, _public = ensure_station_key(settings, args.station_id)
+                preauthorized = private
+
+        runner = LoggingRunner(host, user, port) if args.dry_run else SshRunner(host, user, port, key_path=preauthorized)
 
         with tempfile.TemporaryDirectory(prefix="audtheia-pi-") as tmp:
             provision(
@@ -368,8 +408,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 args.station_id,
                 runner=runner,
                 work_dir=Path(tmp),
-                make_key=not args.no_key,
-                generate_key=(not args.no_key) and (not args.dry_run),
+                make_key=not (args.no_key or args.key_auth),
+                generate_key=(not args.no_key) and (not args.dry_run) and (not args.key_auth),
+                preauthorized_key=preauthorized,
             )
         return 0
 
