@@ -1639,3 +1639,131 @@ textarea:hover {
   margin-bottom: var(--space-2);
   line-height: 1.5;
 }
+
+/* Visual detections: the stored frame on a card, a full-size lightbox, the audio
+   clip player, and the desktop capture Start and Stop control. */
+/* The frame is shown at its true aspect so a stored detection box, recorded in
+   the frame's own pixels, overlays exactly. Cropping it (object-fit: cover)
+   would shift the boxes, so the wrapper carries the size instead. */
+.detection-frame-wrap {
+  position: relative;
+  display: block;
+  line-height: 0;
+  margin-bottom: var(--space-2);
+}
+
+.detection-frame {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+  cursor: zoom-in;
+}
+
+/* An overlay rectangle; never blocks the click that opens the lightbox. */
+.detection-box {
+  position: absolute;
+  border: 2px solid var(--accent, #2dd4a7);
+  border-radius: 3px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+}
+
+.detection-box-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  max-width: 180px;
+  padding: 1px 5px;
+  background: var(--accent, #2dd4a7);
+  color: #04211a;
+  font-size: 11px;
+  line-height: 1.5;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-radius: 2px 2px 2px 0;
+}
+
+.frame-note {
+  margin-bottom: var(--space-3);
+  color: var(--text-muted);
+  font-size: var(--text-xs, 11px);
+}
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  padding: var(--space-5);
+  background: rgba(0, 0, 0, 0.8);
+  cursor: zoom-out;
+}
+
+.lightbox-frame {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+  max-width: 92vw;
+  max-height: 82vh;
+}
+
+.lightbox-img {
+  display: block;
+  max-width: 92vw;
+  max-height: 82vh;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-2);
+}
+
+.lightbox-caption {
+  color: #ffffff;
+  font-size: var(--text-sm);
+}
+
+.audio-clip {
+  width: 100%;
+  margin-top: var(--space-3);
+}
+
+.capture-control {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.capture-panel {
+  width: 100%;
+  max-width: 560px;
+}
+
+.capture-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
+
+.capture-row-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

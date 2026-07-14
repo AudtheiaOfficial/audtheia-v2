@@ -332,6 +332,12 @@ def _species_secret_status(settings) -> dict:
 _PROVISION_JOBS: dict = {}
 
 
+# Running desktop capture sessions, keyed by station id. Each value is a
+# LiveCapture handle whose stop brings down the monitor and scheduler threads it
+# started, so the interface can start and stop capture without a terminal.
+_CAPTURE_JOBS: dict = {}
+
+
 def _new_station_dict(station_id: str, name: str, environment: str, habitat: Optional[str]) -> dict:
     """A complete, valid station configuration with sensible defaults.
 
@@ -1232,16 +1238,36 @@ def create_app(settings, database):
             raise HTTPException(status_code=404, detail="no such report file")
         return FileResponse(str(target))
 
+    @app.get(f"{API_PREFIX}/media")
+    def media_file(path: str = Query(...)):
+        """Serve a stored detection frame or audio clip from inside the data directory.
+
+        The stored path is resolved and confirmed to sit within the data directory
+        before anything is read, so a crafted path cannot escape it.
+        """
+        data_dir = Path(settings.path("data_dir")).resolve()
+        raw = Path(path)
+        target = (raw if raw.is_absolute() else Path(settings.repo_root) / raw).resolve()
+        if data_dir not in target.parents and target != data_dir:
+            raise HTTPException(status_code=400, detail="path is outside the data directory")
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail="no such media file")
+        return FileResponse(str(target))
+
     # -- settings (a read view, and a guarded edit for allowlisted fields) --
 
     @app.get(f"{API_PREFIX}/settings")
     def get_settings():
+        from audtheia.config import ALLOWED_HABITATS, ENVIRONMENT_TYPES
+
         return {
             "config": _redact(settings.raw),
             "secrets_configured": bool(getattr(settings, "secrets", None)),
             "secrets_status": _species_secret_status(settings),
             "node_role": settings.node_role,
             "editable_fields": {scope: sorted(fields.keys()) for scope, fields in _editable_field_specs().items()},
+            "allowed_habitats": sorted(ALLOWED_HABITATS),
+            "environment_types": list(ENVIRONMENT_TYPES),
             "note": "secrets are never returned; a listed field can be changed through the settings update path",
         }
 
@@ -1584,6 +1610,66 @@ def create_app(settings, database):
         else:
             state = "failed"
         return {"state": state, "returncode": returncode, "started": job.get("started"), "log": log_text}
+
+    # -- desktop capture control (start and stop the live loop) -----------
+
+    @app.post(f"{API_PREFIX}/capture/{{station_id}}/start")
+    def start_capture(station_id):
+        """Start desktop capture and processing for a station in background threads."""
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="capture runs on the desktop; this node is not the desktop.")
+        station = _require_station(station_id)
+        source = ((station.get("capture", {}) or {}).get("source", {}) or {}).get("video")
+        if not source:
+            raise HTTPException(status_code=422, detail="set a desktop capture source for this station first (Detections, Set capture source)")
+
+        # Desktop capture detects with the station's own screening model; without
+        # it there is nothing to detect, so it is required and checked up front
+        # with a clear message rather than failing cryptically deeper in.
+        model = ((station.get("models", {}) or {}).get("visual_desktop", {}) or {}).get("path")
+        model_path = None
+        if model:
+            model_path = Path(model)
+            if not model_path.is_absolute():
+                model_path = Path(settings.repo_root) / model_path
+        if not (model_path and model_path.exists()):
+            raise HTTPException(
+                status_code=422,
+                detail="this station has no desktop detector model in place. Edit the station and set its Desktop screening model (an ONNX file under models/); capture needs it to detect.",
+            )
+
+        job = _CAPTURE_JOBS.get(station_id)
+        if job and job.running():
+            raise HTTPException(status_code=409, detail="capture is already running for this station")
+        try:
+            from audtheia.app.orchestrator import DesktopStation
+
+            desktop = DesktopStation.build(settings, station_id=station_id)
+            live = desktop.start_background()
+        except Exception as exc:  # noqa: BLE001 - reported as a clear client error
+            raise HTTPException(status_code=422, detail=f"could not start capture: {exc}") from exc
+        _CAPTURE_JOBS[station_id] = live
+        return {"state": "running", "note": "capturing from the source; detections appear as the model finds them."}
+
+    @app.post(f"{API_PREFIX}/capture/{{station_id}}/stop")
+    def stop_capture(station_id):
+        """Stop a station's running desktop capture."""
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="capture runs on the desktop; this node is not the desktop.")
+        job = _CAPTURE_JOBS.get(station_id)
+        if not job:
+            return {"state": "idle"}
+        try:
+            job.stop()
+        finally:
+            _CAPTURE_JOBS.pop(station_id, None)
+        return {"state": "stopped"}
+
+    @app.get(f"{API_PREFIX}/capture/status")
+    def capture_status():
+        """Which stations are currently capturing on the desktop."""
+        running = [sid for sid, job in _CAPTURE_JOBS.items() if job.running()]
+        return {"running": running}
 
     # -- static frontend (served locally, present from a later step) ------
 

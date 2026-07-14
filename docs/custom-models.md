@@ -57,15 +57,15 @@ Ultralytics publishes a Hailo export integration that wraps much of this, and th
 
 The desktop verifier is far simpler, because it needs no special compilation. Train or fine-tune your RF-DETR model, then export it to ONNX with RF-DETR's own tooling:
 
-1. Install the export extension: `pip install "rfdetr[onnx]"`.
-2. Load your checkpoint and call the export, which writes a single `.onnx` file compatible with ONNX Runtime.
-3. Set that file's path in the settings file under the desktop verification model.
+1. Install the export extension: `pip install "rfdetr[onnxexport]"` (the extra is `onnxexport`, not `onnx`).
+2. Export your checkpoint, which writes a single `inference_model.onnx` compatible with ONNX Runtime. For an RF-DETR Medium checkpoint, for example: `python -c "from rfdetr import RFDETRMedium; RFDETRMedium(pretrain_weights=r'path/to/weights.pt').export(output_dir=r'models/visual')"`.
+3. The `.onnx` file must exist on disk; setting a path alone does not create it. Point the interface at the file in two places, because the desktop uses two models: the station's **Desktop screening model** (the detector that runs during capture) and, under Settings, Model paths, the **desktop verification model** (the re-score). The same file can serve both.
 
 The desktop runs the ONNX model through ONNX Runtime on your computer's own processor, so there is no accelerator, no compiler, and no calibration step.
 
 ## Preparing the desktop hardware-free detector
 
-The hardware-free desktop mode screens frames with an ONNX detector too. The reference build ships an RF-DETR model pretrained on the common object set, exported to ONNX, which is Apache-2.0 licensed and lets a fresh install detect out of the box. To use your own species model instead, export any detector you have trained to ONNX and point the desktop screening model path at it. This is the same kind of file as the verifier, just used for the fast screening pass rather than the accurate re-score.
+The hardware-free desktop mode screens frames with an ONNX detector too. Export your trained detector to ONNX and set the station's Desktop screening model path to it. The screening step accepts either a **YOLO** or an **RF-DETR** export and detects which from the model's own outputs, so the same RF-DETR file you use to verify can also screen; there is no need for a separate YOLO model on the desktop. No model file ships with the repository, so this path is always your own exported file.
 
 ## Acoustic models
 

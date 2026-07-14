@@ -28,6 +28,7 @@ functions supply the real backends.
 from __future__ import annotations
 
 import ast
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -42,6 +43,7 @@ logger = logging.getLogger("audtheia.pipeline.drivers")
 __all__ = [
     "OpenCVFrameSource",
     "OnnxYoloDetector",
+    "OnnxRfDetrDetector",
     "build_frame_source",
     "build_detector",
     "CaptureError",
@@ -277,6 +279,23 @@ def build_frame_source(settings, station: dict) -> OpenCVFrameSource:
 
     reported_fps = capture.get(cv2.CAP_PROP_FPS)
     fps = reported_fps if reported_fps and reported_fps > 0 else station.get("capture", {}).get("fps")
+
+    # A finite recording reports a positive total frame count; a true live camera
+    # or feed reports zero or less. When a source the spec marked live is in fact
+    # a finite recording with a known frame rate (for example a saved clip reached
+    # through a 'stream:' page that resolves to a video-on-demand), its frames are
+    # timestamped from that frame rate rather than the wall clock, so a clip the
+    # desktop processes slowly still yields event durations equal to the real
+    # elapsed video time instead of the processing time. A genuine live source
+    # keeps wall-clock timestamps, which are its true time base.
+    if live and fps and fps > 0:
+        try:
+            frame_total = float(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        except Exception:  # noqa: BLE001 - a source that cannot report a count stays live
+            frame_total = 0.0
+        if frame_total > 0:
+            live = False
+
     return OpenCVFrameSource(capture, live=live, fps=fps)
 
 
@@ -416,6 +435,141 @@ class OnnxYoloDetector:
         return keep
 
 
+# ===========================================================================
+# Detector: an RF-DETR model run through ONNX Runtime on the desktop
+#
+# The same RF-DETR export that verifies can also screen, so a station whose only
+# model is RF-DETR still drives desktop capture. These are model-family constants
+# for RF-DETR, matching the verifier adapter's preprocessing.
+# ===========================================================================
+
+RFDETR_INPUT_SIZE = (560, 560)
+RFDETR_MEAN = (0.485, 0.456, 0.406)
+RFDETR_STD = (0.229, 0.224, 0.225)
+
+
+def _rfdetr_sigmoid(x):
+    return np.where(x >= 0, 1.0 / (1.0 + np.exp(-x)), np.exp(x) / (1.0 + np.exp(x)))
+
+
+def _split_rfdetr_outputs(outputs):
+    """Return (boxes (N,4), logits (N,classes)) from an RF-DETR export's outputs.
+
+    A standard RF-DETR export returns two two-dimensional tensors: per-query boxes
+    (a last dimension of four) and per-query class logits. Either order is
+    accepted, so the box tensor is the one whose last dimension is four.
+    """
+    boxes = None
+    logits = None
+    for out in outputs:
+        arr = np.asarray(out, dtype=np.float32)
+        if arr.ndim == 3:
+            arr = arr[0]
+        if arr.ndim != 2:
+            continue
+        if arr.shape[1] == 4:
+            boxes = arr
+        else:
+            logits = arr
+    return boxes, logits
+
+
+class OnnxRfDetrDetector:
+    """A per-frame screening detector that runs an RF-DETR model through ONNX Runtime.
+
+    RF-DETR emits per-query class logits, scored with a sigmoid, and center-form
+    boxes. This decodes both into the same per-object boxes the tracker consumes
+    from the YOLO detector, so either model family drives desktop capture with no
+    other change. The session is any object exposing ONNX Runtime's run and
+    get_inputs, so the decode is testable against a scripted output with no model.
+    """
+
+    def __init__(self, session, *, class_names: dict, input_size: tuple = RFDETR_INPUT_SIZE,
+                 conf_threshold: float = DEFAULT_CONFIDENCE, iou_threshold: float = DEFAULT_NMS_IOU,
+                 input_name: Optional[str] = None) -> None:
+        self._session = session
+        self._class_names = {int(k): str(v) for k, v in dict(class_names).items()}
+        self._in_w = int(input_size[0])
+        self._in_h = int(input_size[1])
+        self._conf = float(conf_threshold)
+        self._iou = float(iou_threshold)
+        self._input_name = input_name or session.get_inputs()[0].name
+
+    @property
+    def class_names(self) -> dict:
+        return dict(self._class_names)
+
+    def detect(self, frame: Frame) -> list:
+        blob = self._preprocess(frame.image)
+        outputs = self._session.run(None, {self._input_name: blob})
+        return self._postprocess(outputs, frame.image.shape[1], frame.image.shape[0])
+
+    def close(self) -> None:
+        self._session = None
+
+    def _preprocess(self, image_rgb: np.ndarray) -> np.ndarray:
+        """Resize to the model's square input and normalize, as RF-DETR expects."""
+        cv2 = _import_cv2()
+        resized = cv2.resize(image_rgb, (self._in_w, self._in_h))
+        arr = resized.astype(np.float32) / 255.0
+        arr = (arr - np.array(RFDETR_MEAN, dtype=np.float32)) / np.array(RFDETR_STD, dtype=np.float32)
+        blob = np.transpose(arr, (2, 0, 1))[np.newaxis, ...]
+        return np.ascontiguousarray(blob, dtype=np.float32)
+
+    def _postprocess(self, outputs, orig_w, orig_h) -> list:
+        boxes_t, logits_t = _split_rfdetr_outputs(outputs)
+        if boxes_t is None or logits_t is None or logits_t.size == 0:
+            return []
+        scores = _rfdetr_sigmoid(logits_t)  # (queries, classes)
+        class_ids = np.argmax(scores, axis=1)
+        confidences = scores[np.arange(scores.shape[0]), class_ids]
+
+        keep = confidences >= self._conf
+        if not np.any(keep):
+            return []
+        boxes = boxes_t[keep]
+        class_ids = class_ids[keep]
+        confidences = confidences[keep]
+
+        cx, cy, bw, bh = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+        # RF-DETR normally emits boxes normalized to [0, 1]; some exports emit
+        # input-pixel coordinates. When the values are clearly larger than one, they
+        # are input pixels, so bring them back to normalized before scaling out.
+        if float(np.max(np.abs(boxes))) > 2.0:
+            cx, bw = cx / self._in_w, bw / self._in_w
+            cy, bh = cy / self._in_h, bh / self._in_h
+        x1 = np.clip((cx - bw / 2) * orig_w, 0, orig_w)
+        y1 = np.clip((cy - bh / 2) * orig_h, 0, orig_h)
+        x2 = np.clip((cx + bw / 2) * orig_w, 0, orig_w)
+        y2 = np.clip((cy + bh / 2) * orig_h, 0, orig_h)
+
+        detections = []
+        for i in OnnxYoloDetector._nms(np.stack([x1, y1, x2, y2], axis=1), confidences, self._iou):
+            cid = int(class_ids[i])
+            detections.append(
+                RawDetection(
+                    x1=float(x1[i]), y1=float(y1[i]), x2=float(x2[i]), y2=float(y2[i]),
+                    confidence=float(confidences[i]),
+                    class_id=cid,
+                    class_name=self._class_names.get(cid, str(cid)),
+                )
+            )
+        return detections
+
+
+def _looks_like_rfdetr(session) -> bool:
+    """Whether a loaded model looks like an RF-DETR export rather than YOLO.
+
+    An RF-DETR export returns two tensors (boxes and class logits); a YOLO export
+    returns one. The output count is the reliable discriminator, and it lets a
+    station screen with whichever detector family the placed model belongs to.
+    """
+    try:
+        return len(session.get_outputs()) >= 2
+    except Exception:  # noqa: BLE001 - an odd session falls back to the YOLO decode
+        return False
+
+
 def _class_names_from_session(session) -> dict:
     """Read a YOLO export's class-name map from its own ONNX metadata.
 
@@ -442,8 +596,74 @@ def _class_names_from_session(session) -> dict:
     return {}
 
 
-def build_detector(settings, station: dict) -> OnnxYoloDetector:
-    """Load the station's desktop screening model into an ONNX Runtime detector."""
+def _labels_from_file(path: Path) -> dict:
+    """Read an index-to-name map from a labels file placed beside the model.
+
+    A `.json` file may hold either an index-ordered list of names or an explicit
+    {index: name} map. A `.txt` or `.names` file holds one name per line, in class
+    order, with blank lines and lines beginning with '#' ignored. An unreadable or
+    empty file yields an empty map, so the caller falls back cleanly.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    if path.suffix.lower() == ".json":
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
+        if isinstance(parsed, dict):
+            return {int(k): str(v) for k, v in parsed.items()}
+        if isinstance(parsed, (list, tuple)):
+            return {i: str(v) for i, v in enumerate(parsed)}
+        return {}
+    names = [ln.strip() for ln in text.splitlines()]
+    names = [n for n in names if n and not n.startswith("#")]
+    return {i: n for i, n in enumerate(names)}
+
+
+def _class_names_from_config(entry: dict, model_path: Path) -> dict:
+    """Resolve class names from the model's settings entry or a sibling file.
+
+    This is the path for a model whose ONNX carries no embedded names, such as an
+    RF-DETR export. Names are taken, in order of preference, from an inline
+    `class_names` list or map on the model entry, then from an explicit
+    `labels_path`, then from a file sitting beside the model named after it
+    (`<model>.labels.json`, `<model>.labels.txt`, or `<model>.names`). The first
+    source that yields any names wins, so a deployment can point the interface at
+    names without re-exporting the model.
+    """
+    inline = entry.get("class_names")
+    if isinstance(inline, dict):
+        return {int(k): str(v) for k, v in inline.items()}
+    if isinstance(inline, (list, tuple)):
+        return {i: str(v) for i, v in enumerate(inline)}
+
+    candidates: list[Path] = []
+    labels_path = entry.get("labels_path")
+    if labels_path:
+        p = Path(labels_path)
+        candidates.append(p if p.is_absolute() else model_path.parent / p)
+    stem = model_path.stem
+    for suffix in (".labels.json", ".labels.txt", ".names"):
+        candidates.append(model_path.parent / f"{stem}{suffix}")
+
+    for candidate in candidates:
+        if candidate.exists():
+            names = _labels_from_file(candidate)
+            if names:
+                return names
+    return {}
+
+
+def build_detector(settings, station: dict):
+    """Load the station's desktop screening model into an ONNX Runtime detector.
+
+    The model may be a YOLO or an RF-DETR export; the loader detects which and
+    returns the matching detector, so a station screens with whatever ONNX
+    classifier is placed for it.
+    """
     entry = settings.desktop_visual_model(station)
     path = entry.get("path")
     if not path:
@@ -466,9 +686,15 @@ def build_detector(settings, station: dict) -> OnnxYoloDetector:
 
     class_names = _class_names_from_session(session)
     if not class_names:
+        class_names = _class_names_from_config(entry, model_path)
+    if not class_names:
         logger.warning(
-            "the desktop detection model has no class-name metadata; detections "
-            "will be labelled by their numeric class index until names are added."
+            "the desktop detection model has no class-name metadata and no labels "
+            "file beside it; detections will be labelled by their numeric class "
+            "index. Add names inline on the model's settings entry (class_names), "
+            "or place '%s.labels.json' / '%s.labels.txt' next to the model.",
+            model_path.stem,
+            model_path.stem,
         )
 
     in_w, in_h = DEFAULT_INPUT_SIZE
@@ -484,6 +710,16 @@ def build_detector(settings, station: dict) -> OnnxYoloDetector:
     # consider, and one configured value governs both.
     conf = float(station.get("capture", {}).get("bytetrack", {}).get("track_activation_threshold", DEFAULT_CONFIDENCE))
 
+    # A station may place a YOLO or an RF-DETR ONNX; the model's own output shape
+    # decides which decoder screens with it, so either family works with no other
+    # configuration.
+    if _looks_like_rfdetr(session):
+        return OnnxRfDetrDetector(
+            session,
+            class_names=class_names,
+            input_size=(in_w, in_h),
+            conf_threshold=conf,
+        )
     return OnnxYoloDetector(
         session,
         class_names=class_names,

@@ -32,7 +32,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from audtheia.storage.database import Database
+from audtheia.storage.database import Database, Station, utc_now_iso
 from audtheia.analysis.observation import QCEngine, QC_PENDING
 from audtheia.analysis.verify import VerifyEngine
 from audtheia.analysis.dream import DreamEngine
@@ -196,6 +196,25 @@ class DesktopStation:
 
     # -- composable stages -----------------------------------------------
 
+    def _ensure_station_registered(self) -> None:
+        """Register this station in the database registry before capture writes.
+
+        Every observation carries a foreign key to stations(id), so the station
+        the desktop is running as must exist in that registry or the write is
+        rejected. The configured station (settings.json) is not automatically in
+        the database, so this upserts it from the configuration on start. It is an
+        upsert keyed on the station id, so a later edit on the desktop is reflected
+        and starting capture repeatedly is harmless.
+        """
+        self._db.upsert_station(
+            Station(
+                id=self._station_id,
+                station_name=self._station.get("station_name", self._station_id),
+                environment_type=self._station.get("environment_type", "mixed"),
+                created_at=utc_now_iso(),
+            )
+        )
+
     def _build_monitor(self, *, frame_source=None, detector=None, tracker=None, trigger_sink=None) -> Monitor:
         from audtheia.pipeline import drivers
 
@@ -221,6 +240,7 @@ class DesktopStation:
         frames the verifier re-scores, so nothing extra is captured for the
         desktop path.
         """
+        self._ensure_station_registered()
         monitor = self._build_monitor(**monitor_overrides)
         monitor.run()
         return monitor.events_written
@@ -279,6 +299,27 @@ class DesktopStation:
         )
         return {"captured": captured, "controlled": controlled, "verified": verified, "dream": dream, "report": report}
 
+    def start_background(self, *, verify_interval_seconds: float = DEFAULT_VERIFY_INTERVAL_SECONDS) -> "LiveCapture":
+        """Start capture and the processing scheduler in background threads, with no
+        web server, and return a handle that stops both.
+
+        This is what the desktop interface uses to run capture on demand: the same
+        monitor and scheduler serve() runs, but without binding a second server,
+        since the interface is already being served by the running process.
+        """
+        self._ensure_station_registered()
+        stop = threading.Event()
+        monitor = self._build_monitor()
+        monitor.start()
+        scheduler = threading.Thread(
+            target=self._scheduler_loop,
+            args=(stop, verify_interval_seconds),
+            name="audtheia-desktop-capture",
+            daemon=True,
+        )
+        scheduler.start()
+        return LiveCapture(monitor, scheduler, stop)
+
     # -- the live desktop process ----------------------------------------
 
     def serve(self, *, host: Optional[str] = None, port: Optional[int] = None,
@@ -291,6 +332,7 @@ class DesktopStation:
         stopping it (Ctrl-C) brings the whole station down cleanly. This is the
         one-command desktop experience.
         """
+        self._ensure_station_registered()
         stop = threading.Event()
         monitor = self._build_monitor()
         monitor.start()
@@ -342,6 +384,31 @@ class DesktopStation:
     @staticmethod
     def _schedule_seconds(schedule: Optional[str]) -> float:
         return float(_SCHEDULE_SECONDS.get((schedule or "daily").lower(), _SCHEDULE_SECONDS["daily"]))
+
+
+class LiveCapture:
+    """A running desktop capture: the monitor thread and the processing scheduler,
+    with a single stop that brings both down.
+
+    Returned by DesktopStation.start_background so the interface can run capture
+    without a terminal and stop it cleanly.
+    """
+
+    def __init__(self, monitor, scheduler, stop) -> None:
+        self._monitor = monitor
+        self._scheduler = scheduler
+        self._stop = stop
+
+    def running(self) -> bool:
+        return not self._stop.is_set()
+
+    def stop(self) -> None:
+        self._stop.set()
+        try:
+            self._monitor.stop()
+        except Exception:  # noqa: BLE001 - stopping must never raise
+            pass
+        self._scheduler.join(timeout=5.0)
 
 
 def main(argv: Optional[list] = None) -> int:

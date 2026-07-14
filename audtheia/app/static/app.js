@@ -104,9 +104,18 @@
 
   // Read one endpoint as JSON. Throws on a non-success response so callers can
   // show a clear message instead of rendering half a view.
+  // Surface the backend's own message on failure (FastAPI returns it under
+  // "detail"), so a person sees why a request was refused, not just its status.
+  function apiError(r) {
+    return r.json().then(
+      function (data) { throw new Error(data && data.detail ? data.detail : "request failed (" + r.status + ")"); },
+      function () { throw new Error("request failed (" + r.status + ")"); }
+    );
+  }
+
   function apiGet(path) {
     return fetch(API + path, { headers: { "Accept": "application/json" } }).then(function (r) {
-      if (!r.ok) { throw new Error("request failed (" + r.status + ")"); }
+      if (!r.ok) { return apiError(r); }
       return r.json();
     });
   }
@@ -118,7 +127,7 @@
       opts.body = JSON.stringify(body);
     }
     return fetch(API + path, opts).then(function (r) {
-      if (!r.ok) { throw new Error("request failed (" + r.status + ")"); }
+      if (!r.ok) { return apiError(r); }
       return r.json();
     });
   }
@@ -330,11 +339,17 @@
     var form = el("div", { class: "source-form card" });
     var msg = el("p", { class: "form-message" });
     var stSel = el("select", { class: "form-input" });
-    (state.stations || []).forEach(function (s) {
-      var o = el("option", { value: s.id, text: s.station_name || s.id });
-      if (s.id === state.stationId) { o.selected = true; }
-      stSel.appendChild(o);
-    });
+    stSel.appendChild(el("option", { value: "", text: "Loading stations." }));
+    apiGet("/settings").then(function (s) {
+      clear(stSel);
+      var stations = (s.config && s.config.stations) || [];
+      if (!stations.length) { stSel.appendChild(el("option", { value: "", text: "No stations yet. Add one under Settings, Stations." })); return; }
+      stations.forEach(function (st) {
+        var o = el("option", { value: st.station_id, text: st.station_name || st.station_id });
+        if (st.station_id === state.stationId) { o.selected = true; }
+        stSel.appendChild(o);
+      });
+    }).catch(function () { clear(stSel); stSel.appendChild(el("option", { value: "", text: "Could not load stations." })); });
     var srcIn = el("input", { type: "text", class: "form-input" });
     srcIn.placeholder = kind === "audio" ? "leave blank for none" : "webcam:0, url:rtsp://..., stream:<page url>, file:C:/clip.mp4";
     var field = kind === "audio" ? "capture_source_audio" : "capture_source_video";
@@ -357,6 +372,114 @@
     form.appendChild(msg);
     form.appendChild(el("div", { class: "form-actions" }, [save, cancel]));
     wrap.appendChild(form);
+  }
+
+  // Start and stop desktop capture from the interface, per station, so detection
+  // runs without a terminal. Only stations with a capture source are listed.
+  function captureRunControl(reload) {
+    var wrap = el("div", { class: "capture-control" });
+    var btn = el("button", { type: "button", class: "btn", text: "Capture" });
+    btn.addEventListener("click", function () { toggleCapturePanel(wrap, reload); });
+    wrap.appendChild(btn);
+    return wrap;
+  }
+
+  function toggleCapturePanel(wrap, reload) {
+    var open = wrap.querySelector(".capture-panel");
+    if (open) { wrap.removeChild(open); return; }
+    openCapturePanel(wrap, reload);
+  }
+
+  function openCapturePanel(wrap, reload) {
+    var existing = wrap.querySelector(".capture-panel");
+    if (existing) { wrap.removeChild(existing); }
+    var panel = el("div", { class: "capture-panel card" });
+    panel.appendChild(el("div", { class: "card-title", text: "Desktop capture" }));
+    var body = el("div");
+    panel.appendChild(body);
+    body.appendChild(el("p", { class: "card-note", text: "Loading." }));
+    wrap.appendChild(panel);
+    Promise.all([apiGet("/settings"), apiGet("/capture/status")]).then(function (res) {
+      var cfg = res[0].config || {};
+      var running = res[1].running || [];
+      clear(body);
+      var stations = (cfg.stations || []).filter(function (st) { return ((st.capture && st.capture.source) || {}).video; });
+      if (!stations.length) {
+        body.appendChild(el("p", { class: "card-note", text: "No station has a capture source yet. Use Set capture source first." }));
+        return;
+      }
+      stations.forEach(function (st) {
+        var isRun = running.indexOf(st.station_id) !== -1;
+        var toggle = el("button", { type: "button", class: "btn btn-small" + (isRun ? "" : " btn-primary"), text: isRun ? "Stop" : "Start" });
+        toggle.addEventListener("click", function () {
+          toggle.disabled = true;
+          var url = "/capture/" + encodeURIComponent(st.station_id) + (isRun ? "/stop" : "/start");
+          apiSend(url, "POST").then(function (r) {
+            if (r && r.warning) { window.alert(r.warning); }
+            openCapturePanel(wrap, reload);
+            reload();
+          }).catch(function (e) { toggle.disabled = false; window.alert("Could not " + (isRun ? "stop" : "start") + " capture: " + e.message); });
+        });
+        body.appendChild(el("div", { class: "capture-row" }, [
+          el("span", { class: "capture-row-name", text: (st.station_name || st.station_id) + " . " + (((st.capture.source) || {}).video || "") }),
+          isRun ? badge("capturing", "source") : null,
+          toggle
+        ]));
+      });
+      body.appendChild(el("p", { class: "form-hint", text: "Start opens the source and runs detection; detections appear below as they are found. A desktop model must be set for anything to be detected." }));
+    }).catch(function (e) { clear(body); body.appendChild(el("p", { class: "card-note", text: "Could not load capture: " + e.message })); });
+  }
+
+  // Draw each stored detection box over its frame. Boxes are recorded in the
+  // frame's own pixels and the saved frame keeps its native size, so once the
+  // image has loaded its naturalWidth/Height give the exact scale, and each box
+  // is placed as a percentage so it tracks the image at any displayed size. The
+  // saved JPEG is never altered; the box is an overlay the interface draws.
+  function drawBoxes(container, img, boxes) {
+    var old = container.querySelectorAll(".detection-box");
+    Array.prototype.forEach.call(old, function (n) { if (n.parentNode) { n.parentNode.removeChild(n); } });
+    var nw = img.naturalWidth, nh = img.naturalHeight;
+    if (!nw || !nh || !boxes) { return; }
+    boxes.forEach(function (b) {
+      if (b.bbox_x == null || b.bbox_y == null || b.bbox_w == null || b.bbox_h == null) { return; }
+      var box = el("div", { class: "detection-box" });
+      box.style.cssText = "left:" + (b.bbox_x / nw * 100) + "%;top:" + (b.bbox_y / nh * 100) +
+        "%;width:" + (b.bbox_w / nw * 100) + "%;height:" + (b.bbox_h / nh * 100) + "%;";
+      var conf = (b.confidence == null) ? "" : "  " + Math.round(Number(b.confidence) * 100) + "%";
+      box.appendChild(el("span", { class: "detection-box-label", text: taxonName(b) + conf }));
+      container.appendChild(box);
+    });
+  }
+
+  // Attach box drawing to an image, both for the case where it is already
+  // decoded and for the normal asynchronous load.
+  function withBoxes(container, img, boxes) {
+    if (!boxes || !boxes.length) { return; }
+    var draw = function () { drawBoxes(container, img, boxes); };
+    img.addEventListener("load", draw);
+    if (img.complete && img.naturalWidth) { draw(); }
+  }
+
+  function detectionFrame(path, caption, boxes) {
+    var src = API + "/media" + query({ path: path });
+    var wrap = el("div", { class: "detection-frame-wrap" });
+    var img = el("img", { class: "detection-frame", src: src, alt: caption || "detection frame", loading: "lazy" });
+    img.addEventListener("click", function () { openLightbox(src, caption, boxes); });
+    wrap.appendChild(img);
+    withBoxes(wrap, img, boxes);
+    return wrap;
+  }
+
+  function openLightbox(src, caption, boxes) {
+    var overlay = el("div", { class: "lightbox" });
+    overlay.addEventListener("click", function () { if (overlay.parentNode) { overlay.parentNode.removeChild(overlay); } });
+    var frame = el("div", { class: "lightbox-frame" });
+    var img = el("img", { class: "lightbox-img", src: src, alt: caption || "" });
+    frame.appendChild(img);
+    withBoxes(frame, img, boxes);
+    overlay.appendChild(frame);
+    if (caption) { overlay.appendChild(el("div", { class: "lightbox-caption", text: caption })); }
+    document.body.appendChild(overlay);
   }
 
   // ----------------------------------------------------------------------
@@ -486,6 +609,7 @@
     if (filters && !filters.hasChildNodes()) {
       filters.appendChild(filterBar(loaders.detections));
       filters.appendChild(captureSourceControl("video", loaders.detections));
+      filters.appendChild(captureRunControl(loaders.detections));
     }
     apiGet("/detections" + query({ station_id: state.stationId, limit: 100 })).then(function (rows) {
       clear(host);
@@ -502,16 +626,20 @@
           fmtTime(obs.first_seen),
           "trigger: " + (obs.trigger_source || "unknown")
         ].join(" · ");
-        grid.appendChild(el("article", { class: "card" }, [
-          el("div", { class: "card-meta", text: meta }),
-          el("div", { class: "card-title", text: species }),
-          el("div", { class: "card-stats", text:
-            "frames: " + fmtNum(obs.frame_count) +
-            "  duration: " + fmtNum(obs.duration, 1) + "s" +
-            "  confidence: " + fmtConfidence(obs.screening_confidence) +
-            "  salience: " + fmtNum(obs.salience_provisional, 2) }),
-          el("div", { class: "badge-row" }, badges)
-        ]));
+        var card = el("article", { class: "card" });
+        if (obs.representative_frame) {
+          card.appendChild(detectionFrame(obs.representative_frame, species, obs.vision_detections));
+          card.appendChild(el("div", { class: "frame-note", text: "highest-confidence frame of this event" }));
+        }
+        card.appendChild(el("div", { class: "card-meta", text: meta }));
+        card.appendChild(el("div", { class: "card-title", text: species }));
+        card.appendChild(el("div", { class: "card-stats", text:
+          "tracked across " + fmtNum(obs.frame_count) + " frames" +
+          "  ·  " + fmtNum(obs.duration, 1) + "s" +
+          "  ·  confidence " + fmtConfidence(obs.screening_confidence) +
+          "  ·  salience " + fmtNum(obs.salience_provisional, 2) }));
+        card.appendChild(el("div", { class: "badge-row" }, badges));
+        grid.appendChild(card);
       });
       host.appendChild(grid);
     }).catch(function (e) { setState(host, "empty-state", "Could not load detections: " + e.message); });
@@ -531,17 +659,19 @@
       var grid = el("div", { class: "card-grid" });
       rows.forEach(function (a) {
         var species = (a.audio_detections || []).map(taxonName).join(", ") || "unclassified sound";
-        grid.appendChild(el("article", { class: "card" }, [
-          el("div", { class: "card-meta", text: (a.event_name || a.observation_id) + " · " + fmtTime(a.first_seen) }),
-          el("div", { class: "card-title", text: species }),
-          el("div", { class: "card-stats", text:
-            "true duration: " + fmtNum(a.audio_true_duration_seconds, 1) + "s" +
-            (a.audio_capped ? " (stored clip capped)" : "") +
-            "  model: " + (a.acoustic_model_version || "unstated") }),
-          el("div", { class: "card-note", text: a.audio_clip_path
-            ? "Clip is stored with the event. In-browser playback arrives with the media serving path."
-            : "No stored clip for this event." })
-        ]));
+        var acard = el("article", { class: "card" });
+        acard.appendChild(el("div", { class: "card-meta", text: (a.event_name || a.observation_id) + " · " + fmtTime(a.first_seen) }));
+        acard.appendChild(el("div", { class: "card-title", text: species }));
+        acard.appendChild(el("div", { class: "card-stats", text:
+          "true duration: " + fmtNum(a.audio_true_duration_seconds, 1) + "s" +
+          (a.audio_capped ? " (stored clip capped)" : "") +
+          "  model: " + (a.acoustic_model_version || "unstated") }));
+        if (a.audio_clip_path) {
+          acard.appendChild(el("audio", { class: "audio-clip", controls: true, preload: "none", src: API + "/media" + query({ path: a.audio_clip_path }) }));
+        } else {
+          acard.appendChild(el("div", { class: "card-note", text: "No stored clip for this event." }));
+        }
+        grid.appendChild(acard);
       });
       host.appendChild(grid);
     }).catch(function (e) { setState(host, "empty-state", "Could not load audio: " + e.message); });
@@ -1387,6 +1517,7 @@
     apiGet("/settings").then(function (s) {
       var cfg = s.config || {};
       state.settingsCanEdit = s.node_role === "desktop";
+      state.allowedHabitats = s.allowed_habitats || [];
       var stations = cfg.stations || [];
 
       renderStationsEditor(stations);
@@ -1687,13 +1818,15 @@
     var nameIn = el("input", { type: "text", class: "form-input" });
     var envSel = el("select", { class: "form-input" });
     ["marine", "terrestrial", "estuarine", "freshwater", "mixed"].forEach(function (v) { envSel.appendChild(el("option", { value: v, text: humanize(v) })); });
-    var habIn = el("input", { type: "text", class: "form-input" });
+    var habSel = el("select", { class: "form-input" });
+    habSel.appendChild(el("option", { value: "", text: "(not specified)" }));
+    (state.allowedHabitats || []).forEach(function (h) { habSel.appendChild(el("option", { value: h, text: h })); });
     var create = el("button", { type: "button", class: "btn btn-primary", text: "Create station" });
     create.addEventListener("click", function () {
       var name = nameIn.value.trim();
       if (!name) { msg.textContent = "A station name is required."; return; }
       create.disabled = true; msg.textContent = "Creating.";
-      apiSend("/settings/stations", "POST", { station_name: name, environment_type: envSel.value, habitat: habIn.value.trim() || null })
+      apiSend("/settings/stations", "POST", { station_name: name, environment_type: envSel.value, habitat: habSel.value || null })
         .then(function () { loaders.settings(); })
         .catch(function (e) { create.disabled = false; msg.textContent = "Could not create the station: " + e.message; });
     });
@@ -1702,7 +1835,7 @@
       el("div", { class: "card-title", text: "New station" }),
       editField("Station name", nameIn),
       editField("Environment", envSel),
-      editField("Habitat (optional)", habIn, "Leave blank, or a listed habitat such as coral_reef."),
+      editField("Habitat (optional)", habSel, "A controlled list, so records stay consistent. Choose one, or leave it not specified."),
       msg,
       el("div", { class: "form-actions" }, [create, cancel])
     ]));
@@ -2241,10 +2374,15 @@
     clear(host);
     host.appendChild(el("p", { class: "settings-desc", text: "A short walkthrough to get Audtheia running, on the desktop alone or with a Raspberry Pi field station." }));
 
-    guideSection(host, "Run on the desktop, no hardware", [
-      "Settings, Model paths: set the verification model path to a model file you have placed under models/, or place the demo detector at models/visual/desktop/screen_demo.onnx.",
-      "Open Detections and use Set capture source: pick a station and enter a source such as webcam:0, a stream, a URL, or a video file.",
-      "Watch Detections. Events appear as they are found; a source with no detector model produces no detections, so confirm the model path first."
+    guideSection(host, "Set up the visual detection model (desktop)", [
+      "Get your trained detector's weights. From Roboflow, use Download Weights (not the dataset); this is the checkpoint file, for example weights.pt.",
+      "Export it to ONNX. Install the exporter with: pip install \"rfdetr[onnxexport]\". Then export, for example: python -c \"from rfdetr import RFDETRMedium; RFDETRMedium(pretrain_weights=r'C:/path/weights.pt').export(output_dir=r'models/visual')\". This writes models/visual/inference_model.onnx; rename it if you like.",
+      "Point the app at it in two places, because the desktop uses two models. Edit the station and set its Desktop screening model to that .onnx (the detector that runs during capture), and under Settings, Model paths set the Verification model to the same file (the re-score). One file serves both.",
+      "The .onnx file must actually exist on disk. Setting a path or a citation does not create it; if a path points at no file, capture cannot start."
+    ]);
+    guideSection(host, "Run desktop capture, no hardware", [
+      "Open Detections, use Set capture source, pick a station, and enter a source such as webcam:0, stream:<web page url>, url:<direct stream>, or file:C:/clip.mp4.",
+      "Open Detections, Capture, and press Start for that station. Detections appear below, each with its captured frame; a station with no screening model in place cannot start."
     ]);
     guideSection(host, "Connect a Raspberry Pi field station", [
       "Settings, Stations, Add station: give it a name and environment. A station identifier is generated for you.",
