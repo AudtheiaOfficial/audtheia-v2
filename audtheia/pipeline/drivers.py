@@ -265,12 +265,28 @@ def build_frame_source(settings, station: dict) -> OpenCVFrameSource:
         )
 
     target, live = _parse_video_spec(video)
-    if video.strip().lower().startswith("stream:"):
+    low = video.strip().lower()
+    cv2 = _import_cv2()
+    if low.startswith("stream:"):
         # A page address (a YouTube or Pixcams live page) is not a media stream
         # OpenCV can open; yt-dlp resolves it to the direct stream first.
         target = _resolve_stream_url(target)
-    cv2 = _import_cv2()
     capture = cv2.VideoCapture(target)
+    # A plain web address pasted without a prefix may be a web *page* (a YouTube
+    # link, a live-cam page) rather than a direct media stream. If such a source
+    # does not open directly, resolve it through yt-dlp and try once more, so a
+    # webcam, a direct stream URL, a page link, or a file all work whether or not
+    # the user prefixes them. An explicit 'url:' is honored as a direct address
+    # and is never second-guessed; an explicit 'stream:' was already resolved.
+    if (not capture.isOpened()
+            and not low.startswith(("url:", "stream:"))
+            and low.startswith(("http://", "https://"))):
+        try:
+            resolved = _resolve_stream_url(target)
+        except Exception:  # noqa: BLE001 - yt-dlp missing or resolution failed
+            resolved = None
+        if resolved and resolved != target:
+            capture = cv2.VideoCapture(resolved)
     if not capture.isOpened():
         raise CaptureError(
             f"could not open the video source {video!r}. Check the camera index, "

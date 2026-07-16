@@ -213,6 +213,14 @@ def make_pi_settings(station_index: int):
     base = json.loads((REPO / "config" / "settings.json").read_text(encoding="utf-8"))
     base["node"]["role"] = "pi"
     base["node"]["active_station_id"] = base["stations"][station_index]["station_id"]
+    # Redirect writable data paths into a throwaway temp tree so the scenarios'
+    # shutil.rmtree of the configured detections dirs can never touch the real
+    # repository data/ (which would delete real captured frames and clips).
+    sandbox = tempfile.mkdtemp(prefix="audtheia-test-")
+    base["paths"]["data_dir"] = sandbox
+    base["paths"]["detections_visual_dir"] = str(Path(sandbox) / "detections" / "visual")
+    base["paths"]["detections_audio_dir"] = str(Path(sandbox) / "detections" / "audio")
+    base["paths"]["gps_dir"] = str(Path(sandbox) / "gps")
     path = REPO / "config" / f"settings.env.test.{station_index}.json"
     path.write_text(json.dumps(base), encoding="utf-8")
     return load_settings(path), path

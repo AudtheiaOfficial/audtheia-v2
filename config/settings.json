@@ -1,11 +1,9 @@
 {
   "settings_schema_version": "1.1.0",
-
   "node": {
     "role": "desktop",
     "active_station_id": null
   },
-
   "paths": {
     "db_path": "database/audtheia.db",
     "schema_path": "audtheia/storage/schema.sql",
@@ -17,21 +15,17 @@
     "models_dir": "models",
     "gbif_backbone_path": "audtheia/resources/gbif_backbone"
   },
-
   "database": {
     "wal": true,
     "busy_timeout_ms": 5000
   },
-
   "sync": {
     "batch_size": 500
   },
-
   "embeddings": {
     "forward_embeddings": false,
     "max_embedding_bytes": 8192
   },
-
   "media": {
     "image": {
       "format": "jpg",
@@ -42,14 +36,12 @@
       "sample_width_bytes": 2
     }
   },
-
   "buffer": {
     "high_water_pct": 80,
     "hard_ceiling_pct": 95,
     "auto_sync_when_reachable": true,
     "pause_capture_at_ceiling": true
   },
-
   "telemetry": {
     "heartbeat_seconds": 300,
     "energy_meter": {
@@ -58,19 +50,30 @@
       "address": null
     }
   },
-
   "analysis": {
     "per_observation_analysis_location": "pi",
     "baseline": {
       "period_granularity": "month"
     },
     "salience": {
-      "weights": { "confidence": 0.40, "anomaly": 0.60, "rarity": 0.20 },
-      "anomaly": { "min_effective_n": 8, "aggregator": "chi2_independent" }
+      "weights": {
+        "confidence": 0.4,
+        "anomaly": 0.6,
+        "rarity": 0.2
+      },
+      "anomaly": {
+        "min_effective_n": 8,
+        "aggregator": "chi2_independent"
+      }
     },
     "thresholds": {
-      "field_qc": { "pass_confidence": 0.10 },
-      "verification": { "clear_confidence": 0.50, "max_frames_scored": 32 },
+      "field_qc": {
+        "pass_confidence": 0.1
+      },
+      "verification": {
+        "clear_confidence": 0.5,
+        "max_frames_scored": 32
+      },
       "dream": {
         "min_periods_for_trend": 4,
         "min_events_for_correlation": 8,
@@ -80,11 +83,13 @@
       }
     }
   },
-
   "schedules": {
     "reports": {
       "schedule": "weekly",
-      "formats": ["pdf", "csv"]
+      "formats": [
+        "pdf",
+        "csv"
+      ]
     },
     "dream_pass": {
       "schedule": "weekly",
@@ -96,21 +101,17 @@
       }
     }
   },
-
   "server": {
     "host": "127.0.0.1",
     "port": 8000
   },
-
   "localization": {
     "local_timezone": "auto"
   },
-
   "privacy": {
     "discard_human_detections": true,
     "human_class_names": []
   },
-
   "network": {
     "hotspot_ssid_pattern": "AUDTHEIA-{station_name}",
     "ssh": {
@@ -119,16 +120,14 @@
       "username": null
     }
   },
-
   "secrets": {
     "path": "config/secrets.json"
   },
-
   "desktop_models": {
     "visual_rfdetr": {
-      "path": "models/visual/desktop/porifera_rfdetr.onnx",
-      "version": null,
-      "citation": null
+      "path": "models/visual/porifera_rfdetr.onnx",
+      "version": "2",
+      "citation": "@misc{ official-porifera-classifier-ju8er_dataset,   title = { Official Porifera Classifier Dataset },   type = { Open Source Dataset },   author = { Marine Sciences Research Station },   howpublished = { \\url{ https://universe.roboflow.com/marine-sciences-research-station/official-porifera-classifier-ju8er } },   url = { https://universe.roboflow.com/marine-sciences-research-station/official-porifera-classifier-ju8er },   journal = { Roboflow Universe },   publisher = { Roboflow },   year = { 2025 },   month = { dec },   note = { visited on 2026-07-13 }, }"
     },
     "llm": {
       "path": "models/llm/",
@@ -136,7 +135,6 @@
       "citation": null
     }
   },
-
   "stations": [
     {
       "station_id": "00000000-0000-0000-0000-000000000001",
@@ -145,9 +143,15 @@
       "habitat": "coral_reef",
       "target_species": [],
       "sensors": {
-        "camera": { "enabled": true },
-        "audio": { "enabled": true },
-        "gps": { "enabled": true }
+        "camera": {
+          "enabled": true
+        },
+        "audio": {
+          "enabled": true
+        },
+        "gps": {
+          "enabled": true
+        }
       },
       "channels": [
         {
@@ -155,10 +159,20 @@
           "unit": "degC",
           "marine": true,
           "enabled": true,
-          "driver": { "interface": "i2c", "address": "0x66", "type": "atlas_ezo_rtd" },
+          "driver": {
+            "interface": "i2c",
+            "address": "0x66",
+            "type": "atlas_ezo_rtd"
+          },
           "qc": {
-            "gross_range": { "min": -2.0, "max": 40.0 },
-            "sensor_range": { "min": -5.0, "max": 50.0 },
+            "gross_range": {
+              "min": -2.0,
+              "max": 40.0
+            },
+            "sensor_range": {
+              "min": -5.0,
+              "max": 50.0
+            },
             "detection_limit": null
           }
         },
@@ -167,10 +181,20 @@
           "unit": "pH",
           "marine": true,
           "enabled": true,
-          "driver": { "interface": "i2c", "address": "0x63", "type": "atlas_ezo_ph" },
+          "driver": {
+            "interface": "i2c",
+            "address": "0x63",
+            "type": "atlas_ezo_ph"
+          },
           "qc": {
-            "gross_range": { "min": 6.0, "max": 9.0 },
-            "sensor_range": { "min": 0.0, "max": 14.0 },
+            "gross_range": {
+              "min": 6.0,
+              "max": 9.0
+            },
+            "sensor_range": {
+              "min": 0.0,
+              "max": 14.0
+            },
             "detection_limit": null
           }
         },
@@ -179,10 +203,20 @@
           "unit": "mg/L",
           "marine": true,
           "enabled": true,
-          "driver": { "interface": "i2c", "address": "0x61", "type": "atlas_ezo_do" },
+          "driver": {
+            "interface": "i2c",
+            "address": "0x61",
+            "type": "atlas_ezo_do"
+          },
           "qc": {
-            "gross_range": { "min": 0.0, "max": 20.0 },
-            "sensor_range": { "min": 0.0, "max": 50.0 },
+            "gross_range": {
+              "min": 0.0,
+              "max": 20.0
+            },
+            "sensor_range": {
+              "min": 0.0,
+              "max": 50.0
+            },
             "detection_limit": 0.01
           }
         },
@@ -191,10 +225,20 @@
           "unit": "PSU",
           "marine": true,
           "enabled": true,
-          "driver": { "interface": "i2c", "address": "0x64", "type": "atlas_ezo_ec" },
+          "driver": {
+            "interface": "i2c",
+            "address": "0x64",
+            "type": "atlas_ezo_ec"
+          },
           "qc": {
-            "gross_range": { "min": 0.0, "max": 42.0 },
-            "sensor_range": { "min": 0.0, "max": 80.0 },
+            "gross_range": {
+              "min": 0.0,
+              "max": 42.0
+            },
+            "sensor_range": {
+              "min": 0.0,
+              "max": 80.0
+            },
             "detection_limit": null
           }
         }
@@ -224,11 +268,17 @@
               "citation": null
             }
           }
+        },
+        "visual_desktop": {
+          "path": "models/visual/porifera_rfdetr.onnx"
         }
       },
       "capture": {
         "fps": 15,
-        "resolution": { "width": 1280, "height": 720 },
+        "resolution": {
+          "width": 1280,
+          "height": 720
+        },
         "bytetrack": {
           "track_activation_threshold": 0.25,
           "minimum_matching_threshold": 0.8,
@@ -250,6 +300,10 @@
           "enabled": false,
           "metrics": [],
           "cadence_seconds": 60
+        },
+        "source": {
+          "video": "https://youtu.be/e1HunZ_Iqac",
+          "audio": null
         }
       }
     },
@@ -260,9 +314,15 @@
       "habitat": "forest_tropical",
       "target_species": [],
       "sensors": {
-        "camera": { "enabled": true },
-        "audio": { "enabled": true },
-        "gps": { "enabled": true }
+        "camera": {
+          "enabled": true
+        },
+        "audio": {
+          "enabled": true
+        },
+        "gps": {
+          "enabled": true
+        }
       },
       "channels": [
         {
@@ -270,10 +330,20 @@
           "unit": "degC",
           "marine": false,
           "enabled": true,
-          "driver": { "interface": "i2c", "address": "0x44", "type": "sht4x" },
+          "driver": {
+            "interface": "i2c",
+            "address": "0x44",
+            "type": "sht4x"
+          },
           "qc": {
-            "gross_range": { "min": -20.0, "max": 55.0 },
-            "sensor_range": { "min": -40.0, "max": 85.0 },
+            "gross_range": {
+              "min": -20.0,
+              "max": 55.0
+            },
+            "sensor_range": {
+              "min": -40.0,
+              "max": 85.0
+            },
             "detection_limit": null
           }
         },
@@ -282,10 +352,20 @@
           "unit": "%",
           "marine": false,
           "enabled": true,
-          "driver": { "interface": "i2c", "address": "0x44", "type": "sht4x" },
+          "driver": {
+            "interface": "i2c",
+            "address": "0x44",
+            "type": "sht4x"
+          },
           "qc": {
-            "gross_range": { "min": 0.0, "max": 100.0 },
-            "sensor_range": { "min": 0.0, "max": 100.0 },
+            "gross_range": {
+              "min": 0.0,
+              "max": 100.0
+            },
+            "sensor_range": {
+              "min": 0.0,
+              "max": 100.0
+            },
             "detection_limit": null
           }
         },
@@ -294,10 +374,20 @@
           "unit": "%",
           "marine": false,
           "enabled": true,
-          "driver": { "interface": "i2c", "address": "0x36", "type": "capacitive_soil" },
+          "driver": {
+            "interface": "i2c",
+            "address": "0x36",
+            "type": "capacitive_soil"
+          },
           "qc": {
-            "gross_range": { "min": 0.0, "max": 100.0 },
-            "sensor_range": { "min": 0.0, "max": 100.0 },
+            "gross_range": {
+              "min": 0.0,
+              "max": 100.0
+            },
+            "sensor_range": {
+              "min": 0.0,
+              "max": 100.0
+            },
             "detection_limit": null
           }
         },
@@ -306,10 +396,20 @@
           "unit": "lux",
           "marine": false,
           "enabled": true,
-          "driver": { "interface": "i2c", "address": "0x23", "type": "bh1750" },
+          "driver": {
+            "interface": "i2c",
+            "address": "0x23",
+            "type": "bh1750"
+          },
           "qc": {
-            "gross_range": { "min": 0.0, "max": 100000.0 },
-            "sensor_range": { "min": 0.0, "max": 120000.0 },
+            "gross_range": {
+              "min": 0.0,
+              "max": 100000.0
+            },
+            "sensor_range": {
+              "min": 0.0,
+              "max": 120000.0
+            },
             "detection_limit": 1.0
           }
         }
@@ -348,7 +448,10 @@
       },
       "capture": {
         "fps": 10,
-        "resolution": { "width": 1280, "height": 720 },
+        "resolution": {
+          "width": 1280,
+          "height": 720
+        },
         "bytetrack": {
           "track_activation_threshold": 0.25,
           "minimum_matching_threshold": 0.8,

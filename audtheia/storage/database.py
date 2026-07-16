@@ -613,16 +613,15 @@ class Database:
                 conn, "SELECT * FROM observations WHERE id = ?", (observation_id,)
             )
 
-    def list_observations(
-        self,
-        *,
-        station_id: Optional[str] = None,
-        since: Optional[str] = None,
-        until: Optional[str] = None,
-        limit: Optional[int] = None,
-    ) -> list[dict]:
-        """List events, newest window first, optionally bounded by station and time."""
-        clauses = []
+    @staticmethod
+    def _observation_filters(station_id, since, until, species) -> tuple:
+        """Build the shared WHERE clauses for listing and counting observations.
+
+        `species` matches events that have a child detection of that name in any
+        modality, via a subquery, so the same filter drives the paged list and
+        its total count identically.
+        """
+        clauses: list = []
         params: list = []
         if station_id is not None:
             clauses.append("station_id = ?")
@@ -633,13 +632,163 @@ class Database:
         if until is not None:
             clauses.append("first_seen <= ?")
             params.append(until)
+        if species:
+            clauses.append(
+                "id IN (SELECT observation_id FROM child_detections WHERE common_name = ?)"
+            )
+            params.append(species)
+        return clauses, params
+
+    def list_observations(
+        self,
+        *,
+        station_id: Optional[str] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        species: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+    ) -> list[dict]:
+        """List events, newest window first, optionally bounded and paginated.
+
+        `species` narrows to events with a matching detection; `limit`/`offset`
+        page the result. Offset is honored only alongside a limit (SQLite pages
+        with `LIMIT ... OFFSET`).
+        """
+        clauses, params = self._observation_filters(station_id, since, until, species)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         tail = " ORDER BY first_seen DESC, id"
         if limit is not None:
             tail += " LIMIT ?"
-            params.append(limit)
+            params.append(int(limit))
+            if offset:
+                tail += " OFFSET ?"
+                params.append(int(offset))
         with self.connect() as conn:
             return self._all(conn, f"SELECT * FROM observations{where}{tail}", tuple(params))
+
+    def count_observations(
+        self,
+        *,
+        station_id: Optional[str] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        species: Optional[str] = None,
+    ) -> int:
+        """Total events matching the same filters as `list_observations`, for paging."""
+        clauses, params = self._observation_filters(station_id, since, until, species)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        with self.connect() as conn:
+            row = self._one(conn, f"SELECT COUNT(*) AS n FROM observations{where}", tuple(params))
+            return int((row or {}).get("n") or 0)
+
+    def list_species(self, *, station_id: Optional[str] = None) -> list[str]:
+        """Distinct resolved species names, for the detections species filter.
+
+        Names come from `child_detections.common_name` across all modalities,
+        optionally bounded to one station, ordered alphabetically.
+        """
+        clauses = ["c.common_name IS NOT NULL"]
+        params: list = []
+        if station_id is not None:
+            clauses.append("o.station_id = ?")
+            params.append(station_id)
+        where = " WHERE " + " AND ".join(clauses)
+        with self.connect() as conn:
+            rows = self._all(
+                conn,
+                "SELECT DISTINCT c.common_name AS name FROM child_detections c "
+                "JOIN observations o ON o.id = c.observation_id" + where +
+                " ORDER BY c.common_name",
+                tuple(params),
+            )
+            return [r["name"] for r in rows]
+
+    def delete_observations(self, observation_ids: list[str]) -> dict:
+        """Delete observations and everything that hangs off them.
+
+        Child rows in child_detections, environmental_readings,
+        observation_verification, interpretations, and pattern_observations are
+        removed automatically by ON DELETE CASCADE, which the connection enables
+        with `PRAGMA foreign_keys = ON`. The visual frame and audio clip paths
+        are read before the rows go, and returned, so the caller can remove those
+        files from disk. Ids that do not exist are ignored; the returned
+        `deleted` list reflects only rows that were actually present.
+        """
+        ids = [i for i in dict.fromkeys(observation_ids) if i]
+        if not ids:
+            return {"deleted": [], "media": []}
+        marks = ",".join("?" for _ in ids)
+        with self.connect() as conn:
+            rows = self._all(
+                conn,
+                f"SELECT id, representative_frame, audio_clip_path "
+                f"FROM observations WHERE id IN ({marks})",
+                tuple(ids),
+            )
+            present = [r["id"] for r in rows]
+            media: list[str] = []
+            for r in rows:
+                if r.get("representative_frame"):
+                    media.append(r["representative_frame"])
+                if r.get("audio_clip_path"):
+                    media.append(r["audio_clip_path"])
+            if present:
+                conn.execute(
+                    f"DELETE FROM observations WHERE id IN ({','.join('?' for _ in present)})",
+                    tuple(present),
+                )
+        return {"deleted": present, "media": media}
+
+    def salience_counts(self, station_id: str, species_key: Optional[str]) -> dict:
+        """Return the novelty and rarity counts for a species, over all history.
+
+        Species counts are taken over `child_detections.common_name` regardless
+        of modality, so a species contributes whether it was seen or heard:
+
+        - ``n_s``         observations of this species at this station,
+        - ``t_station``   total observations at this station,
+        - ``count_s``     observations of this species across the whole record,
+        - ``count_total`` total observations in the record.
+
+        These feed `pipeline.salience`, where local novelty is the smoothed
+        surprisal of ``n_s`` within ``t_station`` and global rarity the smoothed
+        surprisal of ``count_s`` within ``count_total``. Callers query this
+        *before* inserting the new observation, so an event never counts toward
+        its own baseline. A missing `species_key` yields zero species counts
+        (treated as first-seen), with the station and record totals still
+        populated.
+        """
+        with self.connect() as conn:
+            t_station_row = self._one(
+                conn,
+                "SELECT COUNT(*) AS n FROM observations WHERE station_id = ?",
+                (station_id,),
+            )
+            t_station = int((t_station_row or {}).get("n") or 0)
+            total_row = self._one(conn, "SELECT COUNT(*) AS n FROM observations")
+            count_total = int((total_row or {}).get("n") or 0)
+
+            n_s = 0
+            count_s = 0
+            if species_key:
+                n_s_row = self._one(
+                    conn,
+                    "SELECT COUNT(DISTINCT o.id) AS n"
+                    " FROM observations o JOIN child_detections c ON c.observation_id = o.id"
+                    " WHERE o.station_id = ? AND c.common_name = ?",
+                    (station_id, species_key),
+                )
+                n_s = int((n_s_row or {}).get("n") or 0)
+                count_s_row = self._one(
+                    conn,
+                    "SELECT COUNT(DISTINCT o.id) AS n"
+                    " FROM observations o JOIN child_detections c ON c.observation_id = o.id"
+                    " WHERE c.common_name = ?",
+                    (species_key,),
+                )
+                count_s = int((count_s_row or {}).get("n") or 0)
+        return {"n_s": n_s, "t_station": t_station, "count_s": count_s, "count_total": count_total}
 
     def list_synced_since(
         self,

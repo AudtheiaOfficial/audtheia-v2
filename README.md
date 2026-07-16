@@ -104,9 +104,22 @@ The reference configuration ships a station already set to `webcam:0` so you can
 
 ### Step 2: Provide a detection model
 
-Desktop detection uses an RF-DETR model (Apache-2.0) exported to ONNX, placed at the path the station's desktop model setting names. See the [custom models guide](docs/custom-models.md) for how to obtain or train one. Until a model is present, the pipeline still runs; it simply records no detections.
+Desktop detection uses an RF-DETR model exported to ONNX, placed at the path the station's desktop model setting names (`models/visual/porifera_rfdetr.onnx` in the reference configuration). See the [custom models guide](docs/custom-models.md) for how to obtain or train one. Until a model is present, the pipeline still runs; it simply records no detections.
 
-### Step 3: Run it
+### Step 3: Give the model its species names
+
+An RF-DETR ONNX carries no class names of its own, and its class head is 1-based with a reserved slot at index 0, so without a names file the interface would label detections by their numeric class id. Audtheia reads names from a small file placed beside the model, named `<model-name>.labels.json` (a plain `{"id": "name"}` map). The reference Porifera model already ships its names file at `models/visual/porifera_rfdetr.labels.json`, so as long as you keep the model named `porifera_rfdetr.onnx`, detections are labeled with the correct species automatically, with nothing else to do.
+
+For any other model, or to rebuild the file, generate it from that model's Roboflow COCO export. This is a one-time, offline build step; it never runs during capture:
+
+```
+pip install roboflow
+python scripts/fetch_porifera_dataset.py --api-key YOUR_ROBOFLOW_KEY   # from roboflow.com -> Settings -> API keys
+```
+
+That downloads the dataset version matching your model, reads its authoritative class list, and writes the names file beside the model (checking it against the model's own class head as it goes). If you already have a COCO export on disk, skip the download and run `python scripts/build_porifera_labels.py --coco path/to/_annotations.coco.json` instead. The [custom models guide](docs/custom-models.md) explains the details.
+
+### Step 4: Run it
 
 ```
 ./scripts/run-desktop.sh    # Linux, macOS, Raspberry Pi OS

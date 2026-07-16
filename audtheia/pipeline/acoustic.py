@@ -66,6 +66,7 @@ from audtheia.pipeline.monitor import (
     ISO_FORMAT,
     TrackEvent,
 )
+from audtheia.pipeline.salience import compute_salience
 
 __all__ = [
     "AudioBlock",
@@ -883,12 +884,19 @@ class AcousticMonitor:
     def _write_event(self, event: AcousticEvent) -> None:
         created_at = utc_now_iso()
 
-        # Until the longitudinal baselines exist on the desktop, the provisional
-        # salience is the loudest call's own confidence, written to the
-        # provisional slot only; the desktop computes the authoritative value
-        # later and this value is never treated as final.
-        best_conf = max((c["confidence"] for c in event.children), default=0.0)
-        provisional_salience = float(min(max(best_conf, 0.0), 1.0))
+        # Provisional salience per docs/salience.md (#106): the acoustic path's
+        # detection evidence is the loudest call's confidence (A_eff), corroborated
+        # by any coincident visual detection (C_eff) via noisy-OR, gating importance
+        # from the species' local novelty and dataset rarity. Counts are read before
+        # insert so the event never seeds its own baseline. Provisional slot only;
+        # the desktop computes the authoritative value later.
+        a_eff = max((c.get("confidence") or 0.0 for c in event.children), default=0.0)
+        c_eff = max((v.get("confidence") or 0.0 for v in event.visual_children), default=0.0)
+        dominant = max(event.children, key=lambda c: c.get("confidence") or 0.0, default=None)
+        species_key = dominant.get("class_name") if dominant else None
+        counts = self._db.salience_counts(event.station_id, species_key)
+        species_universe = len(self._model.class_names)
+        provisional_salience = compute_salience(c_eff, a_eff, counts, k=species_universe)
 
         observation = Observation(
             id=event.observation_id,

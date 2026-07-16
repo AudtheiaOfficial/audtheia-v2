@@ -61,6 +61,7 @@ from audtheia.storage.database import (
     new_id,
     utc_now_iso,
 )
+from audtheia.pipeline.salience import compute_salience
 
 __all__ = [
     "Frame",
@@ -865,11 +866,21 @@ class Monitor:
         capture = self._trigger_sink.on_event(event)
         created_at = utc_now_iso()
 
-        # Until the longitudinal baselines exist on the desktop, the provisional
-        # salience is the detection's own confidence, written to the provisional
-        # slot only. The desktop computes the authoritative value later; this
-        # value is never treated as final.
-        provisional_salience = event.best_confidence
+        # Provisional salience per docs/salience.md (#106): confidence-gated
+        # importance from local novelty and dataset rarity. The species is the
+        # track's highest-confidence taxon; its novelty and rarity counts are read
+        # before this observation is inserted, so an event never seeds its own
+        # baseline. A_eff is 0 on the vision path (no matched acoustic detection),
+        # so the detection evidence reduces to the visual confidence. This writes
+        # the provisional slot only; the desktop computes the authoritative value
+        # later and this value is never treated as final.
+        dominant = max(event.children, key=lambda c: c.get("confidence") or 0.0)
+        species_key = dominant.get("class_name")
+        counts = self._db.salience_counts(event.station_id, species_key)
+        species_universe = len(self._detector.class_names)
+        provisional_salience = compute_salience(
+            event.best_confidence, 0.0, counts, k=species_universe
+        )
 
         observation = Observation(
             id=event.observation_id,

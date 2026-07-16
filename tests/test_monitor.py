@@ -137,9 +137,28 @@ def make_pi_settings():
     base = json.loads((REPO / "config" / "settings.json").read_text(encoding="utf-8"))
     base["node"]["role"] = "pi"
     base["node"]["active_station_id"] = base["stations"][0]["station_id"]
+    _redirect_data_paths_to_sandbox(base)
     path = REPO / "config" / "settings.pi.test.json"
     path.write_text(json.dumps(base), encoding="utf-8")
     return load_settings(path), path
+
+
+def _redirect_data_paths_to_sandbox(base: dict) -> str:
+    """Point every writable data path at a throwaway temp tree.
+
+    The scenarios clean their working directories with shutil.rmtree on the
+    CONFIGURED detections directories. Those are relative in the shipped
+    settings, so without this redirect they resolve under the real repository
+    and a test run would delete real captured frames and clips in
+    data/detections/. Anchoring them in a temp directory makes the cleanup, and
+    everything the monitor writes, land in throwaway space only.
+    """
+    sandbox = tempfile.mkdtemp(prefix="audtheia-test-")
+    base["paths"]["data_dir"] = sandbox
+    base["paths"]["detections_visual_dir"] = str(Path(sandbox) / "detections" / "visual")
+    base["paths"]["detections_audio_dir"] = str(Path(sandbox) / "detections" / "audio")
+    base["paths"]["gps_dir"] = str(Path(sandbox) / "gps")
+    return sandbox
 
 
 def fresh_db(settings, tmp: Path) -> Database:
@@ -214,11 +233,15 @@ def validate_observation_row(row: dict):
     check("trigger_source is vision", row["trigger_source"] == "vision")
     check("data_source is model", row["data_source"] == "model")
     check("qc_state starts pending", row["qc_state"] == "qc_pending")
+    # Salience (#106) is confidence-gated importance: S = C * (wN*N + wR*R),
+    # so it never exceeds the screening confidence and equals it only for a
+    # novel first sighting (N = R = 1), which every observation in these
+    # scenarios is.
     check(
-        "provisional salience is in range and equals screening confidence",
+        "provisional salience is in range and gated by screening confidence (#106)",
         row["salience_provisional"] is not None
         and 0.0 <= row["salience_provisional"] <= 1.0
-        and abs(row["salience_provisional"] - row["screening_confidence"]) < 1e-9,
+        and row["salience_provisional"] <= row["screening_confidence"] + 1e-9,
     )
     check("authoritative salience is untouched at capture", "salience_authoritative" not in row)
     check("event_name follows station_date_short form", row["event_name"].startswith("ExampleReef_2026-06-30_"))

@@ -63,6 +63,27 @@ The desktop verifier is far simpler, because it needs no special compilation. Tr
 
 The desktop runs the ONNX model through ONNX Runtime on your computer's own processor, so there is no accelerator, no compiler, and no calibration step.
 
+## Giving the model its class names
+
+An RF-DETR ONNX export does not carry its class names, so Audtheia reads them from a small file placed beside the model. Name the file after the model with a `.labels.json` suffix (`porifera_rfdetr.onnx` pairs with `porifera_rfdetr.labels.json`); the loader also accepts `.labels.txt` or `.names`, or an inline `class_names` map on the model's settings entry. Without any of these, detections are still recorded but are labeled by their numeric class id.
+
+Two properties of RF-DETR make the names non-obvious, and both are handled for you. First, RF-DETR uses **1-based** class ids with a reserved dummy slot at index 0, so a detection reported as class 21 corresponds to the annotation category whose id is 21. Second, RF-DETR sizes its class head to the highest category id it was trained against plus one, not to the number of classes you actually use; a model with 130 live classes can therefore export a much wider head (the reference Porifera model's head is 366 wide, with only ids 1-130 in use and the rest inert). This is expected, not a defect, and it means you cannot infer names from a class list sorted alphabetically, because the display order is not the id order. The authoritative id-to-name mapping is the `categories` array in the model's own training data, exported in COCO format.
+
+Build the labels file from that export with the helper scripts. If the model is hosted on Roboflow, fetch and build in one step:
+
+```
+pip install roboflow
+python scripts/fetch_porifera_dataset.py --api-key YOUR_ROBOFLOW_KEY
+```
+
+It downloads the dataset version that matches your model, reads its `categories`, and writes `<model>.labels.json` beside the model, warning you if the category ids do not fit the model's head (a sign the export and the model are different versions). If you already have a COCO `_annotations.coco.json` on disk, skip the download:
+
+```
+python scripts/build_porifera_labels.py --coco path/to/_annotations.coco.json --model models/visual/your_model.onnx
+```
+
+Both steps are one-time and offline; neither is a runtime dependency. To confirm the mapping rather than trust it, run the model on a few labeled images from the export's test split and check that the predicted ids resolve to the species actually pictured. The reference Porifera model already ships its `porifera_rfdetr.labels.json`, verified this way against its own test set, so keeping that model's filename gives correct species names with no further work.
+
 ## Preparing the desktop hardware-free detector
 
 The hardware-free desktop mode screens frames with an ONNX detector too. Export your trained detector to ONNX and set the station's Desktop screening model path to it. The screening step accepts either a **YOLO** or an **RF-DETR** export and detects which from the model's own outputs, so the same RF-DETR file you use to verify can also screen; there is no need for a separate YOLO model on the desktop. No model file ships with the repository, so this path is always your own exported file.

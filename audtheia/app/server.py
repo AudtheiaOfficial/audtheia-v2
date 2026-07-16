@@ -870,6 +870,9 @@ def create_app(settings, database):
         user: Optional[str] = None
         port: Optional[int] = None
 
+    class ObservationDeleteRequest(BaseModel):
+        ids: Optional[list] = None
+
     # -- meta ------------------------------------------------------------
 
     @app.get(f"{API_PREFIX}/health")
@@ -893,15 +896,60 @@ def create_app(settings, database):
 
     @app.get(f"{API_PREFIX}/detections")
     def detections(station_id: str | None = Query(default=None), since: str | None = Query(default=None),
-                   until: str | None = Query(default=None), limit: int = Query(default=100, ge=1, le=1000)):
-        rows = db.list_observations(station_id=station_id, since=since, until=until, limit=limit)
+                   until: str | None = Query(default=None), species: str | None = Query(default=None),
+                   limit: int = Query(default=100, ge=1, le=100000), offset: int = Query(default=0, ge=0)):
+        sp = species.strip() if species and species.strip() else None
+        total = db.count_observations(station_id=station_id, since=since, until=until, species=sp)
+        rows = db.list_observations(station_id=station_id, since=since, until=until, species=sp,
+                                    limit=limit, offset=offset)
         out = []
         for obs in rows:
             item = dict(obs)
             item["vision_detections"] = [c for c in db.list_child_detections(obs["id"]) if c.get("modality") == "vision"]
             item["verification"] = db.get_observation_verification(obs["id"])
             out.append(item)
-        return out
+        return {"items": out, "total": total, "limit": limit, "offset": offset}
+
+    # Registered before '/detections/{observation_id}' so the literal path is not
+    # captured as an id. Returns the full species list for the filter dropdown.
+    @app.get(f"{API_PREFIX}/detections/species")
+    def detection_species(station_id: str | None = Query(default=None)):
+        return db.list_species(station_id=station_id)
+
+    @app.post(f"{API_PREFIX}/detections/delete")
+    def delete_detections(request: ObservationDeleteRequest):
+        """Delete one or more observations and their stored media.
+
+        Removing an observation cascades in the database to its child detections,
+        environmental readings, verification, interpretations, and pattern links.
+        The stored frame and audio clip are then removed from disk, guarded by the
+        same in-data-directory check the media route uses, so nothing outside the
+        data directory is ever touched. Unknown ids are ignored.
+        """
+        ids = [str(i) for i in (request.ids or []) if i]
+        if not ids:
+            raise HTTPException(status_code=400, detail="no observation ids were given to delete")
+        result = db.delete_observations(ids)
+        data_dir = Path(settings.path("data_dir")).resolve()
+        media_removed = 0
+        for rel in result.get("media", []):
+            try:
+                raw = Path(rel)
+                target = (raw if raw.is_absolute() else Path(settings.repo_root) / raw).resolve()
+            except (OSError, ValueError):
+                continue
+            if (target == data_dir or data_dir in target.parents) and target.is_file():
+                try:
+                    target.unlink()
+                    media_removed += 1
+                except OSError:
+                    pass
+        return {
+            "status": "deleted",
+            "ids": result.get("deleted", []),
+            "count": len(result.get("deleted", [])),
+            "media_removed": media_removed,
+        }
 
     @app.get(f"{API_PREFIX}/detections/{{observation_id}}")
     def detection_detail(observation_id):
@@ -917,6 +965,81 @@ def create_app(settings, database):
             "verification": db.get_observation_verification(observation_id),
             "interpretations": db.list_interpretations(observation_id),
         }
+
+    @app.get(f"{API_PREFIX}/detections/{{observation_id}}/frames")
+    def detection_frames(observation_id):
+        """Return every stored frame of an event with its per-frame annotation.
+
+        The capture pipeline writes each detected frame to the event directory and
+        appends one line per frame to `annotations.jsonl` (index, timestamp,
+        confidence, box), alongside an `annotations.json` manifest. This read-only
+        endpoint surfaces both so the interface can audit an observation's stats —
+        the frame count, the true duration, and the per-frame confidences — rather
+        than asking the scientist to trust them. Boxes are converted to the same
+        x/y/w/h form the card overlay uses. Nothing is written or deleted.
+        """
+        obs = db.get_observation(observation_id)
+        if obs is None:
+            raise HTTPException(status_code=404, detail=f"no observation with id {observation_id}")
+        rep = obs.get("representative_frame")
+        if not rep:
+            return {"observation": obs, "manifest": None, "frames": []}
+
+        data_dir = Path(settings.path("data_dir")).resolve()
+        rep_path = Path(rep)
+        rep_abs = (rep_path if rep_path.is_absolute() else Path(settings.repo_root) / rep_path).resolve()
+        if data_dir not in rep_abs.parents and rep_abs != data_dir:
+            raise HTTPException(status_code=400, detail="frame path is outside the data directory")
+        event_dir = rep_abs.parent
+
+        manifest = None
+        manifest_file = event_dir / "annotations.json"
+        if manifest_file.is_file():
+            try:
+                manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                manifest = None
+
+        frames = []
+        index_file = event_dir / "annotations.jsonl"
+        if index_file.is_file():
+            try:
+                lines = index_file.read_text(encoding="utf-8").splitlines()
+            except OSError:
+                lines = []
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                fname = rec.get("file")
+                if not fname:
+                    continue
+                frame_abs = (event_dir / fname).resolve()
+                try:
+                    rel = frame_abs.relative_to(Path(settings.repo_root)).as_posix()
+                except ValueError:
+                    rel = str(frame_abs)
+                frame = {
+                    "index": rec.get("index"),
+                    "path": rel,
+                    "captured_at": rec.get("captured_at"),
+                    "confidence": rec.get("confidence"),
+                    "class_name": rec.get("class_name"),
+                }
+                bbox = rec.get("bbox_xyxy") or []
+                if len(bbox) == 4:
+                    x1, y1, x2, y2 = bbox
+                    frame["bbox_x"] = x1
+                    frame["bbox_y"] = y1
+                    frame["bbox_w"] = x2 - x1
+                    frame["bbox_h"] = y2 - y1
+                frames.append(frame)
+
+        return {"observation": obs, "manifest": manifest, "frames": frames}
 
     # -- audio -----------------------------------------------------------
 
