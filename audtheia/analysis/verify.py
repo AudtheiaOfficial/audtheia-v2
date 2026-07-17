@@ -121,6 +121,15 @@ QC_PASSED = "qc_passed"
 QC_DEFERRED = "qc_deferred"
 ELIGIBLE_QC_STATES = frozenset({QC_PASSED, QC_DEFERRED})
 
+# The acoustic clearance floor, used only for pure audio events. An audio event
+# has no frame for the visual verifier to re-score, so it cannot be cross-checked
+# by a second model; it is cleared for the dream pass's generative phase when its
+# strongest acoustic detection meets this confidence floor. This is a weaker gate
+# than the visual two-model check — it rests on the model's own confidence — and
+# is set higher than the visual floor so only a strong call earns generative use.
+# Overridable via analysis.thresholds.verification.acoustic_clear_confidence.
+DEFAULT_ACOUSTIC_CLEAR_CONFIDENCE = 0.7
+
 # The only provenance an interpretation may carry: it is inference, always.
 DATA_SOURCE_LLM_INFERRED = "llm_inferred"
 
@@ -311,6 +320,7 @@ class VerifyEngine:
         interpreter,
         clear_confidence: Optional[float] = None,
         max_frames_scored: Optional[int] = None,
+        acoustic_clear_confidence: Optional[float] = None,
     ) -> None:
         self._settings = settings
         self._db = db
@@ -328,6 +338,10 @@ class VerifyEngine:
         self._max_frames_scored = int(
             max_frames_scored if max_frames_scored is not None
             else verification_thresholds["max_frames_scored"]
+        )
+        self._acoustic_clear_confidence = float(
+            acoustic_clear_confidence if acoustic_clear_confidence is not None
+            else verification_thresholds.get("acoustic_clear_confidence", DEFAULT_ACOUSTIC_CLEAR_CONFIDENCE)
         )
 
         # Visible counters, so a worker's progress is observable without reaching
@@ -369,6 +383,13 @@ class VerifyEngine:
             return self._skip(observation_id, "record already verified")
 
         children = self._db.list_child_detections(observation_id)
+
+        # A pure acoustic event has no frame for the visual verifier to re-score,
+        # so it takes the acoustic-confidence gate instead of a second-model
+        # cross-check. Handled and returned here before any frame work.
+        if str(obs.get("trigger_source")) == "audio":
+            return self._process_acoustic(observation_id, children)
+
         readings = self._db.list_environmental_readings(observation_id)
 
         field_key, field_name = self._field_label(children)
@@ -410,6 +431,59 @@ class VerifyEngine:
         return self._finalize(
             observation_id, cleared=cleared, verdict=verdict, written=written
         )
+
+    def _process_acoustic(self, observation_id: str, children: list[dict]) -> VerifyResult:
+        """Clear a pure acoustic event by the acoustic-confidence gate.
+
+        An audio event has no frame to re-score, so it cannot be cross-checked by
+        a second model the way a visual event is. It is cleared when its strongest
+        acoustic detection meets the configured confidence floor — an honest,
+        weaker gate than the visual two-model check, recorded as an acoustic
+        clearance with every RF-DETR field left null because no RF-DETR ran. The
+        peak confidence is not copied into the verdict's rfdetr_* columns, which
+        are reserved for the visual verifier; it already lives on the child
+        acoustic detections and in the audio audit.
+        """
+        confidences = [
+            float(c["confidence"]) for c in children
+            if c.get("modality") == "audio" and c.get("confidence") is not None
+        ]
+        peak = max(confidences) if confidences else None
+        cleared = peak is not None and peak >= self._acoustic_clear_confidence
+        self._write_acoustic_clearance(observation_id, cleared=cleared)
+        verdict = VerificationVerdict(
+            aggregate_confidence=peak, frames_scored=0, frames_in_agreement=0
+        )
+        return self._finalize(observation_id, cleared=cleared, verdict=verdict, written=0)
+
+    def _write_acoustic_clearance(self, observation_id: str, *, cleared: bool) -> None:
+        """Record an acoustic clearance in the desktop-owned verification table.
+
+        `verified` is the only gate the dream pass reads, and it is set from the
+        acoustic confidence gate. Every rfdetr_* field is null because no RF-DETR
+        ran, and the authoritative salience is left unset so the field-provisional
+        salience stands until a baseline recompute exists — matching how a
+        frameless event is handled elsewhere.
+        """
+        now = utc_now_iso()
+        verification = ObservationVerification(
+            observation_id=observation_id,
+            created_at=now,
+            verified=1 if cleared else 0,
+            rfdetr_version=None,
+            rfdetr_gbif_usage_key=None,
+            rfdetr_scientific_name=None,
+            rfdetr_confidence=None,
+            rfdetr_agrees_with_field=None,
+            frames_scored=0,
+            frames_in_agreement=0,
+            salience_authoritative=None,
+            rarity_score=None,
+            baseline_deviation=None,
+            anomaly_magnitude_authoritative=None,
+            verified_at=now if cleared else None,
+        )
+        self._db.upsert_observation_verification(verification)
 
     def sweep(
         self, *, station_id: Optional[str] = None, limit: Optional[int] = None

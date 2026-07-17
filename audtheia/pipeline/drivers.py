@@ -136,22 +136,34 @@ def _parse_video_spec(spec: str) -> tuple:
     read, and false for a file, where timestamps advance from the file's own
     frame rate so a replayed clip yields sensible event durations.
     """
-    s = str(spec).strip()
+    s = _unquote_spec(spec)
     lowered = s.lower()
     if lowered.startswith("webcam"):
         rest = s.split(":", 1)[1].strip() if ":" in s else ""
         return (int(rest) if rest.isdigit() else 0), True
     if lowered.startswith("stream:"):
-        return s.split(":", 1)[1].strip(), True
+        return _unquote_spec(s.split(":", 1)[1]), True
     if lowered.startswith("url:"):
-        return s.split(":", 1)[1].strip(), True
+        return _unquote_spec(s.split(":", 1)[1]), True
     if lowered.startswith("file:"):
-        return s.split(":", 1)[1].strip(), False
+        return _unquote_spec(s.split(":", 1)[1]), False
     if s.isdigit():
         return int(s), True
     if lowered.startswith(("rtsp://", "http://", "https://", "udp://", "tcp://")):
         return s, True
     return s, False
+
+
+def _unquote_spec(text) -> str:
+    """Strip one matched pair of surrounding quotes, then whitespace.
+
+    Windows "Copy as path" wraps a path in double quotes, and users paste that,
+    so a quoted `file:"C:\\clip.mp4"` must resolve like the bare path.
+    """
+    t = str(text).strip()
+    if len(t) >= 2 and t[0] == t[-1] and t[0] in ("'", '"'):
+        t = t[1:-1].strip()
+    return t
 
 
 def _best_stream_url(info: dict) -> str:

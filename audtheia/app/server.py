@@ -129,10 +129,6 @@ def _frame_pattern(pattern: dict, supporting_ids: Optional[list] = None) -> dict
     return out
 
 
-def _has_audio(observation: dict) -> bool:
-    return bool(observation.get("audio_clip_path")) or observation.get("trigger_source") == "audio"
-
-
 def _has_gps(observation: dict) -> bool:
     return observation.get("gps_latitude") is not None or observation.get("gps_longitude") is not None
 
@@ -336,6 +332,10 @@ _PROVISION_JOBS: dict = {}
 # LiveCapture handle whose stop brings down the monitor and scheduler threads it
 # started, so the interface can start and stop capture without a terminal.
 _CAPTURE_JOBS: dict = {}
+
+# Running desktop ACOUSTIC capture sessions, keyed by station id, kept separate
+# from the vision jobs so a station can run one, the other, or both at once.
+_AUDIO_CAPTURE_JOBS: dict = {}
 
 
 def _new_station_dict(station_id: str, name: str, environment: str, habitat: Optional[str]) -> dict:
@@ -899,9 +899,11 @@ def create_app(settings, database):
                    until: str | None = Query(default=None), species: str | None = Query(default=None),
                    limit: int = Query(default=100, ge=1, le=100000), offset: int = Query(default=0, ge=0)):
         sp = species.strip() if species and species.strip() else None
-        total = db.count_observations(station_id=station_id, since=since, until=until, species=sp)
+        # The Detections view is visual events only; acoustic events live on the
+        # Audio tab, so they are never mixed into this list.
+        total = db.count_observations(station_id=station_id, since=since, until=until, species=sp, trigger="vision")
         rows = db.list_observations(station_id=station_id, since=since, until=until, species=sp,
-                                    limit=limit, offset=offset)
+                                    trigger="vision", limit=limit, offset=offset)
         out = []
         for obs in rows:
             item = dict(obs)
@@ -914,7 +916,7 @@ def create_app(settings, database):
     # captured as an id. Returns the full species list for the filter dropdown.
     @app.get(f"{API_PREFIX}/detections/species")
     def detection_species(station_id: str | None = Query(default=None)):
-        return db.list_species(station_id=station_id)
+        return db.list_species(station_id=station_id, modality="vision")
 
     @app.post(f"{API_PREFIX}/detections/delete")
     def delete_detections(request: ObservationDeleteRequest):
@@ -1045,24 +1047,24 @@ def create_app(settings, database):
 
     @app.get(f"{API_PREFIX}/audio")
     def audio(station_id: str | None = Query(default=None), since: str | None = Query(default=None),
-              until: str | None = Query(default=None), limit: int = Query(default=100, ge=1, le=1000)):
-        rows = db.list_observations(station_id=station_id, since=since, until=until, limit=limit)
+              until: str | None = Query(default=None), species: str | None = Query(default=None),
+              limit: int = Query(default=100, ge=1, le=100000), offset: int = Query(default=0, ge=0)):
+        sp = species.strip() if species and species.strip() else None
+        # Acoustic events only (trigger 'audio'); visual events live on Detections.
+        total = db.count_observations(station_id=station_id, since=since, until=until, species=sp, trigger="audio")
+        rows = db.list_observations(station_id=station_id, since=since, until=until, species=sp,
+                                    trigger="audio", limit=limit, offset=offset)
         out = []
         for obs in rows:
-            if not _has_audio(obs):
-                continue
-            out.append({
-                "observation_id": obs["id"],
-                "event_name": obs.get("event_name"),
-                "station_id": obs.get("station_id"),
-                "first_seen": obs.get("first_seen"),
-                "audio_clip_path": obs.get("audio_clip_path"),
-                "audio_true_duration_seconds": obs.get("audio_true_duration_seconds"),
-                "audio_capped": obs.get("audio_capped"),
-                "acoustic_model_version": obs.get("acoustic_model_version"),
-                "audio_detections": [c for c in db.list_child_detections(obs["id"]) if c.get("modality") == "audio"],
-            })
-        return out
+            item = dict(obs)
+            item["audio_detections"] = [c for c in db.list_child_detections(obs["id"]) if c.get("modality") == "audio"]
+            item["verification"] = db.get_observation_verification(obs["id"])
+            out.append(item)
+        return {"items": out, "total": total, "limit": limit, "offset": offset}
+
+    @app.get(f"{API_PREFIX}/audio/species")
+    def audio_species(station_id: str | None = Query(default=None)):
+        return db.list_species(station_id=station_id, modality="audio")
 
     # -- gps -------------------------------------------------------------
 
@@ -1375,7 +1377,11 @@ def create_app(settings, database):
             raise HTTPException(status_code=400, detail="path is outside the data directory")
         if not target.is_file():
             raise HTTPException(status_code=404, detail="no such media file")
-        return FileResponse(str(target))
+        # Serve WAV clips as the widely-supported "audio/wav" rather than the
+        # "audio/x-wav" mimetypes guesses, which some browsers refuse to play in
+        # an <audio> element (the clip appears as 0:00 and never starts).
+        media_type = "audio/wav" if target.suffix.lower() == ".wav" else None
+        return FileResponse(str(target), media_type=media_type)
 
     # -- settings (a read view, and a guarded edit for allowlisted fields) --
 
@@ -1788,11 +1794,48 @@ def create_app(settings, database):
             _CAPTURE_JOBS.pop(station_id, None)
         return {"state": "stopped"}
 
+    @app.post(f"{API_PREFIX}/capture/{{station_id}}/audio/start")
+    def start_audio_capture(station_id):
+        """Start desktop acoustic capture for a station in a background thread."""
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="capture runs on the desktop; this node is not the desktop.")
+        station = _require_station(station_id)
+        source = ((station.get("capture", {}) or {}).get("source", {}) or {}).get("audio")
+        if not source:
+            raise HTTPException(status_code=422, detail="set a desktop audio source for this station first (Audio, Set audio source)")
+        job = _AUDIO_CAPTURE_JOBS.get(station_id)
+        if job and job.running():
+            raise HTTPException(status_code=409, detail="audio capture is already running for this station")
+        try:
+            from audtheia.app.orchestrator import DesktopStation
+
+            desktop = DesktopStation.build_audio(settings, station_id=station_id)
+            live = desktop.start_audio_background()
+        except Exception as exc:  # noqa: BLE001 - reported as a clear client error
+            raise HTTPException(status_code=422, detail=f"could not start audio capture: {exc}") from exc
+        _AUDIO_CAPTURE_JOBS[station_id] = live
+        return {"state": "running", "note": "listening to the source; acoustic detections appear as the model recognizes calls."}
+
+    @app.post(f"{API_PREFIX}/capture/{{station_id}}/audio/stop")
+    def stop_audio_capture(station_id):
+        """Stop a station's running desktop acoustic capture."""
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="capture runs on the desktop; this node is not the desktop.")
+        job = _AUDIO_CAPTURE_JOBS.get(station_id)
+        if not job:
+            return {"state": "idle"}
+        try:
+            job.stop()
+        finally:
+            _AUDIO_CAPTURE_JOBS.pop(station_id, None)
+        return {"state": "stopped"}
+
     @app.get(f"{API_PREFIX}/capture/status")
     def capture_status():
-        """Which stations are currently capturing on the desktop."""
+        """Which stations are currently capturing (vision and audio) on the desktop."""
         running = [sid for sid, job in _CAPTURE_JOBS.items() if job.running()]
-        return {"running": running}
+        running_audio = [sid for sid, job in _AUDIO_CAPTURE_JOBS.items() if job.running()]
+        return {"running": running, "running_audio": running_audio}
 
     # -- static frontend (served locally, present from a later step) ------
 

@@ -41,7 +41,7 @@ from audtheia.pipeline.monitor import Monitor, NullTriggerSink, build_tracker_fr
 
 logger = logging.getLogger("audtheia.app.orchestrator")
 
-__all__ = ["DesktopStation", "NullVerifier", "NullInterpreter", "DEFAULT_VERIFY_INTERVAL_SECONDS"]
+__all__ = ["DesktopStation", "NullVerifier", "NullInterpreter", "LiveCapture", "AudioLiveCapture", "DEFAULT_VERIFY_INTERVAL_SECONDS"]
 
 # How many recent records a single quality-control sweep examines. Records
 # awaiting control are the newest, which this ordering reaches first, so the
@@ -132,6 +132,25 @@ class DesktopStation:
             verifier=verifier,
             interpreter=interpreter,
             narrator=narrator,
+        )
+
+    @classmethod
+    def build_audio(cls, settings, *, station_id: str) -> "DesktopStation":
+        """Wire a station for acoustic capture only.
+
+        Acoustic capture needs the database and the acoustic model, not the vision
+        verifier or the language model, so this skips loading those (which can be
+        large) and uses the no-op backends. The station is taken by id since an
+        audio station need not have a video source.
+        """
+        station = settings.station(station_id)
+        db = Database(settings.db_path(), **settings.database_kwargs())
+        return cls(
+            settings=settings,
+            station=station,
+            db=db,
+            verifier=NullVerifier(),
+            interpreter=NullInterpreter(),
         )
 
     @staticmethod
@@ -314,11 +333,59 @@ class DesktopStation:
         scheduler = threading.Thread(
             target=self._scheduler_loop,
             args=(stop, verify_interval_seconds),
+            kwargs={"run_qc": True},
             name="audtheia-desktop-capture",
             daemon=True,
         )
         scheduler.start()
         return LiveCapture(monitor, scheduler, stop)
+
+    def start_audio_background(self) -> "AudioLiveCapture":
+        """Start desktop acoustic capture in a background thread.
+
+        Builds the station's acoustic model (BirdNET or the marine model) and a
+        desktop audio source (a saved file or a URL), then runs the acoustic
+        monitor over it. A file source ends on its own when the recording is
+        exhausted; the returned handle stops a still-running one.
+        """
+        from audtheia.pipeline.acoustic import (
+            AcousticMonitor,
+            NullVisualContext,
+            build_acoustic_model,
+        )
+        from audtheia.pipeline.audio_sources import build_desktop_audio_source
+
+        self._ensure_station_registered()
+        spec = self._settings.capture_source(self._station).get("audio")
+        if not spec:
+            raise ValueError(
+                "set a desktop audio source for this station first (Audio, Set audio source)."
+            )
+        model = build_acoustic_model(self._station, self._settings)
+        audio_source = build_desktop_audio_source(spec, target_rate=model.sample_rate)
+        monitor = AcousticMonitor(
+            settings=self._settings,
+            station=self._station,
+            db=self._db,
+            audio_source=audio_source,
+            model=model,
+            visual_context=NullVisualContext(),
+        )
+        monitor.start()
+        # A processing scheduler runs alongside capture so acoustic events are
+        # quality-controlled, cleared by the acoustic-confidence gate, and fed to
+        # the dream pass without a terminal — the same chain the visual capture
+        # gets, with run_qc on because there is no Pi to finalize QC first.
+        stop = threading.Event()
+        scheduler = threading.Thread(
+            target=self._scheduler_loop,
+            args=(stop, DEFAULT_VERIFY_INTERVAL_SECONDS),
+            kwargs={"run_qc": True},
+            name="audtheia-desktop-audio",
+            daemon=True,
+        )
+        scheduler.start()
+        return AudioLiveCapture(monitor, scheduler, stop)
 
     # -- the live desktop process ----------------------------------------
 
@@ -340,6 +407,7 @@ class DesktopStation:
         scheduler = threading.Thread(
             target=self._scheduler_loop,
             args=(stop, verify_interval_seconds),
+            kwargs={"run_qc": True},
             name="audtheia-desktop-scheduler",
             daemon=True,
         )
@@ -361,7 +429,7 @@ class DesktopStation:
             monitor.stop()
             scheduler.join(timeout=5.0)
 
-    def _scheduler_loop(self, stop: threading.Event, verify_interval_seconds: float) -> None:
+    def _scheduler_loop(self, stop: threading.Event, verify_interval_seconds: float, *, run_qc: bool = False) -> None:
         dream_period = self._schedule_seconds(self._settings.raw.get("schedules", {}).get("dream_pass", {}).get("schedule"))
         report_period = self._schedule_seconds(self._settings.raw.get("schedules", {}).get("reports", {}).get("schedule"))
         elapsed = 0.0
@@ -369,6 +437,12 @@ class DesktopStation:
         last_report = 0.0
         while not stop.is_set():
             try:
+                # Finalize quality control before verifying, so a desktop station
+                # (which has no Pi to run QC before sync) promotes its own events
+                # to eligible first. Off by default so a non-desktop caller that
+                # already quality-controls upstream is unaffected.
+                if run_qc:
+                    self.qc_pending()
                 self.verify_pending()
                 if elapsed - last_dream >= dream_period:
                     self.dream_once()
@@ -409,6 +483,34 @@ class LiveCapture:
         except Exception:  # noqa: BLE001 - stopping must never raise
             pass
         self._scheduler.join(timeout=5.0)
+
+
+class AudioLiveCapture:
+    """A running desktop acoustic capture, with a stop that ends its thread.
+
+    A file source finishes on its own at end of stream, at which point the thread
+    is no longer alive and `running()` reports false; `stop()` ends a still-running
+    source (a URL or a long recording) early.
+    """
+
+    def __init__(self, monitor, scheduler=None, stop=None) -> None:
+        self._monitor = monitor
+        self._scheduler = scheduler
+        self._stop = stop
+
+    def running(self) -> bool:
+        thread = getattr(self._monitor, "_reader_thread", None)
+        return bool(thread and thread.is_alive())
+
+    def stop(self) -> None:
+        if self._stop is not None:
+            self._stop.set()
+        try:
+            self._monitor.stop()
+        except Exception:  # noqa: BLE001 - stopping must never raise
+            pass
+        if self._scheduler is not None:
+            self._scheduler.join(timeout=5.0)
 
 
 def main(argv: Optional[list] = None) -> int:

@@ -882,6 +882,23 @@ a:hover {
   box-shadow: 0 0 0 2px var(--accent);
 }
 
+/* Cloud Dancer's signature: the boxes that pop up over the page — the audit
+   modal, the enlarged frame, and the source/capture/delete panels — get a soft,
+   sky-blue "cloud" glow around their border, a nod to the theme's cloudy-sky
+   note. This is a theme-scoped component rule (not a variable), which is how a
+   theme gets a unique effect rather than only different colours. */
+[data-theme="cloud-dancer"] .audit-panel,
+[data-theme="cloud-dancer"] .lightbox-frame,
+[data-theme="cloud-dancer"] .source-form,
+[data-theme="cloud-dancer"] .capture-panel,
+[data-theme="cloud-dancer"] .delete-panel {
+  border: 1px solid #d1dee7;
+  box-shadow:
+    0 0 0 2px #d1dee7,
+    0 0 26px 6px rgba(209, 222, 231, 0.85),
+    0 12px 44px rgba(209, 222, 231, 0.55);
+}
+
 .card-select {
   position: absolute;
   top: 10px;
@@ -1903,6 +1920,89 @@ textarea:hover {
   width: 100%;
   margin-top: var(--space-3);
 }
+
+/* Audio cards carry no frame image — only text and a player — so they read as a
+   flatter, wider rectangle than a detection card rather than a tall one. The
+   head (meta, species, stats, badges) is the click target that opens the audit;
+   the player sits below it, outside that target, so pressing play never opens
+   the modal. */
+.audio-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  border-radius: var(--radius-md);
+}
+
+.audio-open {
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  margin: calc(var(--space-2) * -1);
+  padding: var(--space-2);
+  transition: background var(--transition, 0.15s) ease;
+}
+
+.audio-open:hover,
+.audio-open:focus-visible {
+  background: var(--surface-2);
+  outline: none;
+}
+
+/* The audit's per-call list: one row per recognized call, a species swatch, the
+   name, a confidence bar, and the percentage — the acoustic parallel of the
+   frame strip. */
+.audio-det-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  max-height: 40vh;
+  overflow-y: auto;
+  padding: var(--space-1);
+}
+
+.audio-det-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--text-sm);
+}
+
+.audio-det-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex: 0 0 auto;
+}
+
+.audio-det-name {
+  flex: 0 0 auto;
+  min-width: 160px;
+  color: var(--text);
+}
+
+.audio-det-bar {
+  flex: 1 1 auto;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  border: var(--border-width) solid var(--border-subtle);
+  overflow: hidden;
+}
+
+.audio-det-bar-fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+}
+
+.audio-det-conf {
+  flex: 0 0 auto;
+  min-width: 44px;
+  text-align: right;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.audit-clip { margin-bottom: var(--space-3); }
 
 .capture-control,
 .delete-control {

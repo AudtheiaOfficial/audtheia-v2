@@ -883,7 +883,12 @@ def _validate_capture(capture: Any, where: str) -> None:
     source = capture.get("source")
     if source is not None:
         _require_type(source, (dict,), f"{where}.source")
-        _require_type(_require(source, "video", f"{where}.source"), (str,), f"{where}.source.video")
+        # Video and audio are both optional desktop sources: a station may run
+        # visual capture, acoustic capture, both, or neither (a Pi-only station).
+        # Each is checked only when present, so an audio-only station is valid.
+        video = source.get("video")
+        if video is not None:
+            _require_type(video, (str,), f"{where}.source.video")
         audio = source.get("audio")
         if audio is not None:
             _require_type(audio, (str,), f"{where}.source.audio")

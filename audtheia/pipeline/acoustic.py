@@ -1107,6 +1107,36 @@ class SurfPerchModel(SavedModelAcousticModel):
         )
 
 
+def _tflite_interpreter(model_path):
+    """Return an allocated TFLite interpreter, trying the runtimes in order.
+
+    `ai-edge-litert` (LiteRT) is the current, lightweight runtime with wheels for
+    Windows, macOS, and Linux, so it is tried first; `tflite_runtime` is the slim
+    field build used on the Pi; `tensorflow.lite` is the last-resort fallback for
+    an environment that only has full TensorFlow (whose `tf.lite` path has become
+    unreliable in recent releases). The first runtime that imports is used.
+    """
+    last_err = None
+    for import_interpreter in (
+        lambda: __import__("ai_edge_litert.interpreter", fromlist=["Interpreter"]).Interpreter,
+        lambda: __import__("tflite_runtime.interpreter", fromlist=["Interpreter"]).Interpreter,
+        lambda: __import__("tensorflow.lite", fromlist=["Interpreter"]).Interpreter,
+    ):
+        try:
+            Interpreter = import_interpreter()
+        except Exception as exc:  # noqa: BLE001 - try the next runtime
+            last_err = exc
+            continue
+        interpreter = Interpreter(model_path=str(model_path))
+        interpreter.allocate_tensors()
+        return interpreter
+    raise ImportError(
+        "no TFLite runtime is available to load the acoustic model. Install one of "
+        "'ai-edge-litert' (recommended), 'tflite-runtime', or 'tensorflow'. Last "
+        f"import error: {last_err}"
+    )
+
+
 class BirdNetModel:
     """The terrestrial bird and wildlife classifier, run through its TFLite build.
 
@@ -1126,13 +1156,7 @@ class BirdNetModel:
         citation: Optional[str] = None,
         labels_path: Optional[Path] = None,
     ) -> None:
-        try:
-            from tflite_runtime.interpreter import Interpreter  # lightweight field build
-        except Exception:  # noqa: BLE001 - fall back to the interpreter bundled with TensorFlow
-            from tensorflow.lite import Interpreter
-
-        self._interpreter = Interpreter(model_path=str(model_path))
-        self._interpreter.allocate_tensors()
+        self._interpreter = _tflite_interpreter(model_path)
         self._input = self._interpreter.get_input_details()[0]
         self._output = self._interpreter.get_output_details()[0]
         self._version = version
@@ -1163,7 +1187,14 @@ class BirdNetModel:
         audio = samples.astype(np.float32)[np.newaxis, :]
         self._interpreter.set_tensor(self._input["index"], audio)
         self._interpreter.invoke()
-        scores = np.asarray(self._interpreter.get_tensor(self._output["index"])).reshape(-1)
+        logits = np.asarray(self._interpreter.get_tensor(self._output["index"])).reshape(-1)
+        # BirdNET emits per-class logits, not probabilities; a numerically stable
+        # sigmoid maps them to the [0, 1] confidences the onset threshold expects.
+        scores = np.where(
+            logits >= 0,
+            1.0 / (1.0 + np.exp(-logits)),
+            np.exp(logits) / (1.0 + np.exp(logits)),
+        )
         out: list[AcousticDetection] = []
         for class_id, score in enumerate(scores):
             out.append(

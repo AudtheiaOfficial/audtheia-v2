@@ -115,9 +115,16 @@ tzdata==2026.2
 httpx==0.28.1
 httpx2==2.5.0
 
+# The desktop acoustic-model runtime (BirdNET / SurfPerch .tflite). LiteRT is the
+# current, lightweight TFLite runtime with wheels for Windows, macOS, and Linux,
+# so desktop audio capture (Audio tab) works with no extra setup. acoustic.py
+# prefers it, then tflite-runtime (the Pi field build), then tensorflow.lite. The
+# field station uses tflite-runtime instead — see requirements-pi.txt.
+ai-edge-litert==2.1.6
+
 # --- Anticipated, not yet pinned (added when the module that imports them is built) ---
 # monitor.py         : hailo-platform / HailoRT Python bindings (Raspberry Pi only)
-# acoustic.py        : tensorflow or tflite-runtime (BirdNET / SurfPerch, Raspberry Pi only); sounddevice or PyAudio
+# acoustic.py        : sounddevice or PyAudio for a live desktop microphone (file/URL sources need neither)
 # environment.py     : pyserial / gpsd-py3 (GPS); sensor-specific drivers
 # observation.py     : none expected; the field quality-control engine is deterministic, with no LLM or VLM
 

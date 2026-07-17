@@ -314,10 +314,11 @@
     // are filled in by the detections loader from the species actually present,
     // so the same control adapts to whatever a deployment has recorded.
     if (opts.species) {
+      var spCtx = opts.ctx;
       var sp = el("select", { class: "filter-species", "aria-label": "Species" });
       sp.appendChild(el("option", { value: "", text: "All species" }));
       sp.addEventListener("change", function () {
-        state.speciesFilter = sp.value;
+        spCtx.speciesFilter = sp.value;
         onChange();
       });
       bar.appendChild(el("label", { class: "filter-field" }, [el("span", { text: "Species" }), sp]));
@@ -368,7 +369,7 @@
       });
     }).catch(function () { clear(stSel); stSel.appendChild(el("option", { value: "", text: "Could not load stations." })); });
     var srcIn = el("input", { type: "text", class: "form-input" });
-    srcIn.placeholder = kind === "audio" ? "leave blank for none" : "webcam:0, a YouTube or stream link, or file:C:/clip.mp4";
+    srcIn.placeholder = kind === "audio" ? "file:C:/clip.wav, or a YouTube/stream link (blank for none)" : "webcam:0, a YouTube or stream link, or file:C:/clip.mp4";
     var field = kind === "audio" ? "capture_source_audio" : "capture_source_video";
     var save = el("button", { type: "button", class: "btn btn-primary", text: "Save" });
     save.addEventListener("click", function () {
@@ -384,7 +385,7 @@
     form.appendChild(el("label", { class: "form-field" }, [el("span", { class: "form-label", text: "Station" }), stSel]));
     form.appendChild(el("label", { class: "form-field" }, [el("span", { class: "form-label", text: kind === "audio" ? "Audio source" : "Video source" }), srcIn]));
     form.appendChild(el("p", { class: "form-hint", text: kind === "audio"
-      ? "This is the desktop hardware-free audio source. Physical microphones and hydrophones are wired to a Pi and set per station under Sensors."
+      ? "The desktop hardware-free audio source: a local file (file:C:/clip.wav) or a YouTube/stream link. A .wav plays with no extra setup; mp3, m4a, and flac need ffmpeg on PATH. A quoted path from Copy as path is fine, and blank means no desktop audio. Physical microphones and hydrophones are wired to a Pi and set per station under Sensors."
       : "This runs desktop capture without a Pi. Live detection also needs a desktop model; set its path under Settings, Model paths, and place the file under models/." }));
     form.appendChild(msg);
     form.appendChild(el("div", { class: "form-actions" }, [save, cancel]));
@@ -392,68 +393,81 @@
   }
 
   // Start and stop desktop capture from the interface, per station, so detection
-  // runs without a terminal. Only stations with a capture source are listed.
-  function captureRunControl(reload) {
+  // runs without a terminal. `kind` is "video" (default) or "audio"; the audio
+  // variant lists stations with an audio source and drives the acoustic endpoints.
+  function captureRunControl(kind, reload) {
+    kind = kind || "video";
     var wrap = el("div", { class: "capture-control" });
     var btn = el("button", { type: "button", class: "btn", text: "Capture" });
-    btn.addEventListener("click", function () { toggleCapturePanel(wrap, reload); });
+    btn.addEventListener("click", function () { toggleCapturePanel(wrap, kind, reload); });
     wrap.appendChild(btn);
     return wrap;
   }
 
-  function toggleCapturePanel(wrap, reload) {
+  function toggleCapturePanel(wrap, kind, reload) {
     var open = wrap.querySelector(".capture-panel");
     if (open) { wrap.removeChild(open); return; }
-    openCapturePanel(wrap, reload);
+    openCapturePanel(wrap, kind, reload);
   }
 
-  function openCapturePanel(wrap, reload) {
+  function openCapturePanel(wrap, kind, reload) {
+    kind = kind || "video";
+    var isAudio = kind === "audio";
     var existing = wrap.querySelector(".capture-panel");
     if (existing) { wrap.removeChild(existing); }
     var panel = el("div", { class: "capture-panel card" });
-    panel.appendChild(el("div", { class: "card-title", text: "Desktop capture" }));
+    panel.appendChild(el("div", { class: "card-title", text: isAudio ? "Desktop audio capture" : "Desktop capture" }));
     var body = el("div");
     panel.appendChild(body);
     body.appendChild(el("p", { class: "card-note", text: "Loading." }));
     wrap.appendChild(panel);
     Promise.all([apiGet("/settings"), apiGet("/capture/status")]).then(function (res) {
       var cfg = res[0].config || {};
-      var running = res[1].running || [];
+      var running = (isAudio ? res[1].running_audio : res[1].running) || [];
       clear(body);
-      var stations = (cfg.stations || []).filter(function (st) { return ((st.capture && st.capture.source) || {}).video; });
+      var stations = cfg.stations || [];
       if (!stations.length) {
-        body.appendChild(el("p", { class: "card-note", text: "No station has a capture source yet. Use Set capture source first." }));
+        body.appendChild(el("p", { class: "card-note", text: "No stations yet. Add one under Settings, Stations." }));
         return;
       }
+      // Every station is listed; one that has no source of this kind simply has
+      // its Start disabled with a hint, rather than being hidden — so any station
+      // can be seen and set up from here.
       stations.forEach(function (st) {
+        var src = (st.capture && st.capture.source) || {};
+        var sourceVal = isAudio ? src.audio : src.video;
         var isRun = running.indexOf(st.station_id) !== -1;
         var toggle = el("button", { type: "button", class: "btn btn-small" + (isRun ? "" : " btn-primary"), text: isRun ? "Stop" : "Start" });
+        if (!sourceVal && !isRun) { toggle.disabled = true; }
         toggle.addEventListener("click", function () {
           toggle.disabled = true;
-          var url = "/capture/" + encodeURIComponent(st.station_id) + (isRun ? "/stop" : "/start");
+          var url = "/capture/" + encodeURIComponent(st.station_id) + (isAudio ? "/audio" : "") + (isRun ? "/stop" : "/start");
           apiSend(url, "POST").then(function (r) {
             if (r && r.warning) { window.alert(r.warning); }
-            openCapturePanel(wrap, reload);
+            openCapturePanel(wrap, kind, reload);
             reload();
           }).catch(function (e) { toggle.disabled = false; window.alert("Could not " + (isRun ? "stop" : "start") + " capture: " + e.message); });
         });
+        var hint = isAudio ? "no audio source — use Set audio source" : "no video source — use Set capture source";
         body.appendChild(el("div", { class: "capture-row" }, [
-          el("span", { class: "capture-row-name", text: (st.station_name || st.station_id) + " . " + (((st.capture.source) || {}).video || "") }),
-          isRun ? badge("capturing", "source") : null,
+          el("span", { class: "capture-row-name", text: (st.station_name || st.station_id) + " . " + (sourceVal || hint) }),
+          isRun ? badge(isAudio ? "listening" : "capturing", "source") : null,
           toggle
         ]));
       });
-      body.appendChild(el("p", { class: "form-hint", text: "Start opens the source and runs detection; detections appear below as they are found. A desktop model must be set for anything to be detected." }));
+      body.appendChild(el("p", { class: "form-hint", text: isAudio
+        ? "Start opens the audio source and runs the acoustic model; detections appear below as calls are recognized. The acoustic model (e.g. BirdNET) must be placed under models/acoustic/."
+        : "Start opens the source and runs detection; detections appear below as they are found. A desktop model must be set for anything to be detected." }));
     }).catch(function (e) { clear(body); body.appendChild(el("p", { class: "card-note", text: "Could not load capture: " + e.message })); });
   }
 
   // Refill the species dropdown from the names present in the current load,
   // keeping the active choice selected even when nothing matches it this time,
   // so a chosen species does not silently reset on refresh.
-  function populateSpecies(names) {
+  function populateSpecies(ctx, names) {
     var select = document.querySelector(".filter-species");
     if (!select) { return; }
-    var current = state.speciesFilter || "";
+    var current = ctx.speciesFilter || "";
     clear(select);
     select.appendChild(el("option", { value: "", text: "All species" }));
     var found = false;
@@ -473,42 +487,43 @@
   // mode, and a panel (opened like the capture panel) with Select all, a live
   // count, and Delete selected. Nothing is removed until Delete selected is
   // confirmed, so entering the mode is always safe.
-  function deleteControl(reload) {
+  function deleteControl(ctx) {
     var wrap = el("div", { class: "delete-control" });
     var btn = el("button", { type: "button", class: "btn", text: "Delete" });
-    btn.addEventListener("click", function () { toggleDeleteMode(wrap, reload); });
+    btn.addEventListener("click", function () { toggleDeleteMode(wrap, ctx); });
     wrap.appendChild(btn);
     return wrap;
   }
 
-  function toggleDeleteMode(wrap, reload) {
-    state.selecting = !state.selecting;
-    if (!state.selecting) { state.selection = {}; }
+  function toggleDeleteMode(wrap, ctx) {
+    ctx.selecting = !ctx.selecting;
+    if (!ctx.selecting) { ctx.selection = {}; }
     var btn = wrap.querySelector(".btn");
     if (btn) {
-      btn.textContent = state.selecting ? "Cancel" : "Delete";
-      btn.classList.toggle("btn-danger", state.selecting);
+      btn.textContent = ctx.selecting ? "Cancel" : "Delete";
+      btn.classList.toggle("btn-danger", ctx.selecting);
     }
     var panel = wrap.querySelector(".delete-panel");
-    if (state.selecting && !panel) {
-      wrap.appendChild(buildDeletePanel(wrap, reload));
-    } else if (!state.selecting && panel) {
+    if (ctx.selecting && !panel) {
+      wrap.appendChild(buildDeletePanel(wrap, ctx));
+    } else if (!ctx.selecting && panel) {
       wrap.removeChild(panel);
     }
-    reload();
+    ctx.reload();
   }
 
-  function buildDeletePanel(wrap, reload) {
+  function buildDeletePanel(wrap, ctx) {
+    var unit = ctx.unit || "detection";
     var panel = el("div", { class: "delete-panel card" });
-    panel.appendChild(el("div", { class: "card-title", text: "Delete detections" }));
+    panel.appendChild(el("div", { class: "card-title", text: "Delete " + unit + "s" }));
 
     var selectAll = el("button", { type: "button", class: "btn btn-small select-all", text: "Select all" });
     selectAll.addEventListener("click", function () {
-      var ids = state.detectionIds || [];
-      var allSel = ids.length && ids.every(function (id) { return state.selection[id]; });
-      state.selection = {};
-      if (!allSel) { ids.forEach(function (id) { state.selection[id] = true; }); }
-      reload();
+      var ids = ctx.ids || [];
+      var allSel = ids.length && ids.every(function (id) { return ctx.selection[id]; });
+      ctx.selection = {};
+      if (!allSel) { ids.forEach(function (id) { ctx.selection[id] = true; }); }
+      ctx.reload();
     });
 
     var count = el("span", { class: "delete-count", text: "0 selected" });
@@ -516,41 +531,68 @@
     var del = el("button", { type: "button", class: "btn btn-small btn-danger delete-selected", text: "Delete selected" });
     del.disabled = true;
     del.addEventListener("click", function () {
-      var ids = Object.keys(state.selection).filter(function (id) { return state.selection[id]; });
+      var ids = Object.keys(ctx.selection).filter(function (id) { return ctx.selection[id]; });
       if (!ids.length) { return; }
-      if (!window.confirm("Delete " + ids.length + " detection" + (ids.length > 1 ? "s" : "") +
-        " and their stored frames? This cannot be undone.")) { return; }
+      if (!window.confirm("Delete " + ids.length + " " + unit + (ids.length > 1 ? "s" : "") +
+        " and their stored media? This cannot be undone.")) { return; }
       del.disabled = true;
-      apiSend("/detections/delete", "POST", { ids: ids }).then(function () {
-        state.selection = {};
-        state.selecting = false;
+      apiSend(ctx.deleteEndpoint, "POST", { ids: ids }).then(function () {
+        ctx.selection = {};
+        ctx.selecting = false;
         var b = wrap.querySelector(".btn");
         if (b) { b.textContent = "Delete"; b.classList.remove("btn-danger"); }
         var p = wrap.querySelector(".delete-panel");
         if (p) { wrap.removeChild(p); }
-        reload();
+        ctx.reload();
       }).catch(function (e) { del.disabled = false; window.alert("Could not delete: " + e.message); });
     });
 
     panel.appendChild(el("div", { class: "delete-panel-row" }, [selectAll, count, del]));
-    panel.appendChild(el("p", { class: "form-hint", text: "Tick the detections to remove, then Delete selected." }));
+    panel.appendChild(el("p", { class: "form-hint", text: "Tick the " + unit + "s to remove, then Delete selected." }));
     return panel;
   }
 
   // Keep the delete panel's count, the Delete-selected enabled state, and the
   // Select-all label in step with the current selection after every render.
-  function updateDeleteUI() {
-    var selected = Object.keys(state.selection).filter(function (id) { return state.selection[id]; });
+  function updateDeleteUI(ctx) {
+    var selected = Object.keys(ctx.selection).filter(function (id) { return ctx.selection[id]; });
     var count = document.querySelector(".delete-count");
     if (count) { count.textContent = selected.length + " selected"; }
     var del = document.querySelector(".delete-selected");
     if (del) { del.disabled = selected.length === 0; }
     var selectAll = document.querySelector(".select-all");
     if (selectAll) {
-      var ids = state.detectionIds || [];
-      var allSel = ids.length && ids.every(function (id) { return state.selection[id]; });
+      var ids = ctx.ids || [];
+      var allSel = ids.length && ids.every(function (id) { return ctx.selection[id]; });
       selectAll.textContent = allSel ? "Unselect all" : "Select all";
     }
+  }
+
+  // The top-right selection checkbox shared by the Detections and Audio cards.
+  // It stops its click from reaching the card body so ticking a card never also
+  // opens its audit view, and keeps the delete panel's count in step.
+  function attachSelectCheckbox(ctx, obs, cardEl) {
+    cardEl.classList.add("selectable");
+    var checked = !!ctx.selection[obs.id];
+    if (checked) { cardEl.classList.add("selected"); }
+    var cb = el("button", {
+      type: "button",
+      class: "card-select" + (checked ? " checked" : ""),
+      "aria-label": "Select this " + (ctx.unit || "item"),
+      "aria-pressed": checked ? "true" : "false"
+    });
+    cb.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      if (ctx.selection[obs.id]) {
+        delete ctx.selection[obs.id];
+        cardEl.classList.remove("selected"); cb.classList.remove("checked"); cb.setAttribute("aria-pressed", "false");
+      } else {
+        ctx.selection[obs.id] = true;
+        cardEl.classList.add("selected"); cb.classList.add("checked"); cb.setAttribute("aria-pressed", "true");
+      }
+      updateDeleteUI(ctx);
+    });
+    cardEl.appendChild(cb);
   }
 
   // A stable colour per species, derived from its name — no stored state, so the
@@ -773,21 +815,43 @@
     stationId: store(STORE.station) || "",
     serverTimezone: null,
     activePanel: null,
-    pollTimer: null,
-    // Detections view: the chosen species filter, the ids currently shown (so
-    // Select all knows its scope), whether the delete selection mode is on, and
-    // the set of ids ticked for deletion.
-    speciesFilter: "",
-    detectionIds: [],
-    selecting: false,
-    selection: {},
-    // Detections paging: page size (PAGE_ALL = every match), current offset, and
-    // a signature so changing the filters resets to page one while a plain page
-    // turn does not.
-    pageSize: 100,
-    pageOffset: 0,
-    _detSig: null
+    pollTimer: null
   };
+
+  // Per-list-panel state. Detections and Audio share the same machinery — a
+  // species filter, a paged window, and a multi-select delete mode — but each
+  // keeps its own slice so switching tabs never carries one panel's filter,
+  // page, or selection into the other. Each context also names the endpoints it
+  // reads and the loader that redraws it, so the shared helpers stay generic.
+  //   speciesFilter — the chosen species (server-side filter)
+  //   ids           — the ids currently shown, so Select all knows its scope
+  //   selecting     — whether the delete selection mode is on
+  //   selection     — the set of ids ticked for deletion
+  //   pageSize      — page size (PAGE_ALL = every match)
+  //   pageOffset    — current offset
+  //   sig           — a signature so changing filters resets to page one while a
+  //                   plain page turn does not
+  function makeListCtx(opts) {
+    return {
+      speciesFilter: "", ids: [], selecting: false, selection: {},
+      pageSize: 100, pageOffset: 0, sig: null,
+      listEndpoint: opts.listEndpoint,
+      speciesEndpoint: opts.speciesEndpoint,
+      deleteEndpoint: opts.deleteEndpoint,
+      unit: opts.unit,
+      reload: opts.reload
+    };
+  }
+  state.det = makeListCtx({
+    listEndpoint: "/detections", speciesEndpoint: "/detections/species",
+    deleteEndpoint: "/detections/delete", unit: "detection",
+    reload: function () { loaders.detections(); }
+  });
+  state.aud = makeListCtx({
+    listEndpoint: "/audio", speciesEndpoint: "/audio/species",
+    deleteEndpoint: "/detections/delete", unit: "acoustic detection",
+    reload: function () { loaders.audio(); }
+  });
 
   // ----------------------------------------------------------------------
   // 5. Theme control
@@ -870,7 +934,16 @@
     stopPolling();
     loaders[name]();
     if (LIVE_PANELS[name]) {
-      state.pollTimer = window.setInterval(loaders[name], POLL_INTERVAL_MS);
+      state.pollTimer = window.setInterval(function () {
+        // Rebuilding the list while a clip is playing would tear out the <audio>
+        // element and stop it, so a live refresh waits until nothing is playing.
+        var playing = Array.prototype.some.call(
+          document.querySelectorAll("audio"),
+          function (a) { return !a.paused && !a.ended; }
+        );
+        if (playing) { return; }
+        loaders[name]();
+      }, POLL_INTERVAL_MS);
     }
   }
 
@@ -899,45 +972,46 @@
   // Detections: live event cards, each showing provenance, quality state, and
   // the desktop verification verdict when present.
   loaders.detections = function () {
+    var ctx = state.det;
     var host = region("detections-list");
     var filters = region("detections-filters");
     if (filters && !filters.hasChildNodes()) {
-      filters.appendChild(filterBar(loaders.detections, { species: true }));
+      filters.appendChild(filterBar(loaders.detections, { species: true, ctx: ctx }));
       filters.appendChild(captureSourceControl("video", loaders.detections));
-      filters.appendChild(captureRunControl(loaders.detections));
-      filters.appendChild(deleteControl(loaders.detections));
+      filters.appendChild(captureRunControl("video", loaders.detections));
+      filters.appendChild(deleteControl(ctx));
     }
     // Reset to the first page whenever the station, species, or page size
     // changes; a plain page turn (prev/next) keeps the same signature.
-    var sig = state.stationId + "|" + state.speciesFilter + "|" + state.pageSize;
-    if (sig !== state._detSig) { state.pageOffset = 0; state._detSig = sig; }
+    var sig = state.stationId + "|" + ctx.speciesFilter + "|" + ctx.pageSize;
+    if (sig !== ctx.sig) { ctx.pageOffset = 0; ctx.sig = sig; }
 
     // Fill the species dropdown from the full server-side list (every recorded
     // species), not just the current page.
-    apiGet("/detections/species" + query({ station_id: state.stationId }))
-      .then(function (list) { populateSpecies(list || []); })
+    apiGet(ctx.speciesEndpoint + query({ station_id: state.stationId }))
+      .then(function (list) { populateSpecies(ctx, list || []); })
       .catch(function () {});
 
-    apiGet("/detections" + query({
+    apiGet(ctx.listEndpoint + query({
       station_id: state.stationId,
-      species: state.speciesFilter,
-      limit: state.pageSize,
-      offset: state.pageOffset
+      species: ctx.speciesFilter,
+      limit: ctx.pageSize,
+      offset: ctx.pageOffset
     })).then(function (resp) {
       clear(host);
       var rows = (resp && resp.items) || [];
       var total = (resp && resp.total) || 0;
-      state.detectionIds = rows.map(function (obs) { return obs.id; });
+      ctx.ids = rows.map(function (obs) { return obs.id; });
 
       if (!rows.length) {
-        setState(host, "empty-state", (state.speciesFilter || state.stationId)
+        setState(host, "empty-state", (ctx.speciesFilter || state.stationId)
           ? "No detections match these filters."
           : "No detections yet. Use Set capture source to run desktop detection, or connect a Pi under Settings, Stations.");
-        updateDeleteUI();
+        updateDeleteUI(ctx);
         return;
       }
 
-      var grid = el("div", { class: "card-grid" + (state.selecting ? " selecting" : "") });
+      var grid = el("div", { class: "card-grid" + (ctx.selecting ? " selecting" : "") });
       rows.forEach(function (obs) {
         var v = obs.verification;
         var species = (obs.vision_detections || []).map(taxonName).join(", ") || "no resolved taxon";
@@ -951,38 +1025,7 @@
         ].join(" · ");
         var card = el("article", { class: "card" });
 
-        // In selection mode each card carries a checkbox in its top-right corner;
-        // ticking it adds the observation to the delete set. The checkbox stops
-        // the click from reaching the frame so selecting never opens the lightbox.
-        if (state.selecting) {
-          card.classList.add("selectable");
-          var checked = !!state.selection[obs.id];
-          if (checked) { card.classList.add("selected"); }
-          (function (id, cardEl) {
-            var cb = el("button", {
-              type: "button",
-              class: "card-select" + (checked ? " checked" : ""),
-              "aria-label": "Select this detection",
-              "aria-pressed": checked ? "true" : "false"
-            });
-            cb.addEventListener("click", function (ev) {
-              ev.stopPropagation();
-              if (state.selection[id]) {
-                delete state.selection[id];
-                cardEl.classList.remove("selected");
-                cb.classList.remove("checked");
-                cb.setAttribute("aria-pressed", "false");
-              } else {
-                state.selection[id] = true;
-                cardEl.classList.add("selected");
-                cb.classList.add("checked");
-                cb.setAttribute("aria-pressed", "true");
-              }
-              updateDeleteUI();
-            });
-            cardEl.appendChild(cb);
-          })(obs.id, card);
-        }
+        if (ctx.selecting) { attachSelectCheckbox(ctx, obs, card); }
 
         if (obs.representative_frame) {
           card.appendChild(detectionFrame(obs.representative_frame, species, obs.vision_detections,
@@ -1000,22 +1043,23 @@
         grid.appendChild(card);
       });
       host.appendChild(grid);
-      host.appendChild(detectionsPager(total));
-      updateDeleteUI();
+      host.appendChild(pager(ctx, total));
+      updateDeleteUI(ctx);
     }).catch(function (e) { setState(host, "empty-state", "Could not load detections: " + e.message); });
   };
 
   // The bottom-of-list pager: a page-size selector (20/40/80/100/200/All), a
   // "start–end of total" readout, and Prev/Next. Changing the size or turning a
-  // page re-runs the loader, which fetches just that page from the server.
-  function detectionsPager(total) {
+  // page re-runs the panel's loader, which fetches just that page from the
+  // server. Shared by Detections and Audio through the panel context.
+  function pager(ctx, total) {
     var wrap = el("div", { class: "pager" });
-    var isAll = state.pageSize >= PAGE_ALL;
-    var size = state.pageSize;
-    var start = total === 0 ? 0 : state.pageOffset + 1;
-    var end = isAll ? total : Math.min(state.pageOffset + size, total);
+    var isAll = ctx.pageSize >= PAGE_ALL;
+    var size = ctx.pageSize;
+    var start = total === 0 ? 0 : ctx.pageOffset + 1;
+    var end = isAll ? total : Math.min(ctx.pageOffset + size, total);
 
-    var sizeSel = el("select", { class: "pager-size", "aria-label": "Detections per page" });
+    var sizeSel = el("select", { class: "pager-size", "aria-label": "Items per page" });
     [20, 40, 80, 100, 200].forEach(function (n) {
       var o = el("option", { value: String(n), text: String(n) });
       if (!isAll && n === size) { o.selected = true; }
@@ -1025,24 +1069,24 @@
     if (isAll) { allOpt.selected = true; }
     sizeSel.appendChild(allOpt);
     sizeSel.addEventListener("change", function () {
-      state.pageSize = sizeSel.value === "all" ? PAGE_ALL : parseInt(sizeSel.value, 10);
-      loaders.detections();
+      ctx.pageSize = sizeSel.value === "all" ? PAGE_ALL : parseInt(sizeSel.value, 10);
+      ctx.reload();
     });
     wrap.appendChild(el("label", { class: "filter-field" }, [el("span", { text: "Per page" }), sizeSel]));
 
     wrap.appendChild(el("span", { class: "pager-info", text: total ? (start + "–" + end + " of " + total) : "0 of 0" }));
 
     var prev = el("button", { type: "button", class: "btn btn-small", text: "Prev" });
-    prev.disabled = isAll || state.pageOffset <= 0;
+    prev.disabled = isAll || ctx.pageOffset <= 0;
     prev.addEventListener("click", function () {
-      state.pageOffset = Math.max(0, state.pageOffset - size);
-      loaders.detections();
+      ctx.pageOffset = Math.max(0, ctx.pageOffset - size);
+      ctx.reload();
     });
     var next = el("button", { type: "button", class: "btn btn-small", text: "Next" });
     next.disabled = isAll || end >= total;
     next.addEventListener("click", function () {
-      state.pageOffset = state.pageOffset + size;
-      loaders.detections();
+      ctx.pageOffset = ctx.pageOffset + size;
+      ctx.reload();
     });
     wrap.appendChild(prev);
     wrap.appendChild(next);
@@ -1050,36 +1094,188 @@
   }
 
   // Audio: acoustic detections tied to events, with the true clip duration.
+  // Mirrors Detections — a station + species filter, a paged window, multi-select
+  // delete, and an audit view — over its own panel context so the two never mix.
   loaders.audio = function () {
+    var ctx = state.aud;
     var host = region("audio-list");
     var filters = region("audio-filters");
     if (filters && !filters.hasChildNodes()) {
-      filters.appendChild(filterBar(loaders.audio));
+      filters.appendChild(filterBar(loaders.audio, { species: true, ctx: ctx }));
       filters.appendChild(captureSourceControl("audio", loaders.audio));
+      filters.appendChild(captureRunControl("audio", loaders.audio));
+      filters.appendChild(deleteControl(ctx));
     }
-    apiGet("/audio" + query({ station_id: state.stationId, limit: 100 })).then(function (rows) {
+    var sig = state.stationId + "|" + ctx.speciesFilter + "|" + ctx.pageSize;
+    if (sig !== ctx.sig) { ctx.pageOffset = 0; ctx.sig = sig; }
+
+    apiGet(ctx.speciesEndpoint + query({ station_id: state.stationId }))
+      .then(function (list) { populateSpecies(ctx, list || []); })
+      .catch(function () {});
+
+    apiGet(ctx.listEndpoint + query({
+      station_id: state.stationId,
+      species: ctx.speciesFilter,
+      limit: ctx.pageSize,
+      offset: ctx.pageOffset
+    })).then(function (resp) {
       clear(host);
-      if (!rows.length) { setState(host, "empty-state", "No acoustic detections yet. Set an audio source, or connect a Pi with a microphone or hydrophone."); return; }
-      var grid = el("div", { class: "card-grid" });
+      var rows = (resp && resp.items) || [];
+      var total = (resp && resp.total) || 0;
+      ctx.ids = rows.map(function (obs) { return obs.id; });
+
+      if (!rows.length) {
+        setState(host, "empty-state", (ctx.speciesFilter || state.stationId)
+          ? "No acoustic detections match these filters."
+          : "No acoustic detections yet. Set an audio source, or connect a Pi with a microphone or hydrophone.");
+        updateDeleteUI(ctx);
+        return;
+      }
+
+      var grid = el("div", { class: "card-grid" + (ctx.selecting ? " selecting" : "") });
       rows.forEach(function (a) {
         var species = (a.audio_detections || []).map(taxonName).join(", ") || "unclassified sound";
-        var acard = el("article", { class: "card" });
-        acard.appendChild(el("div", { class: "card-meta", text: (a.event_name || a.observation_id) + " · " + fmtTime(a.first_seen) }));
-        acard.appendChild(el("div", { class: "card-title", text: species }));
-        acard.appendChild(el("div", { class: "card-stats", text:
+        var badges = provenanceBadges(a.data_source, a.qc_state);
+        var av = a.verification;
+        if (av && av.verified) { badges.push(badge("verified", "ok")); }
+        else { badges.push(badge("not verified", "muted")); }
+        var aConfs = (a.audio_detections || [])
+          .map(function (d) { return Number(d.confidence); })
+          .filter(function (x) { return !isNaN(x); });
+        var aPeak = aConfs.length ? Math.max.apply(null, aConfs) : null;
+        var card = el("article", { class: "card audio-card" });
+
+        if (ctx.selecting) { attachSelectCheckbox(ctx, a, card); }
+
+        // The head — meta, species, stats, badges — opens the audio audit; the
+        // player below stays outside it so pressing play never opens the modal.
+        var head = el("div", { class: "audio-open", role: "button", tabindex: "0",
+          "aria-label": "Open audit for this acoustic detection" });
+        head.appendChild(el("div", { class: "card-meta", text: (a.event_name || a.id) + " · " + fmtTime(a.first_seen) }));
+        head.appendChild(el("div", { class: "card-title", text: species }));
+        head.appendChild(el("div", { class: "card-stats", text:
           "true duration: " + fmtNum(a.audio_true_duration_seconds, 1) + "s" +
           (a.audio_capped ? " (stored clip capped)" : "") +
-          "  model: " + (a.acoustic_model_version || "unstated") }));
+          "  ·  confidence " + fmtConfidence(aPeak) +
+          "  ·  salience " + fmtNum(a.salience_provisional, 2) }));
+        head.appendChild(el("div", { class: "badge-row" }, badges));
+        (function (obs) {
+          head.addEventListener("click", function () { openAudioAudit(obs); });
+          head.addEventListener("keydown", function (e) {
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openAudioAudit(obs); }
+          });
+        })(a);
+        card.appendChild(head);
+
         if (a.audio_clip_path) {
-          acard.appendChild(el("audio", { class: "audio-clip", controls: true, preload: "none", src: API + "/media" + query({ path: a.audio_clip_path }) }));
+          card.appendChild(el("audio", { class: "audio-clip", controls: true, preload: "none", src: API + "/media" + query({ path: a.audio_clip_path }) }));
         } else {
-          acard.appendChild(el("div", { class: "card-note", text: "No stored clip for this event." }));
+          card.appendChild(el("div", { class: "card-note", text: "No stored clip for this event." }));
         }
-        grid.appendChild(acard);
+        grid.appendChild(card);
       });
       host.appendChild(grid);
+      host.appendChild(pager(ctx, total));
+      updateDeleteUI(ctx);
     }).catch(function (e) { setState(host, "empty-state", "Could not load audio: " + e.message); });
   };
+
+  // The audio-audit modal: the acoustic analogue of the frame audit. It replays
+  // the stored clip and lists every acoustic detection with its own confidence,
+  // then derives the card's numbers (call count, true duration, peak confidence,
+  // salience) from those detections so a scientist can verify rather than trust.
+  function openAudioAudit(obs) {
+    var overlay = el("div", { class: "audit-modal" });
+    function close() {
+      if (overlay.parentNode) { overlay.parentNode.removeChild(overlay); }
+      document.removeEventListener("keydown", onKey);
+    }
+    function onKey(e) { if (e.key === "Escape") { close(); } }
+    overlay.addEventListener("click", function (e) { if (e.target === overlay) { close(); } });
+    document.addEventListener("keydown", onKey);
+
+    var panel = el("div", { class: "audit-panel" });
+    var closeBtn = el("button", { type: "button", class: "audit-close", "aria-label": "Close", text: "×" });
+    closeBtn.addEventListener("click", close);
+    panel.appendChild(closeBtn);
+
+    var dets = obs.audio_detections || [];
+    var species = dets.map(taxonName).join(", ") || "unclassified sound";
+    panel.appendChild(el("div", { class: "audit-title", text: species }));
+    panel.appendChild(el("div", { class: "card-meta", text: obs.event_name || obs.id }));
+
+    var body = el("div", { class: "audit-body" });
+    body.appendChild(audioAuditDerivation(obs, dets));
+    if (obs.audio_clip_path) {
+      body.appendChild(el("div", { class: "card-note", text: "Stored clip · the exact audio these calls were recognized from" }));
+      body.appendChild(el("audio", { class: "audio-clip audit-clip", controls: true, preload: "none",
+        src: API + "/media" + query({ path: obs.audio_clip_path }) }));
+    } else {
+      body.appendChild(el("p", { class: "empty-state", text: "No stored clip was kept for this event." }));
+    }
+    body.appendChild(audioDetectionList(dets));
+    panel.appendChild(body);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+  }
+
+  function audioAuditDerivation(obs, dets) {
+    var wrap = el("div", { class: "audit-derivation" });
+    var n = dets.length;
+    var confs = dets.map(function (d) { return Number(d.confidence) || 0; });
+    var maxConf = confs.length ? Math.max.apply(null, confs) : null;
+    function row(label, value, ok) {
+      var v = el("span", { class: "audit-v", text: value });
+      if (ok === true) { v.appendChild(el("span", { class: "audit-ok", text: "  ✓ matches" })); }
+      return el("div", { class: "audit-row" }, [el("span", { class: "audit-k", text: label }), v]);
+    }
+    wrap.appendChild(el("div", { class: "card-title", text: "How these numbers were derived" }));
+    wrap.appendChild(row("Acoustic detections", n + " call" + (n === 1 ? "" : "s") + " recognized  (= " + n + " listed below)"));
+    wrap.appendChild(row("True duration", fmtNum(obs.audio_true_duration_seconds, 1) + " s" +
+      (obs.audio_capped ? "  (the stored clip is capped; this is the full recognized length)" : "")));
+    if (maxConf != null) {
+      wrap.appendChild(row("Confidence", Math.round(maxConf * 100) + "%  (highest of the " + n + " per-call values below)"));
+    }
+    wrap.appendChild(row("Model", obs.acoustic_model_version || "unstated"));
+    var v = obs.verification;
+    wrap.appendChild(row("Verification", (v && v.verified)
+      ? "cleared for the dream pass by the acoustic-confidence gate (peak ≥ the acoustic floor)"
+      : "not cleared — peak below the acoustic floor, so it shapes baselines but not the generative phase"));
+    wrap.appendChild(row("Salience", fmtNum(obs.salience_provisional, 2) +
+      "  = D · (0.5·N + 0.5·R), Shannon-surprisal novelty & rarity (docs/salience.md)"));
+    wrap.appendChild(el("p", { class: "form-hint", text:
+      "Each call below is a stored acoustic detection with its own confidence, so the count and the peak confidence are directly verifiable against the clip. Salience is computed from the whole record at capture." }));
+    return wrap;
+  }
+
+  function audioDetectionList(dets) {
+    var wrap = el("div", { class: "audit-strip-wrap" });
+    if (!dets.length) {
+      wrap.appendChild(el("p", { class: "empty-state", text: "No individual acoustic detections were stored for this event." }));
+      return wrap;
+    }
+    wrap.appendChild(el("div", { class: "card-note", text: dets.length + " recognized call" + (dets.length === 1 ? "" : "s") }));
+    var list = el("div", { class: "audio-det-list" });
+    dets.forEach(function (d) {
+      var conf = (d.confidence == null) ? null : Math.round(Number(d.confidence) * 100);
+      var col = speciesColor(taxonName(d));
+      var swatch = el("span", { class: "audio-det-swatch" });
+      swatch.style.backgroundColor = col.bg;
+      var barWrap = el("div", { class: "audio-det-bar" });
+      var bar = el("div", { class: "audio-det-bar-fill" });
+      bar.style.width = (conf == null ? 0 : conf) + "%";
+      bar.style.backgroundColor = col.bg;
+      barWrap.appendChild(bar);
+      list.appendChild(el("div", { class: "audio-det-row" }, [
+        swatch,
+        el("span", { class: "audio-det-name", text: taxonName(d) }),
+        barWrap,
+        el("span", { class: "audio-det-conf", text: conf == null ? "—" : conf + "%" })
+      ]));
+    });
+    wrap.appendChild(list);
+    return wrap;
+  }
 
   // GPS: a self-contained coordinate plot, no external map tiles.
   loaders.gps = function () {

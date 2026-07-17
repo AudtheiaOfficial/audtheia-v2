@@ -614,7 +614,7 @@ class Database:
             )
 
     @staticmethod
-    def _observation_filters(station_id, since, until, species) -> tuple:
+    def _observation_filters(station_id, since, until, species, trigger) -> tuple:
         """Build the shared WHERE clauses for listing and counting observations.
 
         `species` matches events that have a child detection of that name in any
@@ -637,6 +637,9 @@ class Database:
                 "id IN (SELECT observation_id FROM child_detections WHERE common_name = ?)"
             )
             params.append(species)
+        if trigger is not None:
+            clauses.append("trigger_source = ?")
+            params.append(trigger)
         return clauses, params
 
     def list_observations(
@@ -646,16 +649,18 @@ class Database:
         since: Optional[str] = None,
         until: Optional[str] = None,
         species: Optional[str] = None,
+        trigger: Optional[str] = None,
         limit: Optional[int] = None,
         offset: Optional[int] = None,
     ) -> list[dict]:
         """List events, newest window first, optionally bounded and paginated.
 
-        `species` narrows to events with a matching detection; `limit`/`offset`
-        page the result. Offset is honored only alongside a limit (SQLite pages
-        with `LIMIT ... OFFSET`).
+        `species` narrows to events with a matching detection; `trigger` narrows
+        by trigger source (for example 'vision' or 'audio'); `limit`/`offset` page
+        the result. Offset is honored only alongside a limit (SQLite pages with
+        `LIMIT ... OFFSET`).
         """
-        clauses, params = self._observation_filters(station_id, since, until, species)
+        clauses, params = self._observation_filters(station_id, since, until, species, trigger)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         tail = " ORDER BY first_seen DESC, id"
         if limit is not None:
@@ -674,25 +679,29 @@ class Database:
         since: Optional[str] = None,
         until: Optional[str] = None,
         species: Optional[str] = None,
+        trigger: Optional[str] = None,
     ) -> int:
         """Total events matching the same filters as `list_observations`, for paging."""
-        clauses, params = self._observation_filters(station_id, since, until, species)
+        clauses, params = self._observation_filters(station_id, since, until, species, trigger)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
         with self.connect() as conn:
             row = self._one(conn, f"SELECT COUNT(*) AS n FROM observations{where}", tuple(params))
             return int((row or {}).get("n") or 0)
 
-    def list_species(self, *, station_id: Optional[str] = None) -> list[str]:
-        """Distinct resolved species names, for the detections species filter.
+    def list_species(self, *, station_id: Optional[str] = None, modality: Optional[str] = None) -> list[str]:
+        """Distinct resolved species names, for a species filter.
 
-        Names come from `child_detections.common_name` across all modalities,
-        optionally bounded to one station, ordered alphabetically.
+        Names come from `child_detections.common_name`, optionally bounded to one
+        station and/or one modality ('vision' or 'audio'), ordered alphabetically.
         """
         clauses = ["c.common_name IS NOT NULL"]
         params: list = []
         if station_id is not None:
             clauses.append("o.station_id = ?")
             params.append(station_id)
+        if modality is not None:
+            clauses.append("c.modality = ?")
+            params.append(modality)
         where = " WHERE " + " AND ".join(clauses)
         with self.connect() as conn:
             rows = self._all(
