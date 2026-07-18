@@ -50,7 +50,10 @@
     subpanel: "audtheia.subpanel",
     settingsGroup: "audtheia.settingsGroup",
     timezone: "audtheia.timezone",
-    station: "audtheia.station"
+    station: "audtheia.station",
+    stationDetections: "audtheia.station.detections",
+    stationAudio: "audtheia.station.audio",
+    gpsView: "audtheia.gpsView"
   };
 
   // The theme names the stylesheet defines, and which mode each one is, so the
@@ -258,54 +261,215 @@
     return svg;
   }
 
-  // A coordinate plot of detection locations, drawn as inline SVG with no map
-  // tiles so it works fully offline. Points is an array of {lat, lon, label}.
-  function coordinatePlot(points) {
-    var width = 640, height = 380, pad = 46;
+  var _plotSeq = 0;
+
+  // A coordinate plot drawn as inline SVG with no map tiles, so it works fully
+  // offline. It renders an equirectangular (Plate Carree) plane: longitude on x,
+  // latitude on y, both linear, the same projection a world wall map uses. A
+  // bundled, generic land outline sits behind a labelled degree grid for
+  // orientation, and the real markers go on top. Everything is either a real
+  // value or generic reference geography; nothing per observation is invented,
+  // and there is no imagery, depth, or boundary data.
+  //   points: array of { lat, lon, label, kind, status }
+  //   opts:   { view: {minLon, maxLon, minLat, maxLat}, world: {polygons:[...]} | null }
+  function coordinatePlot(points, opts) {
+    opts = opts || {};
+    var view = opts.view || boundsOf(points);
+    var maxW = 660, maxH = 420, pad = 40;
+    var lonSpan = (view.maxLon - view.minLon) || 0.001;
+    var latSpan = (view.maxLat - view.minLat) || 0.001;
+    var innerW = maxW - pad * 2, innerH = maxH - pad * 2;
+    // Preserve the geographic aspect ratio so continents are not stretched: one
+    // degree of longitude and one of latitude get the same number of pixels.
+    var ppd = Math.min(innerW / lonSpan, innerH / latSpan);
+    var plotW = lonSpan * ppd, plotH = latSpan * ppd;
+    var ox = pad + (innerW - plotW) / 2, oy = pad + (innerH - plotH) / 2;
+
+    function px(lon) { return ox + (lon - view.minLon) * ppd; }
+    function py(lat) { return oy + (view.maxLat - lat) * ppd; }
+
     var svg = svgEl("svg", {
-      viewBox: "0 0 " + width + " " + height, width: "100%", height: height,
-      role: "img", "aria-label": "detection locations", class: "chart map-plot"
+      viewBox: "0 0 " + maxW + " " + maxH, width: "100%", height: maxH,
+      role: "img", "aria-label": "detection and station locations on a world grid", class: "chart map-plot"
     });
-    var lats = points.map(function (p) { return p.lat; });
-    var lons = points.map(function (p) { return p.lon; });
-    var minLat = Math.min.apply(null, lats), maxLat = Math.max.apply(null, lats);
-    var minLon = Math.min.apply(null, lons), maxLon = Math.max.apply(null, lons);
-    var latSpan = (maxLat - minLat) || 0.001, lonSpan = (maxLon - minLon) || 0.001;
 
-    function px(lon) { return pad + (lon - minLon) / lonSpan * (width - pad * 2); }
-    function py(lat) { return height - pad - (lat - minLat) / latSpan * (height - pad * 2); }
+    var clipId = "mapclip" + (++_plotSeq);
+    var defs = svgEl("defs", {});
+    var clip = svgEl("clipPath", { id: clipId });
+    clip.appendChild(svgEl("rect", { x: ox, y: oy, width: plotW, height: plotH }));
+    defs.appendChild(clip);
+    svg.appendChild(defs);
 
-    svg.appendChild(svgEl("rect", { x: pad, y: pad, width: width - pad * 2, height: height - pad * 2, class: "map-frame", fill: "none" }));
-    var xl = svgEl("text", { x: width / 2, y: height - 14, class: "chart-axis", "text-anchor": "middle" });
-    xl.appendChild(document.createTextNode("longitude " + minLon.toFixed(4) + " to " + maxLon.toFixed(4)));
-    svg.appendChild(xl);
-    var yl = svgEl("text", { x: 16, y: height / 2, class: "chart-axis", transform: "rotate(-90 16 " + (height / 2) + ")", "text-anchor": "middle" });
-    yl.appendChild(document.createTextNode("latitude " + minLat.toFixed(4) + " to " + maxLat.toFixed(4)));
-    svg.appendChild(yl);
+    // Ocean background.
+    svg.appendChild(svgEl("rect", { x: ox, y: oy, width: plotW, height: plotH, class: "map-ocean" }));
 
+    // Generic land outline, clipped to the plot rectangle.
+    if (opts.world && opts.world.polygons) {
+      var landG = svgEl("g", { "clip-path": "url(#" + clipId + ")" });
+      opts.world.polygons.forEach(function (poly) {
+        var d = "";
+        for (var i = 0; i < poly.length; i++) {
+          d += (i === 0 ? "M " : " L ") + px(poly[i][0]).toFixed(1) + " " + py(poly[i][1]).toFixed(1);
+        }
+        d += " Z";
+        landG.appendChild(svgEl("path", { d: d, class: "map-land" }));
+      });
+      svg.appendChild(landG);
+    }
+
+    // Degree grid with edge labels.
+    svg.appendChild(graticule(view, px, py, ox, oy, plotW, plotH, clipId));
+
+    // Frame.
+    svg.appendChild(svgEl("rect", { x: ox, y: oy, width: plotW, height: plotH, class: "map-frame", fill: "none" }));
+
+    // Markers, clipped so nothing spills past the frame. Detections first, then
+    // stations on top, so a station marker is never lost behind a cluster of dots.
+    var pts = svgEl("g", { "clip-path": "url(#" + clipId + ")" });
     points.forEach(function (p) {
-      var c = svgEl("circle", { cx: px(p.lon), cy: py(p.lat), r: 5, class: "map-point" });
-      var title = svgEl("title", {});
-      title.appendChild(document.createTextNode((p.label || "") + " (" + p.lat.toFixed(5) + ", " + p.lon.toFixed(5) + ")"));
-      c.appendChild(title);
-      svg.appendChild(c);
+      if (p.kind === "station") { return; }
+      var cls = "map-point" + (p.status === "station_configured" ? " is-configured" : "");
+      var c = svgEl("circle", { cx: px(p.lon).toFixed(1), cy: py(p.lat).toFixed(1), r: 5, class: cls });
+      c.appendChild(pointTitle(p));
+      pts.appendChild(c);
     });
-    return svg;
+    points.forEach(function (p) {
+      if (p.kind !== "station") { return; }
+      var x = px(p.lon), y = py(p.lat), s = 7;
+      var d = "M " + x + " " + (y - s) + " L " + (x + s) + " " + y + " L " + x + " " + (y + s) + " L " + (x - s) + " " + y + " Z";
+      var mk = svgEl("path", { d: d, class: "map-station" });
+      mk.appendChild(pointTitle(p));
+      pts.appendChild(mk);
+      var lbl = svgEl("text", { x: x, y: y - 11, class: "map-station-label", "text-anchor": "middle" });
+      lbl.appendChild(document.createTextNode(p.label || ""));
+      pts.appendChild(lbl);
+    });
+    svg.appendChild(pts);
+
+    return el("div", { class: "map-wrap" }, [svg, coordinateLegend(points)]);
+  }
+
+  function boundsOf(points) {
+    if (!points.length) { return { minLon: -180, maxLon: 180, minLat: -90, maxLat: 90 }; }
+    var lons = points.map(function (p) { return p.lon; });
+    var lats = points.map(function (p) { return p.lat; });
+    return {
+      minLon: Math.min.apply(null, lons), maxLon: Math.max.apply(null, lons),
+      minLat: Math.min.apply(null, lats), maxLat: Math.max.apply(null, lats)
+    };
+  }
+
+  // The view window for the plot. "world" is the whole globe; "fit" frames the
+  // data with enough padding that even a single tight site still shows the
+  // coastline around it rather than one lonely dot in empty space.
+  function gpsViewWindow(points, mode) {
+    if (mode === "world" || !points.length) { return { minLon: -180, maxLon: 180, minLat: -90, maxLat: 90 }; }
+    var b = boundsOf(points);
+    var padLon = Math.max((b.maxLon - b.minLon) * 0.6, 1.6);
+    var padLat = Math.max((b.maxLat - b.minLat) * 0.6, 1.6);
+    return {
+      minLon: Math.max(-180, b.minLon - padLon), maxLon: Math.min(180, b.maxLon + padLon),
+      minLat: Math.max(-90, b.minLat - padLat), maxLat: Math.min(90, b.maxLat + padLat)
+    };
+  }
+
+  function niceDegStep(span) {
+    var steps = [0.25, 0.5, 1, 2, 5, 10, 15, 30, 45];
+    for (var i = 0; i < steps.length; i++) { if (span / steps[i] <= 8) { return steps[i]; } }
+    return 45;
+  }
+
+  function fmtDeg(v, pos, neg, dec) {
+    if (Math.abs(v) < 1e-9) { return "0°"; }
+    return Math.abs(v).toFixed(dec) + "°" + (v > 0 ? pos : neg);
+  }
+
+  // Meridians and parallels at a readable interval for the current span, drawn
+  // clipped to the plot with degree labels down the left edge and along the
+  // bottom.
+  function graticule(view, px, py, ox, oy, plotW, plotH, clipId) {
+    var g = svgEl("g", {});
+    var lines = svgEl("g", { "clip-path": "url(#" + clipId + ")", class: "map-graticule" });
+    var lonStep = niceDegStep(view.maxLon - view.minLon);
+    var latStep = niceDegStep(view.maxLat - view.minLat);
+    var lonDec = lonStep < 1 ? 2 : (lonStep < 5 ? 1 : 0);
+    var latDec = latStep < 1 ? 2 : (latStep < 5 ? 1 : 0);
+
+    var lon = Math.ceil(view.minLon / lonStep) * lonStep;
+    for (; lon <= view.maxLon + 1e-9; lon += lonStep) {
+      var x = px(lon);
+      lines.appendChild(svgEl("line", { x1: x, y1: oy, x2: x, y2: oy + plotH }));
+      var xlbl = svgEl("text", { x: x, y: oy + plotH + 13, class: "map-graticule-label", "text-anchor": "middle" });
+      xlbl.appendChild(document.createTextNode(fmtDeg(lon, "E", "W", lonDec)));
+      g.appendChild(xlbl);
+    }
+    var lat = Math.ceil(view.minLat / latStep) * latStep;
+    for (; lat <= view.maxLat + 1e-9; lat += latStep) {
+      var y = py(lat);
+      lines.appendChild(svgEl("line", { x1: ox, y1: y, x2: ox + plotW, y2: y }));
+      var ylbl = svgEl("text", { x: ox - 6, y: y + 3, class: "map-graticule-label", "text-anchor": "end" });
+      ylbl.appendChild(document.createTextNode(fmtDeg(lat, "N", "S", latDec)));
+      g.appendChild(ylbl);
+    }
+    g.insertBefore(lines, g.firstChild);
+    return g;
+  }
+
+  function pointTitle(p) {
+    var t = svgEl("title", {});
+    var kind = p.kind === "station"
+      ? "station position"
+      : (p.status === "station_configured" ? "entered position" : "measured fix");
+    t.appendChild(document.createTextNode((p.label || "") + ", " + kind + " (" + p.lat.toFixed(5) + ", " + p.lon.toFixed(5) + ")"));
+    return t;
+  }
+
+  // A legend that names only the point kinds actually on the plot, so a reader
+  // sees exactly what each marker means and, for a detection, whether its
+  // position was a measured satellite fix or a position entered for the station.
+  function coordinateLegend(points) {
+    var present = { measured: false, configured: false, station: false };
+    points.forEach(function (p) {
+      if (p.kind === "station") { present.station = true; }
+      else if (p.status === "station_configured") { present.configured = true; }
+      else { present.measured = true; }
+    });
+    var items = [];
+    if (present.measured) { items.push(legendItem("dot", "map-point", "Measured GPS fix")); }
+    if (present.configured) { items.push(legendItem("dot", "map-point is-configured", "Entered position (no live fix)")); }
+    if (present.station) { items.push(legendItem("diamond", "map-station", "Station (configured coordinates)")); }
+    return el("div", { class: "map-legend" }, items);
+  }
+
+  function legendItem(shape, cls, label) {
+    var sw = svgEl("svg", { width: 16, height: 16, viewBox: "0 0 16 16", class: "map-legend-swatch", "aria-hidden": "true" });
+    if (shape === "diamond") { sw.appendChild(svgEl("path", { d: "M 8 2 L 14 8 L 8 14 L 2 8 Z", class: cls })); }
+    else { sw.appendChild(svgEl("circle", { cx: 8, cy: 8, r: 5, class: cls })); }
+    return el("span", { class: "map-legend-item" }, [sw, el("span", { text: label })]);
   }
 
   function filterBar(onChange, opts) {
     opts = opts || {};
+    // A panel that owns a list context keeps its own station choice, so
+    // Detections and Audio can show different stations at the same time. Every
+    // other panel shares the one app-wide choice, exactly as before.
+    var scope = (opts.ctx && opts.ctx.stationStoreKey) ? opts.ctx : null;
+    function chosenStation() { return scope ? scope.stationId : state.stationId; }
+    function chooseStation(value) {
+      if (scope) { scope.stationId = value; store(scope.stationStoreKey, value); }
+      else { state.stationId = value; store(STORE.station, value); }
+    }
+
     var bar = el("div", { class: "filter-bar" });
     var select = el("select", { class: "filter-station", "aria-label": "Station" });
     select.appendChild(el("option", { value: "", text: "All stations" }));
     (state.stations || []).forEach(function (s) {
       var o = el("option", { value: s.id, text: s.station_name || s.id });
-      if (s.id === state.stationId) { o.selected = true; }
+      if (s.id === chosenStation()) { o.selected = true; }
       select.appendChild(o);
     });
     select.addEventListener("change", function () {
-      state.stationId = select.value;
-      store(STORE.station, select.value);
+      chooseStation(select.value);
       onChange();
     });
     bar.appendChild(el("label", { class: "filter-field" }, [el("span", { text: "Station" }), select]));
@@ -831,8 +995,13 @@
   //   pageOffset    — current offset
   //   sig           — a signature so changing filters resets to page one while a
   //                   plain page turn does not
+  //   stationId     — this panel's own station choice, so Detections and Audio
+  //                   can sit on different stations at the same time. It starts
+  //                   at every station and is remembered per panel.
   function makeListCtx(opts) {
     return {
+      stationId: store(opts.stationStoreKey) || "",
+      stationStoreKey: opts.stationStoreKey,
       speciesFilter: "", ids: [], selecting: false, selection: {},
       pageSize: 100, pageOffset: 0, sig: null,
       listEndpoint: opts.listEndpoint,
@@ -845,11 +1014,13 @@
   state.det = makeListCtx({
     listEndpoint: "/detections", speciesEndpoint: "/detections/species",
     deleteEndpoint: "/detections/delete", unit: "detection",
+    stationStoreKey: STORE.stationDetections,
     reload: function () { loaders.detections(); }
   });
   state.aud = makeListCtx({
     listEndpoint: "/audio", speciesEndpoint: "/audio/species",
     deleteEndpoint: "/detections/delete", unit: "acoustic detection",
+    stationStoreKey: STORE.stationAudio,
     reload: function () { loaders.audio(); }
   });
 
@@ -861,7 +1032,11 @@
     return document.documentElement.getAttribute("data-theme") || DEFAULT_THEME;
   }
 
-  function applyTheme(name) {
+  // Apply a theme to the page and remember it. By default the choice is also
+  // saved on the hub so it survives a restart; pass { persist: false } for a
+  // programmatic apply (startup, or echoing a value just read from the hub) that
+  // should not write back.
+  function applyTheme(name, opts) {
     if (!THEMES[name]) { name = DEFAULT_THEME; }
     document.documentElement.setAttribute("data-theme", name);
     store(STORE.theme, name);
@@ -869,6 +1044,20 @@
     else { store(STORE.lastLight, name); }
     var picker = $("#appearance-theme");
     if (picker) { picker.value = name; }
+    if (!opts || opts.persist !== false) { persistTheme(); }
+  }
+
+  // Remember the theme on the hub, not just in this browser, so the choice is the
+  // same the next time Audtheia is opened and on any device that opens it. A hub
+  // that is a field node, or one that cannot be reached, keeps only the browser
+  // copy and simply does not persist, so the choice is never lost either way.
+  function persistTheme() {
+    var changes = [
+      { scope: "global", field: "ui_theme", value: currentTheme() },
+      { scope: "global", field: "ui_last_dark", value: store(STORE.lastDark) || null },
+      { scope: "global", field: "ui_last_light", value: store(STORE.lastLight) || null }
+    ];
+    apiSend("/settings/update", "POST", { changes: changes }).catch(function () { /* the browser copy still holds the choice */ });
   }
 
   function toggleMode() {
@@ -878,9 +1067,26 @@
   }
 
   function initTheme() {
-    applyTheme(store(STORE.theme) || currentTheme() || DEFAULT_THEME);
+    // Apply the browser's remembered choice at once and without saving, so the
+    // interface never flashes a default before a preference loads.
+    applyTheme(store(STORE.theme) || currentTheme() || DEFAULT_THEME, { persist: false });
     var toggle = $("[data-theme-toggle]");
     if (toggle) { toggle.addEventListener("click", toggleMode); }
+    loadServerTheme();
+  }
+
+  // Prefer the theme saved on the hub when there is one, so a fresh browser or a
+  // second device opens with the same look. The server value, when present, is
+  // applied without saving it straight back.
+  function loadServerTheme() {
+    apiGet("/settings").then(function (s) {
+      var ui = (s.config && s.config.ui) || {};
+      if (ui.last_dark && THEMES[ui.last_dark]) { store(STORE.lastDark, ui.last_dark); }
+      if (ui.last_light && THEMES[ui.last_light]) { store(STORE.lastLight, ui.last_light); }
+      if (ui.theme && THEMES[ui.theme] && ui.theme !== currentTheme()) {
+        applyTheme(ui.theme, { persist: false });
+      }
+    }).catch(function () { /* offline or no saved theme: the browser copy stands */ });
   }
 
   // ----------------------------------------------------------------------
@@ -911,11 +1117,17 @@
 
   function stopPolling() {
     if (state.pollTimer) { window.clearInterval(state.pollTimer); state.pollTimer = null; }
+    // The longitudinal pass keeps its own small timer; leaving the panel stops it.
+    if (state.dreamTimer) { window.clearTimeout(state.dreamTimer); state.dreamTimer = null; }
   }
 
   // The live views (detections, the longitudinal status) re-read on the poll;
   // the reference views load once when opened.
-  var LIVE_PANELS = { detections: true, audio: true, brain: true, analytics: true, sensors: true };
+  // Brain is deliberately not a live panel. It is reference and status, and
+  // rebuilding all of it every few seconds threw the reader back to the top of
+  // the page and flickered. The one part that genuinely changes while you watch,
+  // the longitudinal pass, refreshes itself in place while a pass is running.
+  var LIVE_PANELS = { detections: true, audio: true, analytics: true, sensors: true };
 
   function activatePanel(name) {
     if (!loaders[name]) { name = "detections"; }
@@ -983,17 +1195,17 @@
     }
     // Reset to the first page whenever the station, species, or page size
     // changes; a plain page turn (prev/next) keeps the same signature.
-    var sig = state.stationId + "|" + ctx.speciesFilter + "|" + ctx.pageSize;
+    var sig = ctx.stationId + "|" + ctx.speciesFilter + "|" + ctx.pageSize;
     if (sig !== ctx.sig) { ctx.pageOffset = 0; ctx.sig = sig; }
 
     // Fill the species dropdown from the full server-side list (every recorded
     // species), not just the current page.
-    apiGet(ctx.speciesEndpoint + query({ station_id: state.stationId }))
+    apiGet(ctx.speciesEndpoint + query({ station_id: ctx.stationId }))
       .then(function (list) { populateSpecies(ctx, list || []); })
       .catch(function () {});
 
     apiGet(ctx.listEndpoint + query({
-      station_id: state.stationId,
+      station_id: ctx.stationId,
       species: ctx.speciesFilter,
       limit: ctx.pageSize,
       offset: ctx.pageOffset
@@ -1004,7 +1216,7 @@
       ctx.ids = rows.map(function (obs) { return obs.id; });
 
       if (!rows.length) {
-        setState(host, "empty-state", (ctx.speciesFilter || state.stationId)
+        setState(host, "empty-state", (ctx.speciesFilter || ctx.stationId)
           ? "No detections match these filters."
           : "No detections yet. Use Set capture source to run desktop detection, or connect a Pi under Settings, Stations.");
         updateDeleteUI(ctx);
@@ -1106,15 +1318,15 @@
       filters.appendChild(captureRunControl("audio", loaders.audio));
       filters.appendChild(deleteControl(ctx));
     }
-    var sig = state.stationId + "|" + ctx.speciesFilter + "|" + ctx.pageSize;
+    var sig = ctx.stationId + "|" + ctx.speciesFilter + "|" + ctx.pageSize;
     if (sig !== ctx.sig) { ctx.pageOffset = 0; ctx.sig = sig; }
 
-    apiGet(ctx.speciesEndpoint + query({ station_id: state.stationId }))
+    apiGet(ctx.speciesEndpoint + query({ station_id: ctx.stationId }))
       .then(function (list) { populateSpecies(ctx, list || []); })
       .catch(function () {});
 
     apiGet(ctx.listEndpoint + query({
-      station_id: state.stationId,
+      station_id: ctx.stationId,
       species: ctx.speciesFilter,
       limit: ctx.pageSize,
       offset: ctx.pageOffset
@@ -1125,7 +1337,7 @@
       ctx.ids = rows.map(function (obs) { return obs.id; });
 
       if (!rows.length) {
-        setState(host, "empty-state", (ctx.speciesFilter || state.stationId)
+        setState(host, "empty-state", (ctx.speciesFilter || ctx.stationId)
           ? "No acoustic detections match these filters."
           : "No acoustic detections yet. Set an audio source, or connect a Pi with a microphone or hydrophone.");
         updateDeleteUI(ctx);
@@ -1277,23 +1489,91 @@
     return wrap;
   }
 
-  // GPS: a self-contained coordinate plot, no external map tiles.
+  // GPS: a self-contained coordinate plot, no external map tiles. It overlays two
+  // real things: located detections (each a measured fix or, for a fixed station,
+  // an entered position) and each station's own configured coordinates.
   loaders.gps = function () {
     var host = region("gps-map");
     var filters = region("gps-filters");
     if (filters && !filters.hasChildNodes()) { filters.appendChild(filterBar(loaders.gps)); }
-    apiGet("/gps" + query({ station_id: state.stationId, limit: 1000 })).then(function (rows) {
-      clear(host);
-      var points = rows.filter(function (r) {
+    Promise.all([
+      apiGet("/gps" + query({ station_id: state.stationId, limit: 1000 })),
+      apiGet("/settings"),
+      ensureWorldLand()
+    ]).then(function (res) {
+      var rows = res[0] || [];
+      var cfg = (res[1] && res[1].config) || {};
+      var world = res[2];
+
+      var detections = rows.filter(function (r) {
         return r.gps_latitude !== null && r.gps_longitude !== null;
       }).map(function (r) {
-        return { lat: Number(r.gps_latitude), lon: Number(r.gps_longitude), label: r.event_name || r.observation_id };
+        return {
+          lat: Number(r.gps_latitude), lon: Number(r.gps_longitude),
+          label: r.event_name || r.observation_id, kind: "detection", status: r.gps_status
+        };
       });
-      if (!points.length) { setState(host, "empty-state", "No located detections yet."); return; }
-      host.appendChild(coordinatePlot(points));
-      host.appendChild(el("p", { class: "card-note", text: fmtNum(points.length) + " located detections. Coordinates are measured GPS positions." }));
+
+      // Station markers come from each station's own configured coordinates,
+      // used only when both a latitude and a longitude are set, and narrowed to
+      // the chosen station when one is selected in the filter.
+      var stations = (cfg.stations || []).filter(function (st) {
+        if (state.stationId && st.station_id !== state.stationId) { return false; }
+        var loc = st.location || {};
+        return loc.latitude !== null && loc.latitude !== undefined &&
+          loc.longitude !== null && loc.longitude !== undefined;
+      }).map(function (st) {
+        var loc = st.location || {};
+        return {
+          lat: Number(loc.latitude), lon: Number(loc.longitude),
+          label: st.station_name || st.station_id, kind: "station", status: "station_configured"
+        };
+      });
+
+      var points = stations.concat(detections);
+      var measured = detections.filter(function (d) { return d.status !== "station_configured"; }).length;
+      var entered = detections.length - measured;
+
+      // Draw for the chosen view mode, and let the toggle redraw from the same
+      // data without re-reading the record.
+      function render(mode) {
+        clear(host);
+        host.appendChild(gpsViewToggle(mode, function (next) { store(STORE.gpsView, next); render(next); }));
+        host.appendChild(coordinatePlot(points, { view: gpsViewWindow(points, mode), world: world }));
+        var parts = [];
+        if (measured) { parts.push(fmtNum(measured) + " measured " + (measured === 1 ? "fix" : "fixes")); }
+        if (entered) { parts.push(fmtNum(entered) + " entered " + (entered === 1 ? "position" : "positions")); }
+        if (stations.length) { parts.push(fmtNum(stations.length) + " station " + (stations.length === 1 ? "marker" : "markers")); }
+        var lead = parts.length ? parts.join(", ") + ". " : "No located detections yet, and no station coordinates entered. Add a station's position under Settings, Stations. ";
+        host.appendChild(el("p", { class: "card-note", text: lead +
+          "Markers are real values only (measured satellite fixes and coordinates entered for a station); the land outline behind them is a generic offline world map for orientation, not per-site imagery." }));
+      }
+
+      render(store(STORE.gpsView) || "fit");
     }).catch(function (e) { setState(host, "empty-state", "Could not load spatial data: " + e.message); });
   };
+
+  // Load the bundled, generic world land outline once. It is a static asset
+  // served from the same origin as the page, so it needs no internet; if it is
+  // ever absent the plot simply draws its grid and markers without the land.
+  function ensureWorldLand() {
+    if (state.worldLand !== undefined) { return Promise.resolve(state.worldLand); }
+    return fetch("world-land.json").then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (w) { state.worldLand = w; return w; })
+      .catch(function () { state.worldLand = null; return null; });
+  }
+
+  // A small segmented control to switch the GPS map between framing the data and
+  // showing the whole globe.
+  function gpsViewToggle(current, onPick) {
+    var wrap = el("div", { class: "map-view-toggle" });
+    [["fit", "Fit to data"], ["world", "Whole world"]].forEach(function (o) {
+      var b = el("button", { type: "button", class: "btn btn-small" + (current === o[0] ? " btn-primary" : ""), text: o[1] });
+      b.addEventListener("click", function () { onPick(o[0]); });
+      wrap.appendChild(b);
+    });
+    return wrap;
+  }
 
   // Analytics: biodiversity summaries computed from the record, drawn as SVG.
   loaders.analytics = function () {
@@ -1651,55 +1931,161 @@
     var host = region("brain-models");
     clear(host);
     host.appendChild(el("p", { class: "empty-state", text: "Loading models and memory." }));
+    // Both modalities are read, so a species that was only ever heard still gets
+    // a profile alongside the ones that were seen.
     Promise.all([
       apiGet("/brain/models"),
       apiGet("/brain/memory" + query({ station_id: state.stationId })),
-      apiGet("/detections" + query({ station_id: state.stationId, limit: 500 }))
+      apiGet("/detections" + query({ station_id: state.stationId, limit: 500 })),
+      apiGet("/audio" + query({ station_id: state.stationId, limit: 500 }))
     ]).then(function (res) {
-      var models = res[0], memory = res[1], detections = (res[2] && res[2].items) || [];
+      var models = res[0], memory = res[1];
+      var detections = (res[2] && res[2].items) || [];
+      var audioEvents = (res[3] && res[3].items) || [];
       clear(host);
 
-      host.appendChild(el("h3", { text: "Models" }));
-      var deskModels = models.desktop_models || {};
-      // The language model has its own section below, so it is left out of this
-      // list to avoid showing it in two places.
-      var mkeys = Object.keys(deskModels).filter(function (k) { return k !== "llm"; });
-      var mlist = el("div", { class: "kv-list" });
-      if (mkeys.length) {
-        mkeys.forEach(function (k) {
-          mlist.appendChild(el("div", { class: "kv-row" }, [
-            el("span", { class: "kv-key", text: k }),
-            el("span", { class: "kv-val", text: describeModel(deskModels[k]) })
-          ]));
-        });
+      // Models are grouped by WHERE they run, because that is the distinction
+      // that matters: the field station decides what becomes an observation at
+      // all, and the desktop re-judges and interprets it afterwards.
+      host.appendChild(el("h3", { text: "Field station models" }));
+      host.appendChild(el("p", { class: "settings-desc", text:
+        "These run out at the station itself. Between them they decide what becomes an observation in the first place." }));
+      var stations = models.stations || [];
+      if (!stations.length) {
+        host.appendChild(el("p", { class: "card-note", text: "No stations are configured yet." }));
       } else {
-        mlist.appendChild(el("p", { class: "card-note", text: "No desktop models are declared in the configuration." }));
+        var stGrid = el("div", { class: "card-grid station-model-grid" });
+        stations.forEach(function (st) { stGrid.appendChild(stationModelCard(st, models.files)); });
+        host.appendChild(stGrid);
       }
-      host.appendChild(mlist);
+
+      host.appendChild(el("h3", { text: "Desktop models" }));
+      host.appendChild(el("p", { class: "settings-desc", text:
+        "These run here on your computer, after an observation has been captured and synced." }));
+      var deskModels = models.desktop_models || {};
+      host.appendChild(el("div", { class: "info-block" }, [modelEntry(
+        "Vision verification",
+        "RF-DETR, on this computer",
+        "Re-scores the saved frames of an event for publication-grade accuracy. It can overrule the field station's call, and it adds the interpretive points such as ecological role and rarity, which are always labelled as inference and never stored as measurement.",
+        deskModels.visual_rfdetr, models.files)]));
 
       host.appendChild(el("h3", { text: "Language model" }));
+      var llmBlock = el("div", { class: "info-block" });
+      llmBlock.appendChild(el("p", { class: "settings-desc", text:
+        "Runs here on your computer. It powers the longitudinal pass and the interpretation text. It does not write your reports: a report is assembled from the stored record, and anything this model produced is labelled in it as inference." }));
       var llmHost = el("div", { class: "llm-manager" });
-      host.appendChild(llmHost);
+      llmBlock.appendChild(llmHost);
+      host.appendChild(llmBlock);
       renderLlmManager(llmHost);
 
       host.appendChild(el("h3", { text: "Site memory" }));
-      var baselines = memory.site_baselines || [];
-      host.appendChild(el("p", { class: "card-note", text: fmtNum(memory.baseline_count || baselines.length) + " baseline cells. " + (memory.note || "") }));
-      host.appendChild(deferredNote("Editing or annotating memory writes desktop-owned records, which arrives with the memory write path."));
+      host.appendChild(el("div", { class: "info-block" }, [siteMemoryView(memory)]));
 
       host.appendChild(el("h3", { text: "Species profiles" }));
-      host.appendChild(speciesProfiles(detections));
+      host.appendChild(speciesProfiles(detections, audioEvents));
     }).catch(function (e) { setState(host, "empty-state", "Could not load models and memory: " + e.message); });
   }
 
-  function describeModel(m) {
-    if (m === null || m === undefined) { return "-"; }
-    if (typeof m !== "object") { return String(m); }
-    var bits = [];
-    if (m.version) { bits.push("version " + m.version); }
-    if (m.path) { bits.push(m.path); }
-    if (m.citation) { bits.push(m.citation); }
-    return bits.join(" · ") || JSON.stringify(m);
+  // One station's own models, in the order they act on a moment: the camera's
+  // screener first, then the microphone or hydrophone's listener.
+  function stationModelCard(st, files) {
+    var m = st.models || {};
+    var card = el("article", { class: "card" }, [
+      el("div", { class: "card-title", text: st.station_name || st.station_id })
+    ]);
+    card.appendChild(modelEntry(
+      "Vision screening",
+      "YOLO11, on the station's accelerator",
+      "Checks every frame the camera produces. A frame with nothing in it is discarded straight away, so only real detections ever reach storage.",
+      m.visual_pi, files));
+
+    var acoustic = m.acoustic || {};
+    var activeKey = acoustic.active;
+    var activeEntry = (acoustic.options || {})[activeKey] || null;
+    card.appendChild(modelEntry(
+      "Acoustic recognition" + (activeKey ? " (" + humanize(activeKey) + ")" : ""),
+      "on the station's processor",
+      "Listens to the audio stream and recognises sounds. A recognised sound opens an observation of its own, so the station hears as well as sees.",
+      activeEntry, files));
+
+    if (m.visual_desktop) {
+      card.appendChild(modelEntry(
+        "Desktop screening",
+        "stands in when there is no field hardware",
+        "Used only when you run this station's capture on your computer, from a video file or a webcam, instead of on a Raspberry Pi.",
+        m.visual_desktop, files));
+    }
+    return card;
+  }
+
+  // One model, described in plain language first and by its file second. A
+  // citation is kept but folded away, so credit is preserved without burying the
+  // rest of the panel under it.
+  function modelEntry(title, where, description, entry, files) {
+    var wrap = el("div", { class: "model-entry" });
+    wrap.appendChild(el("div", { class: "model-entry-head" }, [
+      el("span", { class: "form-label", text: title }),
+      where ? badge(where, "muted") : null
+    ]));
+    wrap.appendChild(el("p", { class: "card-note", text: description }));
+
+    if (!entry || (!entry.path && !entry.version)) {
+      // Stated as its own status rather than another line of prose, so it is not
+      // mistaken for part of the description above it.
+      wrap.appendChild(el("p", { class: "model-status is-absent", text: "Not configured yet" }));
+      return wrap;
+    }
+    var kv = el("div", { class: "kv-list" });
+    // A model path can be long, so it stacks under its label and wraps rather
+    // than running past the edge of the card.
+    if (entry.path) { kv.appendChild(modelKvRow("File", entry.path, "model-file")); }
+    kv.appendChild(modelKvRow("Version", entry.version || "not stated"));
+    wrap.appendChild(kv);
+
+    // A configured path is intent, not proof the file arrived. Several models are
+    // downloaded or exported by hand after setup, so a path pointing at nothing
+    // must not look like a model that is ready to run.
+    if (entry.path) {
+      var info = (files || {})[entry.path];
+      if (info && info.present) {
+        wrap.appendChild(el("p", { class: "model-status is-present", text: "File present, " + fmtBytes(info.size_bytes) }));
+      } else if (info) {
+        wrap.appendChild(el("p", { class: "model-status is-absent", text: "No file at this path yet" }));
+      }
+    }
+
+    if (entry.citation) {
+      var cite = el("details", { class: "subgroup" }, [el("summary", { text: "Citation" })]);
+      cite.appendChild(el("p", { class: "card-meta model-citation", text: entry.citation }));
+      wrap.appendChild(cite);
+    }
+    return wrap;
+  }
+
+  function modelKvRow(k, v, extraClass) {
+    return el("div", { class: "kv-row" + (extraClass ? " " + extraClass : "") }, [
+      el("span", { class: "kv-key", text: k }),
+      el("span", { class: "kv-val", text: v })
+    ]);
+  }
+
+  // Site memory explained where it is shown, rather than assumed. This is the
+  // yardstick the salience score is measured against, so it is worth stating
+  // plainly what it holds and that it never touches the observation archive.
+  function siteMemoryView(memory) {
+    var wrap = el("div");
+    var count = memory.baseline_count || (memory.site_baselines || []).length;
+    wrap.appendChild(el("p", { class: "settings-desc", text:
+      "Site memory is a site's long-term sense of what is normal. The longitudinal pass compresses the record into compact statistical cells, one for each station, recurring period (every June, for example), taxon group and measured signal. Each cell holds the middle value, how much it usually varies, its range, and how many readings went into it." }));
+    wrap.appendChild(el("p", { class: "card-note", text:
+      "That is the yardstick for \"is this unusual?\": a new observation is scored against its matching cell. It is permanent and is never pruned. A pass only ever trims its own working notes, never your observation archive." }));
+    wrap.appendChild(metricRow([metricCard("Baseline cells", fmtNum(count))]));
+    if (!count) {
+      wrap.appendChild(el("p", { class: "card-note", text:
+        "There are none yet because no longitudinal pass has run. They fill in after the first pass." }));
+    }
+    wrap.appendChild(deferredNote("Editing or annotating memory writes desktop-owned records, which arrives with the memory write path."));
+    return wrap;
   }
 
   // The desktop language model that powers the dream pass and interpretation:
@@ -1761,36 +2147,61 @@
     return v.toFixed(i ? 1 : 0) + " " + units[i];
   }
 
-  // Build one profile card per taxon from the detection record: how many
-  // events, the mean and best confidence, and when it was last seen.
-  function speciesProfiles(detections) {
+  // One profile card per taxon, built from BOTH modalities, so a species that
+  // was only ever heard appears beside the ones that were seen. Sightings and
+  // calls are counted separately, because a photograph and a recorded call are
+  // different kinds of evidence and should not be silently added together.
+  function speciesProfiles(visionEvents, audioEvents) {
     var byTaxon = {};
-    detections.forEach(function (obs) {
-      (obs.vision_detections || []).forEach(function (det) {
-        var key = taxonName(det);
-        if (!byTaxon[key]) { byTaxon[key] = { name: key, scientific: det.scientific_name || "", count: 0, sum: 0, best: 0, last: null }; }
-        var t = byTaxon[key];
-        t.count += 1;
-        if (det.confidence !== null && det.confidence !== undefined) {
-          t.sum += Number(det.confidence);
-          t.best = Math.max(t.best, Number(det.confidence));
-        }
-        if (!t.last || (obs.first_seen && obs.first_seen > t.last)) { t.last = obs.first_seen; }
-      });
+    var stationNames = {};
+    (state.stations || []).forEach(function (s) { stationNames[s.id] = s.station_name || s.id; });
+
+    function add(obs, det, modality) {
+      var key = taxonName(det);
+      if (!key) { return; }
+      if (!byTaxon[key]) {
+        byTaxon[key] = {
+          name: key, scientific: det.scientific_name || "",
+          vision: 0, audio: 0, sum: 0, scored: 0, best: 0, last: null, sites: {}
+        };
+      }
+      var t = byTaxon[key];
+      t[modality] += 1;
+      if (det.confidence !== null && det.confidence !== undefined) {
+        t.sum += Number(det.confidence);
+        t.scored += 1;
+        t.best = Math.max(t.best, Number(det.confidence));
+      }
+      if (!t.last || (obs.first_seen && obs.first_seen > t.last)) { t.last = obs.first_seen; }
+      if (obs.station_id) { t.sites[obs.station_id] = true; }
+    }
+
+    (visionEvents || []).forEach(function (obs) {
+      (obs.vision_detections || []).forEach(function (d) { add(obs, d, "vision"); });
     });
+    (audioEvents || []).forEach(function (obs) {
+      (obs.audio_detections || []).forEach(function (d) { add(obs, d, "audio"); });
+    });
+
     var taxa = Object.keys(byTaxon).map(function (k) { return byTaxon[k]; })
-      .sort(function (a, b) { return b.count - a.count; });
+      .sort(function (a, b) { return (b.vision + b.audio) - (a.vision + a.audio); });
     if (!taxa.length) { return el("p", { class: "card-note", text: "No resolved taxa in the record yet." }); }
+
     var grid = el("div", { class: "card-grid" });
     taxa.forEach(function (t) {
+      var sites = Object.keys(t.sites).map(function (id) { return stationNames[id] || id; });
+      var modes = el("div", { class: "badge-row" });
+      if (t.vision) { modes.appendChild(badge(fmtNum(t.vision) + (t.vision === 1 ? " sighting" : " sightings"), "source")); }
+      if (t.audio) { modes.appendChild(badge(fmtNum(t.audio) + (t.audio === 1 ? " call" : " calls"), "source")); }
       grid.appendChild(el("article", { class: "card" }, [
         el("div", { class: "card-title", text: t.name }),
-        t.scientific ? el("div", { class: "card-meta", text: t.scientific }) : null,
+        (t.scientific && t.scientific !== t.name) ? el("div", { class: "card-meta", text: t.scientific }) : null,
+        modes,
         el("div", { class: "card-stats", text:
-          "detections: " + fmtNum(t.count) +
-          "  mean confidence: " + fmtConfidence(t.count ? t.sum / t.count : null) +
+          "mean confidence: " + fmtConfidence(t.scored ? t.sum / t.scored : null) +
           "  best: " + fmtConfidence(t.best) }),
-        el("div", { class: "card-meta", text: "last seen: " + fmtTime(t.last) })
+        sites.length ? el("div", { class: "card-meta", text: "recorded at: " + sites.join(", ") }) : null,
+        el("div", { class: "card-meta", text: "last recorded: " + fmtTime(t.last) })
       ]));
     });
     return grid;
@@ -1805,21 +2216,26 @@
     Promise.all([
       apiGet("/dream/status"),
       apiGet("/brain/learning"),
-      apiGet("/analytics" + query({ station_id: state.stationId }))
+      apiGet("/analytics" + query({ station_id: state.stationId })),
+      apiGet("/brain/audit" + query({ station_id: state.stationId }))
     ]).then(function (res) {
-      var status = res[0], learning = res[1], audit = res[2];
+      var status = res[0], learning = res[1], analytics = res[2], audit = res[3];
       clear(host);
 
       host.appendChild(el("h3", { text: "Longitudinal pass" }));
-      host.appendChild(dreamStatusView(status));
+      var dreamHost = el("div");
+      host.appendChild(dreamHost);
+      paintDreamStatus(dreamHost, status);
 
       host.appendChild(el("h3", { text: "Audit" }));
-      host.appendChild(metricRow([
-        metricCard("Events", fmtNum(audit.total_events)),
-        metricCard("Verified share", fmtPct(audit.verified_fraction)),
-        metricCard("Species", fmtNum(audit.species_richness))
-      ]));
-      host.appendChild(deferredNote("Detection retraining, acoustic training, and fine-tuning are guided export workflows that arrive with the learning write path."));
+      host.appendChild(el("p", { class: "settings-desc", text:
+        "Evidence of how the system behaved, counted from the stored record. Every figure here is a count or an average over rows already written, never a new measurement and never an interpretation." }));
+      host.appendChild(auditView(audit, analytics));
+
+      host.appendChild(el("h3", { text: "Retraining exports" }));
+      var retrainHost = el("div");
+      host.appendChild(retrainHost);
+      renderRetraining(retrainHost);
 
       host.appendChild(el("h3", { text: "Candidate patterns" }));
       var patterns = learning.patterns || [];
@@ -1842,6 +2258,244 @@
         host.appendChild(grid);
       }
     }).catch(function (e) { setState(host, "empty-state", "Could not load learning: " + e.message); });
+  }
+
+  // Retraining exports: gather the weakest and most disputed detections into a
+  // folder a person can correct and train from. The counts are previewed first,
+  // from the same selection the export itself uses, so nothing is written until
+  // someone has seen what they are about to get.
+  function renderRetraining(host) {
+    clear(host);
+    var block = el("div", { class: "info-block" });
+    block.appendChild(el("p", { class: "settings-desc", text:
+      "A monitoring system earns its accuracy back by learning from the cases it handled worst. This gathers the weakest detections, the ones the desktop verifier disputed, and anything the station could not classify, and writes them out with their labels and boxes already in place, ready to be corrected and trained on." }));
+    block.appendChild(el("p", { class: "card-note", text:
+      "The labels in an export are the models' own guesses, chosen precisely because they are doubtful. Treat every one as a question to answer, not as truth. A detection that turns out to be an organism the model has never been trained on is the most valuable item in the folder." }));
+
+    var thresholdInput = el("input", { type: "number", class: "form-input", step: "0.05", min: "0", max: "1", value: "0.45" });
+    var counts = el("div", { class: "kv-list" });
+    var message = el("p", { class: "form-message" });
+
+    function refresh() {
+      clear(counts);
+      counts.appendChild(el("p", { class: "card-note", text: "Counting candidates." }));
+      apiGet("/brain/retraining/candidates" + query({
+        station_id: state.stationId, confidence_below: thresholdInput.value || 0.45
+      })).then(function (c) {
+        clear(counts);
+        [["vision", "Visual frames to review", visionBtn], ["acoustic", "Audio clips to review", audioBtn]].forEach(function (row) {
+          var group = c[row[0]] || {};
+          var total = group.detections || 0;
+          var reasons = Object.keys(group.by_reason || {}).map(function (k) {
+            return humanize(k) + " " + fmtNum(group.by_reason[k]);
+          }).join(", ");
+          counts.appendChild(modelKvRow(row[1], total
+            ? fmtNum(total) + " from " + fmtNum(group.events || 0) + " events" + (reasons ? " (" + reasons + ")" : "")
+            : "nothing to write"));
+          // Nothing to export means the button is not offered, rather than
+          // offering it and answering with a refusal.
+          row[2].disabled = !total;
+        });
+      }).catch(function (e) { setState(counts, "card-note", "Could not count candidates: " + e.message); });
+    }
+
+    function runExport(kind, force) {
+      message.textContent = "Writing the " + kind + " package.";
+      apiSend("/brain/retraining/export", "POST", {
+        kind: kind,
+        station_id: state.stationId || null,
+        confidence_below: Number(thresholdInput.value) || 0.45,
+        force: !!force
+      }).then(function (r) {
+        if (r.already_exists) {
+          // The same detections were exported before, so nothing was rewritten.
+          clear(message);
+          message.appendChild(el("span", { text:
+            "These exact " + fmtNum(r.detections) + " detections were already exported to " + r.path +
+            ". Nothing was written again. " }));
+          message.appendChild(el("button", {
+            type: "button", class: "btn btn-small", text: "Export a fresh copy anyway",
+            onclick: function () { runExport(kind, true); }
+          }));
+          return;
+        }
+        var made = kind === "vision"
+          ? fmtNum(r.images) + " images with " + fmtNum(r.annotations) + " boxes"
+          : fmtNum(r.clips) + " clips across " + fmtNum(r.labels) + " labels";
+        message.textContent = "Wrote " + made + " to " + r.path +
+          (r.missing_media ? " (" + fmtNum(r.missing_media) + " files were missing from storage)" : "");
+      }).catch(function (e) { message.textContent = "Could not export: " + e.message; });
+    }
+
+    var refreshBtn = el("button", { type: "button", class: "btn", text: "Count candidates" });
+    refreshBtn.addEventListener("click", refresh);
+    var visionBtn = el("button", { type: "button", class: "btn btn-primary", text: "Export visual package" });
+    visionBtn.addEventListener("click", function () { runExport("vision"); });
+    var audioBtn = el("button", { type: "button", class: "btn btn-primary", text: "Export audio package" });
+    audioBtn.addEventListener("click", function () { runExport("acoustic"); });
+
+    block.appendChild(el("label", { class: "form-field" }, [
+      el("span", { class: "form-label", text: "Treat a detection as weak below this confidence" }),
+      thresholdInput,
+      el("span", { class: "form-hint", text: "Detections the desktop verifier disputed, and records the station could not classify, are always included whatever this is set to." })
+    ]));
+    block.appendChild(counts);
+    block.appendChild(el("div", { class: "form-actions" }, [refreshBtn, visionBtn, audioBtn]));
+    block.appendChild(message);
+    block.appendChild(el("p", { class: "form-hint", text:
+      "Each package holds a README with the steps to follow. A retrained desktop model is pointed at from the settings; a retrained field model must first be compiled to the accelerator's own format, which is a one-time build step on an x86 Linux machine and never something a deployed station does." }));
+
+    host.appendChild(block);
+    refresh();
+  }
+
+  // The audit view: evidence of how the system behaved, all of it counted from
+  // rows already stored. Where a stage has not run yet it says so plainly,
+  // rather than showing a zero that could be misread as a result.
+  function auditView(audit, analytics) {
+    var wrap = el("div");
+    var verdicts = audit.verification || {};
+    var confidence = audit.confidence || {};
+    var byModality = confidence.by_modality || {};
+
+    wrap.appendChild(metricRow([
+      metricCard("Events", fmtNum(audit.events)),
+      metricCard("Species", fmtNum(analytics && analytics.species_richness)),
+      metricCard("Verified share", fmtPct(audit.events ? (verdicts.verified || 0) / audit.events : 0)),
+      metricCard("Mean confidence", fmtConfidence(meanAcrossModalities(byModality)))
+    ]));
+
+    // How often the desktop verifier reached the same conclusion as the field.
+    var verBlock = el("div", { class: "info-block" });
+    verBlock.appendChild(el("div", { class: "card-title", text: "Desktop verification" }));
+    verBlock.appendChild(el("p", { class: "settings-desc", text:
+      "How often the desktop verifier, re-scoring an event's saved frames, reached the same conclusion as the field station's screening model. A disagreement is not an error: it is the desktop correcting a fast field call, and it is recorded rather than hidden." }));
+    if (!verdicts.with_verdict) {
+      verBlock.appendChild(el("p", { class: "card-note", text:
+        "No desktop verification has run yet, so there is nothing to compare. These figures fill in once verification runs over the synced record." }));
+    } else {
+      var vkv = el("div", { class: "kv-list" });
+      vkv.appendChild(modelKvRow("Events with a verdict", fmtNum(verdicts.with_verdict)));
+      vkv.appendChild(modelKvRow("Cleared for the longitudinal pass", fmtNum(verdicts.verified)));
+      vkv.appendChild(modelKvRow("Agreed with the field call", fmtNum(verdicts.agree)));
+      vkv.appendChild(modelKvRow("Overruled the field call", fmtNum(verdicts.disagree)));
+      vkv.appendChild(modelKvRow("No field label to compare", fmtNum(verdicts.not_comparable)));
+      vkv.appendChild(modelKvRow("Frames scored", fmtNum(verdicts.frames_scored)));
+      vkv.appendChild(modelKvRow("Frame agreement", verdicts.frame_agreement_fraction === null ||
+        verdicts.frame_agreement_fraction === undefined ? "not applicable" : fmtPct(verdicts.frame_agreement_fraction)));
+      vkv.appendChild(modelKvRow("Mean verifier confidence", fmtConfidence(verdicts.mean_verifier_confidence)));
+      verBlock.appendChild(vkv);
+    }
+    wrap.appendChild(verBlock);
+
+    // What the field station's deterministic checks did with each record.
+    var qc = audit.qc || {};
+    var qcBlock = el("div", { class: "info-block" });
+    qcBlock.appendChild(el("div", { class: "card-title", text: "Quality control" }));
+    qcBlock.appendChild(el("p", { class: "settings-desc", text:
+      "What the field station's deterministic checks did with each record. A deferred record is one the station could not classify on its own and passed to the desktop, with its reason recorded." }));
+    var states = countsToBars(qc.by_state);
+    if (states.length) { qcBlock.appendChild(barChart(states, { title: "events by quality state" })); }
+    var reasons = countsToBars(qc.by_reason);
+    if (reasons.length) {
+      qcBlock.appendChild(el("p", { class: "card-note", text: "Why records were deferred:" }));
+      qcBlock.appendChild(barChart(reasons, { title: "deferral reasons" }));
+    } else {
+      qcBlock.appendChild(el("p", { class: "card-note", text: "No record has been deferred." }));
+    }
+    wrap.appendChild(qcBlock);
+
+    // How sure the models were, kept separate by modality.
+    var confBlock = el("div", { class: "info-block" });
+    confBlock.appendChild(el("div", { class: "card-title", text: "Detection confidence" }));
+    confBlock.appendChild(el("p", { class: "settings-desc", text:
+      "How sure the models were about each recognised detection, kept separate by modality because a camera's score and an acoustic score are not the same measurement." }));
+    var ckv = el("div", { class: "kv-list" });
+    ["vision", "audio"].forEach(function (modality) {
+      var s = byModality[modality] || { n: 0 };
+      ckv.appendChild(modelKvRow(humanize(modality) + " detections", s.n
+        ? fmtNum(s.n) + " scored, mean " + fmtConfidence(s.mean) +
+          ", range " + fmtConfidence(s.min) + " to " + fmtConfidence(s.max)
+        : "none recorded"));
+    });
+    confBlock.appendChild(ckv);
+    var buckets = countsToBars(confidence.buckets, true);
+    if (buckets.length) { confBlock.appendChild(barChart(buckets, { title: "confidence distribution" })); }
+    wrap.appendChild(confBlock);
+
+    // Events per month with that month's mean confidence, so drift is visible.
+    var trend = audit.trend || [];
+    if (trend.length) {
+      var tBlock = el("div", { class: "info-block" });
+      tBlock.appendChild(el("div", { class: "card-title", text: "Over time" }));
+      tBlock.appendChild(el("p", { class: "settings-desc", text:
+        "Events per month with that month's mean detection confidence, so a drift in how certain the models are over a deployment is visible rather than hidden inside one overall average." }));
+      var tkv = el("div", { class: "kv-list" });
+      trend.forEach(function (row) {
+        tkv.appendChild(modelKvRow(row.period, fmtNum(row.events) + " events, mean confidence " +
+          fmtConfidence(row.mean_confidence) + ", " + fmtNum(row.verified) + " verified"));
+      });
+      tBlock.appendChild(tkv);
+      wrap.appendChild(tBlock);
+    }
+
+    // What produced each row, which is what makes a result reproducible later.
+    var versions = audit.versions || {};
+    var verBlock2 = el("div", { class: "info-block" });
+    verBlock2.appendChild(el("div", { class: "card-title", text: "Model and data versions" }));
+    verBlock2.appendChild(el("p", { class: "settings-desc", text:
+      "Which model version and which taxonomic snapshot produced the stored rows. This is what lets someone reproduce a result years later, so a value of \"not stated\" is worth filling in before a deployment you intend to publish." }));
+    var pkv = el("div", { class: "kv-list" });
+    [["screening_model_version", "Field screening model"],
+     ["acoustic_model_version", "Acoustic model"],
+     ["rfdetr_version", "Desktop verifier"],
+     ["gbif_snapshot_date", "GBIF backbone snapshot"],
+     ["iucn_fetch_date", "IUCN fetch date"]].forEach(function (pair) {
+      var counts = versions[pair[0]] || {};
+      var parts = Object.keys(counts).map(function (k) { return k + " (" + fmtNum(counts[k]) + ")"; });
+      pkv.appendChild(modelKvRow(pair[1], parts.length ? parts.join(", ") : "none recorded"));
+    });
+    verBlock2.appendChild(pkv);
+    wrap.appendChild(verBlock2);
+
+    if (audit.note) { wrap.appendChild(el("p", { class: "card-note", text: audit.note })); }
+    return wrap;
+  }
+
+  // Turn a {label: count} map into sorted bar-chart rows. Fixed-order maps such
+  // as a confidence histogram keep their natural order instead of being sorted
+  // by size, because the order is the meaning.
+  function countsToBars(counts, keepOrder) {
+    var rows = Object.keys(counts || {}).map(function (k) {
+      return { label: keepOrder ? k : humanize(k), value: counts[k] };
+    });
+    return keepOrder ? rows : rows.sort(function (a, b) { return b.value - a.value; });
+  }
+
+  function meanAcrossModalities(byModality) {
+    var sum = 0, n = 0;
+    Object.keys(byModality || {}).forEach(function (m) {
+      var s = byModality[m];
+      if (s && s.n) { sum += s.mean * s.n; n += s.n; }
+    });
+    return n ? sum / n : null;
+  }
+
+  // Keep the longitudinal pass current without rebuilding the whole panel: only
+  // this block is redrawn, and only while a pass is actually running, so the page
+  // never jumps or flickers under someone who is reading it.
+  function paintDreamStatus(hostEl, status) {
+    clear(hostEl);
+    hostEl.appendChild(dreamStatusView(status));
+    if (state.dreamTimer) { window.clearTimeout(state.dreamTimer); state.dreamTimer = null; }
+    var active = status && status.active;
+    if (!active || active.status !== "running") { return; }
+    state.dreamTimer = window.setTimeout(function () {
+      if (state.activePanel !== "brain" || !document.body.contains(hostEl)) { return; }
+      apiGet("/dream/status")
+        .then(function (next) { paintDreamStatus(hostEl, next); })
+        .catch(function () { /* a missed poll simply leaves the last status shown */ });
+    }, POLL_INTERVAL_MS);
   }
 
   function dreamStatusView(status) {
@@ -1887,6 +2541,132 @@
   // out by a background reload.
   var skillFormOpen = false;
 
+  // Starter skills a person can insert and then edit. Each one is already on the
+  // correct tier, so the collection teaches the field-versus-desktop rule by
+  // example rather than by asking someone to read it first. Every field skill
+  // below is a pure function of a value measured in the record it is looking at;
+  // every desktop skill reasons about ecology or across records, and so is
+  // recorded as labelled inference.
+  var SKILL_TEMPLATES = [
+    {
+      title: "Low-confidence detection review",
+      trigger_condition: "The screening model's confidence for a detection is below 0.45.",
+      instruction: "Flag the observation as low confidence so it is reviewed before the record is relied on, and so its frames become candidates for retraining.",
+      tier: "deterministic_flag",
+      why: "Catches shaky calls, including organisms the model was never trained on."
+    },
+    {
+      title: "Thermal stress watch",
+      trigger_condition: "Water temperature is above 29 degrees Celsius.",
+      instruction: "Flag the observation as a possible thermal stress event.",
+      tier: "deterministic_flag",
+      why: "A measured threshold on a sensor channel, so the station can decide it alone."
+    },
+    {
+      title: "Unusually long event",
+      trigger_condition: "The event lasted longer than 120 seconds.",
+      instruction: "Flag the observation for behavioural review.",
+      tier: "deterministic_flag",
+      why: "Long events often hold behaviour worth watching rather than a simple pass-through."
+    },
+    {
+      title: "Night-time activity",
+      trigger_condition: "The event's timestamp falls between 20:00 and 04:00 UTC.",
+      instruction: "Flag the observation as a night-time detection.",
+      tier: "deterministic_flag",
+      why: "Separates nocturnal activity without asserting anything about why."
+    },
+    {
+      title: "Possible new arrival",
+      trigger_condition: "A taxon is recorded that does not appear anywhere in this station's first 30 days of record.",
+      instruction: "Note it as a possible new arrival at this site, and state what it would take to confirm that.",
+      tier: "interpretive",
+      why: "Needs memory of other records, so it belongs on the desktop."
+    },
+    {
+      title: "Off-target taxon",
+      trigger_condition: "A detection resolves to a taxon that is not in this station's target species list.",
+      instruction: "Note that the identification falls outside what the model was trained for, and that it may be a misclassification worth checking.",
+      tier: "interpretive",
+      why: "The likeliest way a misclassified or unknown organism surfaces for a human."
+    },
+    {
+      title: "Substrate competition",
+      trigger_condition: "A sponge is detected in the same event as coral.",
+      instruction: "Note the potential competition for substrate between them.",
+      tier: "interpretive",
+      why: "An ecological reading, so it is stored as inference and never as measurement."
+    },
+    {
+      title: "Heard but never seen",
+      trigger_condition: "A taxon has acoustic detections at a site but no visual detections there.",
+      instruction: "Note the gap between the two modalities and suggest whether camera placement or timing could explain it.",
+      tier: "interpretive",
+      why: "Compares across records and modalities, which only the desktop can do."
+    }
+  ];
+
+  // What a skill is, and what it honestly cannot do. Folded away so it is there
+  // for a first-time reader without standing in the way afterwards.
+  function skillsGuidance() {
+    var box = el("details", { class: "info-block skills-guidance" }, [
+      el("summary", { text: "What a skill is, and what it cannot do" })
+    ]);
+    box.appendChild(el("p", { class: "settings-desc", text:
+      "A skill is a reusable rule you write once and Audtheia applies to every observation. It has a trigger (when to use it) and an instruction (what to do), and it runs in one of two places." }));
+
+    var tiers = el("div", { class: "kv-list" });
+    tiers.appendChild(modelKvRow("Field, deterministic flag",
+      "Runs on the station. May use only values measured in the record in front of it: confidence, sensor readings, duration, timestamps, counts. Its output is a measured flag."));
+    tiers.appendChild(modelKvRow("Desktop, interpretive",
+      "Runs on your computer. May reason about ecology and across many records. Everything it writes is stored as labelled inference, never as measurement."));
+    box.appendChild(tiers);
+
+    box.appendChild(el("p", { class: "form-label", text: "Limits worth knowing before you write one" }));
+    var limits = el("ul", { class: "skills-limits" });
+    [
+      "A skill cannot make a model recognise a species it was never trained on. To teach it something new, flag the examples with a skill and then retrain on them.",
+      "A field skill has no memory of other observations and no ecological knowledge. If your rule needs either, it belongs on the desktop.",
+      "Skills annotate and flag. They never change what is captured, and they never delete anything.",
+      "No skill can reach the internet. Audtheia runs offline by design.",
+      "Write triggers that are specific and testable. \"When something looks unusual\" cannot be evaluated; \"when confidence is below 0.45\" can."
+    ].forEach(function (line) { limits.appendChild(el("li", { text: line })); });
+    box.appendChild(limits);
+    return box;
+  }
+
+  // The starter collection, offered as cards that open a prefilled form.
+  function showSkillTemplates(host, tier) {
+    skillFormOpen = true;
+    clear(host);
+    host.appendChild(el("p", { class: "settings-desc", text:
+      "Pick a starting point, then edit it to match your site. Each one is already set to the tier it must run on." }));
+    var grid = el("div", { class: "card-grid" });
+    SKILL_TEMPLATES.forEach(function (t) {
+      grid.appendChild(el("article", { class: "card" }, [
+        el("div", { class: "badge-row" }, [
+          badge(t.tier === "interpretive" ? "desktop" : "field", "source"),
+          badge(t.tier === "interpretive" ? "interpretive" : "deterministic flag", "status")
+        ]),
+        el("div", { class: "card-title", text: t.title }),
+        el("div", { class: "card-stats", text: "When: " + t.trigger_condition }),
+        el("div", { class: "card-stats", text: "Do: " + t.instruction }),
+        el("div", { class: "card-meta", text: t.why }),
+        el("div", { class: "card-actions" }, [
+          el("button", {
+            type: "button", class: "btn btn-small btn-primary", text: "Use this",
+            // No id, so the form opens as a new skill with these values filled in.
+            onclick: function () { showSkillForm(host, tier, { title: t.title, trigger_condition: t.trigger_condition, instruction: t.instruction, tier: t.tier }); }
+          })
+        ])
+      ]));
+    });
+    host.appendChild(grid);
+    host.appendChild(el("div", { class: "form-actions" }, [
+      el("button", { type: "button", class: "btn", text: "Back to skills", onclick: function () { renderSkills(host, tier); } })
+    ]));
+  }
+
   function loadBrainSkills() {
     var host = region("brain-skills");
     var filters = region("brain-skills-filters");
@@ -1901,6 +2681,10 @@
         type: "button", class: "btn btn-primary", text: "New skill",
         onclick: function () { showSkillForm(host, sel.value, null); }
       }));
+      filters.appendChild(el("button", {
+        type: "button", class: "btn", text: "Start from an example",
+        onclick: function () { showSkillTemplates(host, sel.value); }
+      }));
     }
     // A background refresh must not close a form the person is filling in.
     if (!skillFormOpen) { renderSkills(host, ""); }
@@ -1914,7 +2698,16 @@
     host.appendChild(el("p", { class: "empty-state", text: "Loading skills." }));
     apiGet("/brain/skills" + query({ tier: tier })).then(function (skills) {
       clear(host);
-      if (!skills.length) { setState(host, "empty-state", "No skills defined yet. Use New skill to author one."); return; }
+      host.appendChild(skillsGuidance());
+      // Skills are stored and synced today, but nothing applies them to an
+      // observation yet, and the panel must say so rather than let a saved rule
+      // look like a rule that is running.
+      host.appendChild(deferredNote("Skills are saved to the library and travel to your stations. A field skill applies to new observations only once it carries a checkable condition, and an interpretive skill is not yet passed to the desktop interpreter."));
+      if (!skills.length) {
+        host.appendChild(el("p", { class: "empty-state", text:
+          "No skills defined yet. Use Start from an example to insert one and edit it, or New skill to write your own." }));
+        return;
+      }
       var grid = el("div", { class: "card-grid" });
       skills.forEach(function (s) {
         grid.appendChild(el("article", { class: "card" }, [
@@ -1938,7 +2731,10 @@
     // Mark a form as open so the background refresh does not repaint over it.
     skillFormOpen = true;
     clear(host);
-    var isEdit = !!existing;
+    // An existing skill carries an id, so it is edited in place. A starter
+    // template carries values but no id, so the same form opens prefilled and
+    // creates a new skill instead of overwriting anything.
+    var isEdit = !!(existing && existing.id);
 
     function field(labelText, control) {
       return el("label", { class: "form-field" }, [el("span", { class: "form-label", text: labelText }), control]);
@@ -1988,6 +2784,7 @@
       field("How to apply (instruction)", instructionInput),
       field("Type", tierSelect),
       el("p", { class: "form-hint", text: "A deterministic flag is a pure function of a measured value and runs on the station. An interpretive skill reasons on the desktop, and its output is recorded as labeled inference." }),
+      el("p", { class: "form-hint", text: "Keep the trigger specific enough to be evaluated: \"confidence is below 0.45\" can be checked, \"looks unusual\" cannot. A skill flags and annotates; it cannot teach a model to recognise something it was never trained on, and it never alters or deletes what was captured." }),
       message,
       el("div", { class: "form-actions" }, [save, cancel])
     ]));
@@ -2242,7 +3039,7 @@
     });
     sel.addEventListener("change", function () { applyTheme(sel.value); });
     host.appendChild(el("label", { class: "filter-field" }, [el("span", { text: "Theme" }), sel]));
-    host.appendChild(el("p", { class: "card-note", text: "Your theme is remembered on this computer." }));
+    host.appendChild(el("p", { class: "card-note", text: "Your theme is saved and used the next time you open Audtheia, on this and any other device that opens this hub." }));
   }
 
   function renderTimezone(cfg) {
@@ -2375,6 +3172,16 @@
         val = Number(s);
         if (isNaN(val)) { msg.textContent = "A number field has an invalid value."; return null; }
         if (e.original != null && Number(e.original) === val) { continue; }
+      } else if (e.kind === "numberOrNull") {
+        var ns = String(raw).trim();
+        if (ns === "") {
+          val = null;
+          if (e.original === null || e.original === undefined || e.original === "") { continue; }
+        } else {
+          val = Number(ns);
+          if (isNaN(val)) { msg.textContent = "A number field has an invalid value."; return null; }
+          if (e.original != null && e.original !== "" && Number(e.original) === val) { continue; }
+        }
       } else {
         continue;
       }
@@ -2454,6 +3261,12 @@
     body.appendChild(boolRow("Camera", !!(sensors.camera && sensors.camera.enabled), "Enabled", "Disabled"));
     body.appendChild(boolRow("Audio", !!(sensors.audio && sensors.audio.enabled), "Enabled", "Disabled"));
     body.appendChild(boolRow("GPS", !!(sensors.gps && sensors.gps.enabled), "Enabled", "Disabled"));
+    var loc = st.location || {};
+    if (loc.latitude !== null && loc.latitude !== undefined && loc.longitude !== null && loc.longitude !== undefined) {
+      var posText = Number(loc.latitude).toFixed(4) + ", " + Number(loc.longitude).toFixed(4);
+      if (loc.elevation !== null && loc.elevation !== undefined) { posText += " (" + loc.elevation + " m)"; }
+      body.appendChild(fieldRow("Fixed position", posText));
+    }
     var channels = st.channels || [];
     body.appendChild(el("p", { class: "card-note", text: channels.length + " environmental channel" + (channels.length === 1 ? "" : "s") + " on this station." }));
     if (state.settingsCanEdit) {
@@ -2580,6 +3393,22 @@
       editors.push({ scope: "station", field: t[1], station_id: sid, original: on, get: f.get, kind: "bool" });
       body.appendChild(f.row);
     });
+
+    // Fixed station position. For a station at a known spot with no live
+    // receiver, an entered position is recorded on each event, kept distinct
+    // from a live satellite fix. Each field may be left blank to clear it.
+    var loc = st.location || {};
+    var locGroup = el("details", { class: "subgroup edit-advanced" }, [el("summary", { text: "Fixed station position (optional)" })]);
+    locGroup.appendChild(el("p", { class: "form-hint", text: "For a station at a known, surveyed spot with no live receiver, enter its position. Decimal degrees, WGS84. Latitude -90 to 90 (north positive, south negative); longitude -180 to 180 (east positive, west negative). Example: 18.2100, -67.1500. Leave a field blank to clear it. A position entered here is recorded as an entered position, kept separate from a live satellite fix." }));
+    function locEditor(field, labelText, val) {
+      var input = el("input", { type: "number", class: "form-input", step: "any", value: (val === null || val === undefined) ? "" : String(val) });
+      editors.push({ scope: "station", field: field, station_id: sid, original: (val === null || val === undefined) ? "" : val, get: function () { return input.value; }, kind: "numberOrNull" });
+      locGroup.appendChild(editField(labelText, input));
+    }
+    locEditor("station_latitude", "Latitude", loc.latitude);
+    locEditor("station_longitude", "Longitude", loc.longitude);
+    locEditor("station_elevation", "Elevation (meters, optional)", loc.elevation);
+    body.appendChild(locGroup);
 
     var models = st.models || {};
     var piPath = (models.visual_pi && models.visual_pi.path) || "";

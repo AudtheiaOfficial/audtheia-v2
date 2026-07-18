@@ -63,6 +63,7 @@ __all__ = [
     "STATUS_BELOW_DETECTION_LIMIT",
     "STATUS_SENSOR_ERROR",
     "STATUS_NOT_APPLICABLE",
+    "STATUS_STATION_CONFIGURED",
     "QARTOD_PASS",
     "QARTOD_NOT_EVALUATED",
     "QARTOD_SUSPECT",
@@ -84,6 +85,14 @@ STATUS_NOT_MEASURED = "not_measured"
 STATUS_BELOW_DETECTION_LIMIT = "below_detection_limit"
 STATUS_SENSOR_ERROR = "sensor_error"
 STATUS_NOT_APPLICABLE = "not_applicable"
+
+# A sixth location status, distinct from the five shared missing-data terms
+# above. It marks coordinates that came from a fixed, surveyed position entered
+# for the station, rather than from a live satellite fix. A station with no
+# receiver but a known, entered position still deserves a real location on the
+# record; stamping it this way keeps an entered position clearly separate from a
+# measured one, so the two are never confused downstream.
+STATUS_STATION_CONFIGURED = "station_configured"
 
 # The oceanographic quality-control flag scale, applied to marine channels only.
 # One (pass) means the value sits inside its expected operating range; two (not
@@ -416,9 +425,12 @@ class EnvironmentCapture:
 
     def _capture_gps(self, result: CaptureResult) -> None:
         if not self._gps_enabled:
-            # No receiver on this station: the location does not apply, and the
-            # clock is left as it is.
-            result.gps_status = STATUS_NOT_APPLICABLE
+            # No live receiver on this station. If a fixed, surveyed position was
+            # entered for the station, that entered position is the location for
+            # this event; otherwise the location simply does not apply here. The
+            # clock is left as it is either way, since an entered position is not
+            # a time source.
+            self._apply_configured_location(result)
             return
 
         try:
@@ -436,6 +448,27 @@ class EnvironmentCapture:
         result.gps_longitude = gps.longitude
         result.gps_elevation = gps.elevation
         result.gps_status = _gps_status(gps)
+
+    def _apply_configured_location(self, result: CaptureResult) -> None:
+        """Fill the location from a station's entered fixed coordinates, if any.
+
+        A station with no live receiver may still have a known position that was
+        surveyed once and entered in the station settings. When both a latitude
+        and a longitude are present, that position is written for the event and
+        stamped as an entered position rather than a measured fix. When either is
+        missing there is no usable position, so the location does not apply.
+        Elevation is optional and copied through when present.
+        """
+        location = self._station.get("location") or {}
+        latitude = location.get("latitude")
+        longitude = location.get("longitude")
+        if latitude is not None and longitude is not None:
+            result.gps_latitude = latitude
+            result.gps_longitude = longitude
+            result.gps_elevation = location.get("elevation")
+            result.gps_status = STATUS_STATION_CONFIGURED
+        else:
+            result.gps_status = STATUS_NOT_APPLICABLE
 
     # -- environmental channels -----------------------------------------
 

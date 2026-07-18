@@ -1,5 +1,5 @@
 {
-  "settings_schema_version": "1.1.0",
+  "settings_schema_version": "1.2.0",
   "node": {
     "role": "desktop",
     "active_station_id": null
@@ -12,6 +12,7 @@
     "detections_audio_dir": "data/detections/audio",
     "gps_dir": "data/gps",
     "reports_dir": "reports",
+    "exports_dir": "exports",
     "models_dir": "models",
     "gbif_backbone_path": "audtheia/resources/gbif_backbone"
   },
@@ -109,6 +110,11 @@
   "localization": {
     "local_timezone": "auto"
   },
+  "ui": {
+    "theme": "forest",
+    "last_dark": "ocean",
+    "last_light": "forest"
+  },
   "privacy": {
     "discard_human_detections": true,
     "human_class_names": []
@@ -143,6 +149,11 @@
       "environment_type": "marine",
       "habitat": "coral_reef",
       "target_species": [],
+      "location": {
+        "latitude": 18.21,
+        "longitude": -67.15,
+        "elevation": null
+      },
       "sensors": {
         "camera": {
           "enabled": true
@@ -315,6 +326,11 @@
       "environment_type": "terrestrial",
       "habitat": "forest_tropical",
       "target_species": [],
+      "location": {
+        "latitude": null,
+        "longitude": null,
+        "elevation": null
+      },
       "sensors": {
         "camera": {
           "enabled": true

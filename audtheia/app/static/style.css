@@ -620,7 +620,7 @@ a:hover {
   --grid-line: rgba(56, 189, 248, 0.045);
   --text: #ddeaf2;
   --text-2: #7fafc8;
-  --text-muted: #3d6278;
+  --text-muted: #bbcfdb;
   --accent: #00c9a7;
   --accent-contrast: #04130f;
   --accent-soft: rgba(0, 201, 167, 0.12);
@@ -693,10 +693,18 @@ a:hover {
 [data-theme="cyberpunk"] {
   color-scheme: dark;
   --bg: #0a0612;
-  --bg-image: none;
+  --bg-image:
+    radial-gradient(ellipse at top, rgba(255, 70, 70, 0.20), transparent 60%),
+    radial-gradient(ellipse at 20% 15%, rgba(255, 90, 70, 0.10), transparent 45%),
+    radial-gradient(ellipse at 80% 10%, rgba(180, 20, 40, 0.08), transparent 55%),
+    radial-gradient(ellipse at bottom, rgba(45, 15, 70, 0.25), transparent 70%),
+    repeating-linear-gradient(90deg, transparent 0px, transparent 120px, rgba(255, 70, 70, 0.025) 121px, rgba(255, 70, 70, 0.025) 140px, transparent 141px, transparent 280px),
+    repeating-linear-gradient(180deg, transparent 0px, transparent 7px, rgba(255, 70, 70, 0.015) 8px, rgba(255, 70, 70, 0.015) 9px),
+    repeating-linear-gradient(180deg, rgba(255, 255, 255, 0.008) 0px, rgba(255, 255, 255, 0.008) 1px, transparent 2px, transparent 4px),
+    linear-gradient( 180deg, #3b0d15 0%, #2a0a12 18%, #18080f 42%, #0c0a10 72%, #05060b 100%);
   --surface: #130b22;
   --surface-2: #1c1033;
-  --border: #34215c;
+  --border: #2596be;
   --border-subtle: #1f1440;
   --grid-line: rgba(244, 114, 182, 0.06);
   --text: #f3e9ff;
@@ -895,8 +903,8 @@ a:hover {
   border: 1px solid #d1dee7;
   box-shadow:
     0 0 0 2px #d1dee7,
-    0 0 26px 6px rgba(209, 222, 231, 0.85),
-    0 12px 44px rgba(209, 222, 231, 0.55);
+    0 0 20px 4px rgba(209, 222, 231, 0.85),
+    0 10px 40px rgba(209, 222, 231, 0.55);
 }
 
 .card-select {
@@ -1257,6 +1265,89 @@ textarea:hover {
 .map-frame { stroke: var(--border); }
 .map-point { fill: var(--accent); stroke: var(--surface); stroke-width: 1.5; }
 .map-point:hover { fill: var(--focus-ring); }
+
+/* An entered station position, distinct from a measured fix: hollow, in the
+   muted text color, so the eye reads it as "known but not live-measured". */
+.map-point.is-configured { fill: var(--surface); stroke: var(--text-muted); stroke-width: 2; }
+
+/* A station's own configured coordinates, drawn as a diamond so it never reads
+   as a detection dot. */
+.map-station { fill: none; stroke: var(--focus-ring); stroke-width: 2; }
+.map-station-label { fill: var(--text-2); font-size: 11px; font-family: var(--font-sans); }
+
+.map-wrap { display: flex; flex-direction: column; gap: 8px; }
+.map-legend { display: flex; flex-wrap: wrap; gap: 16px; padding-top: 4px; }
+.map-legend-item { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 13px; }
+.map-legend-swatch { flex: 0 0 auto; }
+
+/* The offline basemap behind the grid: a plain ocean fill with a generic land
+   outline over it, both drawn from theme tokens so every palette (including a
+   custom one) themes the map without a special case. */
+.map-ocean { fill: var(--surface-2); }
+.map-land { fill: var(--text-muted); fill-opacity: 0.28; stroke: var(--text-2); stroke-opacity: 0.45; stroke-width: 0.6; }
+.map-graticule line { stroke: var(--border-subtle); stroke-width: 0.5; }
+.map-graticule-label { fill: var(--text-muted); font-size: 10px; font-family: var(--font-sans); }
+
+.map-view-toggle { display: flex; gap: 8px; margin-bottom: 10px; }
+
+/* One model in the Brain panel: a plain-language line first, its file and
+   version second, and a long citation folded away so it cannot swamp the page. */
+.model-entry { padding: 12px 0; border-top: var(--border-width) solid var(--border-subtle); }
+.model-entry:first-of-type { border-top: 0; }
+.model-entry-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.model-citation { font-family: var(--font-mono); font-size: 11px; line-height: 1.5; word-break: break-word; white-space: normal; }
+
+/* Whether a model's file is actually on disk, stated as its own small status so
+   it reads as a fact about the model rather than as another line of the
+   description above it. */
+.model-status {
+  display: inline-block;
+  margin-top: var(--space-2);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm, 6px);
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+.model-status.is-present { color: var(--ok); background: var(--accent-soft); }
+.model-status.is-absent { color: var(--text-2); background: var(--surface-2); border: var(--border-width) solid var(--border-subtle); }
+
+/* Station cards stretch to share the full width rather than sitting in narrow
+   columns with dead space beside them: auto-fit collapses the empty tracks that
+   auto-fill would leave behind. */
+.station-model-grid { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+
+/* A model path is long and unbreakable, so it stacks under its label and wraps
+   inside the card instead of running past the edge. */
+.model-entry .kv-row.model-file { flex-direction: column; align-items: flex-start; gap: var(--space-1); }
+.model-entry .kv-row.model-file .kv-val { text-align: left; word-break: break-all; overflow-wrap: anywhere; }
+
+/* A contained block for prose-led sections (the language model, site memory,
+   the desktop verifier) so they read as their own panel instead of dissolving
+   into the page background. */
+.info-block {
+  padding: var(--space-4) var(--space-5);
+  border-radius: var(--radius-lg);
+  border: var(--border-width) solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  margin-bottom: var(--space-4);
+}
+.info-block > .settings-desc:last-child,
+.info-block > p:last-child { margin-bottom: 0; }
+
+/* The Brain sub-panels stack several sections in one scroll, so each heading
+   gets clear air above it. Without this the sections run together and the eye
+   has nowhere to rest between them. The first heading keeps a smaller gap,
+   since the panel's own lead paragraph already sits above it. */
+[data-region^="brain-"] h3 { margin-top: var(--space-6); margin-bottom: var(--space-3); }
+[data-region^="brain-"] > h3:first-child { margin-top: var(--space-4); }
+
+/* The skills guidance panel: a foldable primer that explains the two tiers and
+   the honest limits of a rule, without standing in the way once it is read. */
+.skills-guidance > summary { cursor: pointer; font-weight: 600; color: var(--text); }
+.skills-guidance .form-label { display: block; margin-top: var(--space-3); }
+.skills-limits { margin: var(--space-2) 0 0 var(--space-4); color: var(--text-2); font-size: var(--text-sm); }
+.skills-limits li { margin-bottom: var(--space-2); line-height: 1.55; }
 
 /* Friendly settings rows: a description, labeled values, switches for on and
    off fields, and titled sub-groups, so a reader never meets raw configuration

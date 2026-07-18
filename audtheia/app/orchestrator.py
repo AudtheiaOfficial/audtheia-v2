@@ -249,6 +249,12 @@ class DesktopStation:
             detector=detector,
             tracker=tracker,
             trigger_sink=trigger_sink,
+            # Desktop capture screens with the station's desktop model, so that is
+            # the version recorded against the detections it produces. Passing it
+            # explicitly, even when it is unset, keeps a desktop detection from
+            # inheriting the field model's version and claiming a model that never
+            # saw the frame.
+            screening_model_version=self._settings.desktop_visual_model(self._station).get("version"),
         )
 
     def capture(self, **monitor_overrides) -> int:

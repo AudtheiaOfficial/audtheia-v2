@@ -113,13 +113,17 @@ CREATE TABLE observations (
     audio_capped                       INTEGER CHECK (audio_capped IS NULL OR audio_capped IN (0, 1)),
 
     -- GPS. A GPS read is one structured read, so it carries one status for the
-    -- whole fix rather than a per-coordinate status.
+    -- whole fix rather than a per-coordinate status. 'station_configured' marks
+    -- coordinates that came from a fixed, surveyed position entered for the
+    -- station rather than from a live satellite fix, which keeps an entered
+    -- position distinct from a measured one and preserves the measured-versus-
+    -- inferred separation the rest of the record relies on.
     gps_latitude                       REAL,
     gps_longitude                      REAL,
     gps_elevation                      REAL,
     gps_status                         TEXT CHECK (gps_status IS NULL OR gps_status IN
                                         ('measured', 'not_measured', 'below_detection_limit',
-                                         'sensor_error', 'not_applicable')),
+                                         'sensor_error', 'not_applicable', 'station_configured')),
 
     -- Optional feature embedding forwarding, settings-gated and off by
     -- default. NULL whenever the toggle is off.
@@ -257,6 +261,17 @@ CREATE TABLE skills (
     trigger_condition       TEXT NOT NULL,    -- "when to use"
     instruction              TEXT NOT NULL,    -- "how to apply"
     tier                     TEXT NOT NULL CHECK (tier IN ('deterministic_flag', 'interpretive')),
+
+    -- A machine-checkable condition for a field-tier skill, stored as JSON in the
+    -- shape {"source", "field", "op", "value"}. It is what the field engine
+    -- compiles into a pure function of the measured values in a record. NULL for
+    -- any skill without one, including every interpretive skill.
+    --
+    -- The trigger_condition above stays free text written for a person. The
+    -- engine never reads it, because interpreting prose at the field tier would
+    -- be inference, and inference is not permitted there.
+    condition                 TEXT,
+
     created_at                TEXT NOT NULL,
     updated_at                TEXT NOT NULL
 ) STRICT;

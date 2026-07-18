@@ -53,12 +53,15 @@ from audtheia.pipeline.environment import (  # noqa: E402
     FieldClock,
     GpsRead,
     NullEnvironmentCapture,
+    NullGpsSource,
+    NullSensorBank,
     SensorRead,
     STATUS_BELOW_DETECTION_LIMIT,
     STATUS_MEASURED,
     STATUS_NOT_APPLICABLE,
     STATUS_NOT_MEASURED,
     STATUS_SENSOR_ERROR,
+    STATUS_STATION_CONFIGURED,
     QARTOD_FAIL,
     QARTOD_PASS,
     QARTOD_SUSPECT,
@@ -620,6 +623,48 @@ def test_null_environment_capture():
     check("null capture returns an empty result", r.gps_status is None and not r.environmental_readings)
 
 
+def test_station_configured_location():
+    print("\n[10] A station with no receiver but an entered position records it distinctly")
+    settings, path = make_pi_settings(0)
+    try:
+        station = settings.active_station()
+
+        # No live receiver on this station for this scenario. The entered position
+        # is set explicitly so the check does not depend on the reference file
+        # keeping any particular coordinates.
+        station["sensors"]["gps"]["enabled"] = False
+        station["location"] = {"latitude": 18.21, "longitude": -67.15, "elevation": None}
+        cap = EnvironmentCapture(settings=settings, station=station,
+                                 gps_source=NullGpsSource(), sensor_bank=NullSensorBank())
+        result = cap.capture(BASE.strftime(ISO), (BASE + timedelta(seconds=1)).strftime(ISO))
+        check("entered coordinates are recorded on the event",
+              result.gps_latitude == 18.21 and result.gps_longitude == -67.15)
+        check("their status is station_configured, distinct from a measured fix",
+              result.gps_status == STATUS_STATION_CONFIGURED)
+
+        # No receiver and no entered position: the location simply does not apply.
+        station["location"] = {"latitude": None, "longitude": None, "elevation": None}
+        result2 = cap.capture(BASE.strftime(ISO), (BASE + timedelta(seconds=1)).strftime(ISO))
+        check("no receiver and no entered position is not_applicable",
+              result2.gps_status == STATUS_NOT_APPLICABLE and result2.gps_latitude is None)
+
+        # A live receiver still measures its own fix; an entered position never
+        # masks a real one, so the measured-versus-entered line is never blurred.
+        station["sensors"]["gps"]["enabled"] = True
+        station["location"] = {"latitude": 18.21, "longitude": -67.15, "elevation": None}
+        gps = ScriptedGpsSource([
+            GpsRead(attempted=True, ok=True, latitude=18.0, longitude=-67.0,
+                    elevation=0.0, utc_time=BASE.strftime(ISO)),
+        ])
+        cap2 = EnvironmentCapture(settings=settings, station=station,
+                                  gps_source=gps, sensor_bank=NullSensorBank())
+        result3 = cap2.capture(BASE.strftime(ISO), (BASE + timedelta(seconds=1)).strftime(ISO))
+        check("a live fix stays measured and is not overridden by an entered position",
+              result3.gps_status == STATUS_MEASURED and result3.gps_latitude == 18.0)
+    finally:
+        path.unlink(missing_ok=True)
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -638,6 +683,7 @@ def main():
     test_merge_collision_keeps_first()
     test_acoustic_path_records_environment()
     test_null_environment_capture()
+    test_station_configured_location()
 
     print("\n" + "=" * 72)
     print(f"RESULT: {CHECKS['passed']} passed, {CHECKS['failed']} failed")

@@ -95,6 +95,12 @@ ISO_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 # bounded. It is a starting value a deployment can raise if its disk is fast.
 DEFAULT_QUEUE_MAXSIZE = 256
 
+# Distinguishes "no screening model version was passed" from "the model that ran
+# genuinely has no version recorded". The first falls back to the station's field
+# model; the second is stored as it is, because an unstated version is honest and
+# a borrowed one is not.
+_MODEL_VERSION_UNSET = object()
+
 # Saved-frame encoding fallback. The media block in the configuration is the
 # home for these, and the loop reads them from there; these named constants are
 # only the fallback used when a configuration does not specify a value. JPEG
@@ -642,6 +648,7 @@ class Monitor:
         tracker: Tracker,
         trigger_sink: TriggerSink,
         queue_maxsize: int = DEFAULT_QUEUE_MAXSIZE,
+        screening_model_version=_MODEL_VERSION_UNSET,
         image_format: Optional[str] = None,
         image_quality: Optional[int] = None,
         image_writer=_default_image_writer,
@@ -689,7 +696,18 @@ class Monitor:
 
         self._station_id = station["station_id"]
         self._station_name = station["station_name"]
-        self._screening_model_version = station["models"]["visual_pi"].get("version")
+        # The version recorded on an observation must name the model that actually
+        # produced the detection. A caller that loaded a different screening model,
+        # as the desktop does when it runs without field hardware, passes that
+        # model's version here. Only when nothing is passed does this fall back to
+        # the station's own field model, which is the model the field tier loads.
+        # Recording a field model's version beside a detection some other model
+        # made would be false provenance, which is worse than recording none.
+        self._screening_model_version = (
+            station["models"]["visual_pi"].get("version")
+            if screening_model_version is _MODEL_VERSION_UNSET
+            else screening_model_version
+        )
         self._max_embedding_bytes = settings.max_embedding_bytes()
 
         self._visual_dir = Path(settings.path("detections_visual_dir"))

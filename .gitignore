@@ -17,11 +17,25 @@ reports/**
 !reports/**/
 !reports/**/.gitkeep
 
+# Retraining packages written for a person to correct and train from. They are
+# copies of frames and clips that already live under data/, so they are generated
+# output rather than source.
+exports/**
+!exports/**/
+!exports/**/.gitkeep
+
 # --- Large model weights (downloaded, not bundled: see models/*/README.md) ---
 *.gguf
 *.hef
 *.onnx
 *.tflite
+
+# BirdNET ships its label list beside its weights under a non-commercial,
+# share-alike licence. Neither belongs in this permissively licensed repository,
+# and setup downloads both, so the whole folder stays out of version control
+# while its directory marker is kept.
+models/acoustic/birdnet/*
+!models/acoustic/birdnet/.gitkeep
 
 # The GBIF taxonomic backbone (large, CC BY 4.0) is downloaded by setup into
 # audtheia/resources/gbif_backbone rather than committed, so it is ignored.

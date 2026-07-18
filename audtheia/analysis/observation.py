@@ -61,6 +61,7 @@ record that a full queue skipped.
 
 from __future__ import annotations
 
+import json
 import logging
 import queue
 import threading
@@ -82,6 +83,14 @@ __all__ = [
     "QCEngine",
     "QCWorker",
     "FlagEvaluator",
+    "compile_condition",
+    "parse_condition",
+    "CONDITION_SOURCES",
+    "CONDITION_OBSERVATION_FIELDS",
+    "CONDITION_DETECTION_FIELDS",
+    "CONDITION_TIME_FIELDS",
+    "CONDITION_AGGREGATES",
+    "CONDITION_OPS",
     "QC_PASSED",
     "QC_DEFERRED",
     "QC_PENDING",
@@ -273,6 +282,188 @@ class QCResult:
 # the runtime, keyed by skill identifier; the engine never parses a skill's
 # free text into behaviour, because doing so would be interpretation.
 FlagEvaluator = Callable[["ConsolidatedSnapshot"], Optional[SkillFlag]]
+
+
+# ===========================================================================
+# Structured skill conditions
+#
+# A field-tier skill may carry a small, checkable condition alongside the free
+# text a person wrote. The engine compiles that condition into a pure function
+# of the measured values already in the record, which is what lets a skill
+# someone authored actually run without the engine ever interpreting prose.
+#
+# The vocabulary is deliberately narrow. Everything a condition can name is a
+# number the record already holds, and everything it can do is compare that
+# number, so a skill cannot reach beyond measurement into inference.
+# ===========================================================================
+
+CONDITION_SOURCES = ("observation", "detection", "channel", "time")
+
+# Numeric columns of the observation a condition may compare.
+CONDITION_OBSERVATION_FIELDS = (
+    "screening_confidence",
+    "duration",
+    "frame_count",
+    "audio_true_duration_seconds",
+    "salience_provisional",
+)
+CONDITION_DETECTION_FIELDS = ("confidence",)
+CONDITION_TIME_FIELDS = ("hour_utc",)
+CONDITION_AGGREGATES = ("max", "min")
+CONDITION_OPS = ("lt", "lte", "gt", "gte", "between", "outside")
+
+
+def _as_number(value) -> Optional[float]:
+    """The value as a number, or nothing when it is absent or not numeric."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _measured_for_condition(snapshot: "ConsolidatedSnapshot", source: str,
+                            field_name: str, aggregate: str) -> Optional[float]:
+    """The one measured number a condition compares, or nothing when absent.
+
+    Nothing is invented here. When the record does not carry the value a
+    condition names, the skill simply does not fire.
+    """
+    if source == "observation":
+        return _as_number((snapshot.observation or {}).get(field_name))
+
+    if source == "detection":
+        values = [
+            _as_number(det.get(field_name))
+            for det in (snapshot.child_detections or [])
+        ]
+        values = [v for v in values if v is not None]
+        if not values:
+            return None
+        return min(values) if aggregate == "min" else max(values)
+
+    if source == "channel":
+        for reading in (snapshot.environmental_readings or []):
+            if reading.get("channel") == field_name:
+                return _as_number(reading.get("value"))
+        return None
+
+    if source == "time":
+        # Timestamps are stored as UTC ISO8601, so the hour sits at a fixed offset.
+        stamp = (snapshot.observation or {}).get("first_seen") or ""
+        try:
+            return float(int(str(stamp)[11:13]))
+        except (TypeError, ValueError):
+            return None
+
+    return None
+
+
+def _condition_holds(measured: float, op: str, value) -> bool:
+    """Whether one measured number satisfies a comparison."""
+    if op == "lt":
+        return measured < value
+    if op == "lte":
+        return measured <= value
+    if op == "gt":
+        return measured > value
+    if op == "gte":
+        return measured >= value
+
+    low, high = value[0], value[1]
+    if low <= high:
+        inside = low <= measured <= high
+    else:
+        # A range that wraps past midnight, for example 20:00 through 04:00.
+        inside = measured >= low or measured <= high
+    return inside if op == "between" else not inside
+
+
+def _flag_name(title: str) -> str:
+    """A short, stable name for the flag a skill produces."""
+    cleaned = "".join(ch.lower() if ch.isalnum() else "_" for ch in (title or ""))
+    while "__" in cleaned:
+        cleaned = cleaned.replace("__", "_")
+    return cleaned.strip("_") or "skill_flag"
+
+
+def parse_condition(raw) -> Optional[dict]:
+    """Read a stored condition into a validated specification, or nothing.
+
+    Anything malformed returns nothing rather than raising, so one bad condition
+    can never stop the engine from finishing the rest of a record.
+    """
+    if not raw:
+        return None
+    try:
+        spec = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(spec, dict):
+        return None
+
+    source = spec.get("source")
+    field_name = spec.get("field")
+    op = spec.get("op")
+    value = spec.get("value")
+    aggregate = spec.get("aggregate") or "max"
+
+    if source not in CONDITION_SOURCES or op not in CONDITION_OPS:
+        return None
+    if aggregate not in CONDITION_AGGREGATES:
+        return None
+    if not isinstance(field_name, str) or not field_name.strip():
+        return None
+    if source == "observation" and field_name not in CONDITION_OBSERVATION_FIELDS:
+        return None
+    if source == "detection" and field_name not in CONDITION_DETECTION_FIELDS:
+        return None
+    if source == "time" and field_name not in CONDITION_TIME_FIELDS:
+        return None
+
+    if op in ("between", "outside"):
+        if not isinstance(value, (list, tuple)) or len(value) != 2:
+            return None
+        bounds = [_as_number(v) for v in value]
+        if any(b is None for b in bounds):
+            return None
+        value = bounds
+    else:
+        value = _as_number(value)
+        if value is None:
+            return None
+
+    return {"source": source, "field": field_name.strip(), "op": op,
+            "value": value, "aggregate": aggregate}
+
+
+def compile_condition(skill: dict) -> Optional[FlagEvaluator]:
+    """Turn a skill's stored condition into a pure evaluator, or nothing.
+
+    This is not an interpretation of what the skill says. It reads a structured
+    comparison a person chose from a fixed vocabulary and returns a function that
+    compares one measured number, so the output stays a plain flag and the field
+    tier stays incapable of asserting anything it did not measure.
+    """
+    spec = parse_condition(skill.get("condition"))
+    if spec is None:
+        return None
+
+    skill_id = str(skill.get("id") or "")
+    title = str(skill.get("title") or "")
+    name = _flag_name(title)
+
+    def _evaluate(snapshot: "ConsolidatedSnapshot") -> Optional[SkillFlag]:
+        measured = _measured_for_condition(snapshot, spec["source"], spec["field"], spec["aggregate"])
+        if measured is None:
+            return None
+        try:
+            fired = _condition_holds(measured, spec["op"], spec["value"])
+        except (TypeError, ValueError):
+            return None
+        if not fired:
+            return None
+        return SkillFlag(skill_id=skill_id, skill_title=title, name=name, value=True)
+
+    return _evaluate
 
 
 # ===========================================================================
@@ -607,8 +798,15 @@ class QCEngine:
                 continue
             evaluator = self._flag_evaluators.get(skill_id)
             if evaluator is None:
+                # A skill the deployment did not hand a purpose-built function to
+                # can still run when it carries a structured condition, which is
+                # compiled into one here. A skill with neither is skipped rather
+                # than guessed at.
+                evaluator = compile_condition(skill)
+            if evaluator is None:
                 logger.info(
-                    "deterministic-flag skill %s has no field evaluator; skipping",
+                    "deterministic-flag skill %s has neither a field evaluator nor a "
+                    "checkable condition; skipping",
                     skill_id,
                 )
                 continue

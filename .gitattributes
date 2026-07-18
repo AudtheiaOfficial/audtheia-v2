@@ -15,6 +15,13 @@
 # own checkout settings rather than being renormalized here, which keeps this
 # change additive.
 
+# Configuration and data files are pinned to LF because the application writes
+# them itself. A settings file saved on a Windows desktop and the same file saved
+# on a field station must not differ byte for byte over invisible characters, and
+# a rewritten line ending must never appear in version control as a wholly
+# changed file that hides the one value that actually changed.
+*.json      text eol=lf
+
 # Never translate line endings inside binary artifacts, so a model, database, or
 # image that ever sits beside the code stays byte-for-byte intact. Version
 # control ignores these today; the rule is a safeguard for anything staged by

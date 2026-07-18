@@ -182,6 +182,126 @@ def _compute_analytics(db, *, station_id, since, until) -> dict:
     }
 
 
+_CONF_BANDS = ("0.0-0.2", "0.2-0.4", "0.4-0.6", "0.6-0.8", "0.8-1.0")
+
+
+def _compute_audit(db, *, station_id, since, until) -> dict:
+    """Derive an audit view of the record.
+
+    Four questions a reviewer will ask, answered from stored rows only: how often
+    the desktop verifier agreed with the field station's call, what quality
+    control did and why it deferred anything, how confident the models were, and
+    which model and data-snapshot versions produced the record.
+
+    Every figure here is a count or an average over rows that were already
+    written. Nothing is a new measurement and nothing is inferred, so these
+    numbers can be quoted directly as evidence of how the system behaved.
+    """
+    observations = db.list_observations(station_id=station_id, since=since, until=until)
+    total = len(observations)
+
+    verification = {
+        "with_verdict": 0, "verified": 0, "agree": 0, "disagree": 0,
+        "not_comparable": 0, "frames_scored": 0, "frames_in_agreement": 0,
+    }
+    verifier_confidence: list = []
+    by_state: dict = {}
+    by_reason: dict = {}
+    confidence: dict = {"vision": [], "audio": []}
+    versions: dict = {
+        "screening_model_version": {}, "acoustic_model_version": {},
+        "rfdetr_version": {}, "gbif_snapshot_date": {}, "iucn_fetch_date": {},
+    }
+    periods: dict = {}
+
+    def _bump(bucket: dict, value) -> None:
+        bucket_key = value if value not in (None, "") else "not stated"
+        bucket[bucket_key] = bucket.get(bucket_key, 0) + 1
+
+    for obs in observations:
+        by_state[obs.get("qc_state") or "unknown"] = by_state.get(obs.get("qc_state") or "unknown", 0) + 1
+        if obs.get("qc_reason"):
+            by_reason[obs["qc_reason"]] = by_reason.get(obs["qc_reason"], 0) + 1
+        for key in ("screening_model_version", "acoustic_model_version", "gbif_snapshot_date", "iucn_fetch_date"):
+            _bump(versions[key], obs.get(key))
+
+        # Grouped by calendar month, which is coarse enough to be readable and
+        # fine enough to show a drift in confidence over a deployment.
+        period = (obs.get("first_seen") or "")[:7] or "unknown"
+        cell = periods.setdefault(period, {"period": period, "events": 0, "verified": 0, "sum": 0.0, "n": 0})
+        cell["events"] += 1
+
+        verdict = db.get_observation_verification(obs["id"])
+        if verdict:
+            verification["with_verdict"] += 1
+            if verdict.get("verified"):
+                verification["verified"] += 1
+                cell["verified"] += 1
+            agrees = verdict.get("rfdetr_agrees_with_field")
+            if agrees == 1:
+                verification["agree"] += 1
+            elif agrees == 0:
+                verification["disagree"] += 1
+            else:
+                # No field label to compare against, for example a pure audio event.
+                verification["not_comparable"] += 1
+            verification["frames_scored"] += int(verdict.get("frames_scored") or 0)
+            verification["frames_in_agreement"] += int(verdict.get("frames_in_agreement") or 0)
+            if verdict.get("rfdetr_confidence") is not None:
+                verifier_confidence.append(float(verdict["rfdetr_confidence"]))
+            _bump(versions["rfdetr_version"], verdict.get("rfdetr_version"))
+
+        for det in db.list_child_detections(obs["id"]):
+            value = det.get("confidence")
+            if value is None:
+                continue
+            modality = det.get("modality") or "vision"
+            confidence.setdefault(modality, []).append(float(value))
+            cell["sum"] += float(value)
+            cell["n"] += 1
+
+    def _stats(values: list) -> dict:
+        if not values:
+            return {"n": 0, "mean": None, "min": None, "max": None}
+        return {"n": len(values), "mean": sum(values) / len(values), "min": min(values), "max": max(values)}
+
+    # A coarse histogram, so the shape of the distribution is visible and not
+    # only its average: a mean of 0.7 built from many 0.4s and 0.95s is a very
+    # different picture from one built from consistent 0.7s.
+    buckets = {band: 0 for band in _CONF_BANDS}
+    for values in confidence.values():
+        for value in values:
+            buckets[_CONF_BANDS[min(int(value * 5), 4)]] += 1
+
+    verification["frame_agreement_fraction"] = (
+        verification["frames_in_agreement"] / verification["frames_scored"]
+        if verification["frames_scored"] else None
+    )
+    verification["mean_verifier_confidence"] = (
+        sum(verifier_confidence) / len(verifier_confidence) if verifier_confidence else None
+    )
+
+    trend = []
+    for key in sorted(periods):
+        cell = periods[key]
+        trend.append({
+            "period": cell["period"], "events": cell["events"], "verified": cell["verified"],
+            "mean_confidence": (cell["sum"] / cell["n"]) if cell["n"] else None,
+        })
+
+    return {
+        "provenance": "derived",
+        "note": "counts and averages over rows already stored; not a new measurement and not an inference",
+        "window": {"station_id": station_id, "since": since, "until": until},
+        "events": total,
+        "verification": verification,
+        "qc": {"by_state": by_state, "by_reason": by_reason},
+        "confidence": {"by_modality": {k: _stats(v) for k, v in confidence.items()}, "buckets": buckets},
+        "versions": versions,
+        "trend": trend,
+    }
+
+
 def _llm_directory(settings) -> Path:
     """The folder that holds the desktop language models.
 
@@ -261,7 +381,11 @@ def _persist_settings(settings) -> None:
     target = Path(settings.settings_path)
     fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=".settings-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        # newline="\n" pins the line endings. Without it, Python's text mode
+        # writes Windows line endings on Windows, so the same configuration file
+        # would differ byte for byte between a desktop and a field station and
+        # would show up as an entirely rewritten file in version control.
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
             json.dump(settings.raw, fh, indent=2)
             fh.write("\n")
         os.replace(tmp_name, str(target))
@@ -304,7 +428,11 @@ def _write_secrets_file(path: Path, secrets: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".secrets-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        # newline="\n" pins the line endings. Without it, Python's text mode
+        # writes Windows line endings on Windows, so the same configuration file
+        # would differ byte for byte between a desktop and a field station and
+        # would show up as an entirely rewritten file in version control.
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
             json.dump(secrets, fh, indent=2)
             fh.write("\n")
         os.replace(tmp_name, str(path))
@@ -351,6 +479,7 @@ def _new_station_dict(station_id: str, name: str, environment: str, habitat: Opt
         "station_name": name,
         "environment_type": environment,
         "target_species": [],
+        "location": {"latitude": None, "longitude": None, "elevation": None},
         "sensors": {"camera": {"enabled": True}, "audio": {"enabled": True}, "gps": {"enabled": True}},
         "channels": [],
         "models": {
@@ -470,6 +599,30 @@ def _v_choice(choices):
     return _inner
 
 
+def _v_number_in_range(low: float, high: float, unit: str):
+    """A number within an inclusive range, or null to clear the value.
+
+    Used for a station's fixed coordinates: a person can enter a position or
+    clear it, and a value outside its valid degree range is refused here with a
+    clear reason rather than reaching the record.
+    """
+    def _inner(value: Any, where: str) -> Optional[float]:
+        if value is None:
+            return None
+        number = _v_number(value, where)
+        if not (low <= number <= high):
+            raise SettingsUpdateError(f"{where} must be between {low} and {high} {unit}, or empty to clear it")
+        return number
+    return _inner
+
+
+def _v_number_or_null(value: Any, where: str) -> Optional[float]:
+    """Any number, or null to clear the value."""
+    if value is None:
+        return None
+    return _v_number(value, where)
+
+
 def _v_report_formats(value: Any, where: str) -> list:
     from audtheia.config import REPORT_FORMATS
 
@@ -528,6 +681,9 @@ def _editable_field_specs() -> dict:
             "reports_formats": {"path": ["schedules", "reports", "formats"], "validate": _v_report_formats},
             "dream_schedule": {"path": ["schedules", "dream_pass", "schedule"], "validate": _v_choice(DREAM_SCHEDULES)},
             "local_timezone": {"path": ["localization", "local_timezone"], "validate": _v_timezone},
+            "ui_theme": {"path": ["ui", "theme"], "validate": _v_str_or_null},
+            "ui_last_dark": {"path": ["ui", "last_dark"], "validate": _v_str_or_null},
+            "ui_last_light": {"path": ["ui", "last_light"], "validate": _v_str_or_null},
             "visual_rfdetr_path": {"path": ["desktop_models", "visual_rfdetr", "path"], "validate": _v_nonempty_str, "is_path": True},
             "visual_rfdetr_version": {"path": ["desktop_models", "visual_rfdetr", "version"], "validate": _v_str_or_null},
             "visual_rfdetr_citation": {"path": ["desktop_models", "visual_rfdetr", "citation"], "validate": _v_str_or_null},
@@ -561,6 +717,9 @@ def _editable_field_specs() -> dict:
             "sensor_camera_enabled": {"path": ["sensors", "camera", "enabled"], "validate": _v_bool},
             "sensor_audio_enabled": {"path": ["sensors", "audio", "enabled"], "validate": _v_bool},
             "sensor_gps_enabled": {"path": ["sensors", "gps", "enabled"], "validate": _v_bool},
+            "station_latitude": {"path": ["location", "latitude"], "validate": _v_number_in_range(-90, 90, "degrees")},
+            "station_longitude": {"path": ["location", "longitude"], "validate": _v_number_in_range(-180, 180, "degrees")},
+            "station_elevation": {"path": ["location", "elevation"], "validate": _v_number_or_null},
             "visual_pi_path": {"path": ["models", "visual_pi", "path"], "validate": _v_nonempty_str, "is_path": True},
             "visual_desktop_path": {"path": ["models", "visual_desktop", "path"], "validate": _v_nonempty_str, "is_path": True},
             "capture_fps": {"path": ["capture", "fps"], "validate": _v_positive_number},
@@ -842,9 +1001,19 @@ def create_app(settings, database):
         trigger_condition: Optional[str] = None
         instruction: Optional[str] = None
         tier: Optional[str] = None
+        # The checkable condition a field skill runs on, as {source, field, op, value}.
+        condition: Optional[dict] = None
 
     class LlmSelectRequest(BaseModel):
         name: Optional[str] = None
+
+    class RetrainingExportRequest(BaseModel):
+        kind: Optional[str] = None
+        station_id: Optional[str] = None
+        confidence_below: Optional[float] = None
+        include_disagreements: Optional[bool] = None
+        include_deferred: Optional[bool] = None
+        force: Optional[bool] = False
 
     class SettingsUpdateRequest(BaseModel):
         changes: Optional[list] = None
@@ -1099,6 +1268,13 @@ def create_app(settings, database):
 
     @app.get(f"{API_PREFIX}/brain/models")
     def brain_models():
+        """Every configured model, and whether its file is actually on disk.
+
+        A configured path is a statement of intent, not proof that the file
+        arrived. Several models are downloaded or exported by hand after setup, so
+        reporting presence separately keeps a path that points at nothing from
+        looking like a model that is ready to run.
+        """
         stations_models = []
         for station_conf in settings.stations():
             stations_models.append({
@@ -1106,7 +1282,37 @@ def create_app(settings, database):
                 "station_name": station_conf.get("station_name"),
                 "models": station_conf.get("models", {}),
             })
-        return {"desktop_models": settings.raw.get("desktop_models", {}), "stations": stations_models}
+        desktop_models = settings.raw.get("desktop_models", {})
+
+        # Collected without touching the loaded configuration, so nothing here can
+        # write a derived value back into settings.json.
+        files: dict = {}
+
+        def _note(path) -> None:
+            if not path or not isinstance(path, str) or path in files:
+                return
+            resolved = Path(path)
+            if not resolved.is_absolute():
+                resolved = Path(settings.repo_root) / resolved
+            present = resolved.is_file()
+            files[path] = {
+                "present": present,
+                "size_bytes": resolved.stat().st_size if present else None,
+            }
+
+        def _walk(entry) -> None:
+            if isinstance(entry, dict):
+                for key, value in entry.items():
+                    if key == "path":
+                        _note(value)
+                    else:
+                        _walk(value)
+
+        _walk(desktop_models)
+        for item in stations_models:
+            _walk(item.get("models", {}))
+
+        return {"desktop_models": desktop_models, "stations": stations_models, "files": files}
 
     @app.get(f"{API_PREFIX}/brain/llm")
     def brain_llm():
@@ -1177,6 +1383,53 @@ def create_app(settings, database):
             "note": "patterns are candidate hypotheses, each traceable to its supporting events",
         }
 
+    @app.get(f"{API_PREFIX}/brain/retraining/candidates")
+    def retraining_candidates(station_id=Query(default=None), confidence_below: float = Query(default=0.45)):
+        """How many detections would be exported for retraining, and why."""
+        from audtheia.analysis.retraining import candidate_summary
+
+        return candidate_summary(db, station_id=station_id, confidence_below=confidence_below)
+
+    @app.post(f"{API_PREFIX}/brain/retraining/export")
+    def retraining_export(request: RetrainingExportRequest):
+        """Write a retraining package for one modality and report what it holds.
+
+        Exports are written on the desktop, which is where the record and the
+        media live. Nothing leaves the machine; the result is a folder a person
+        can open, correct, and feed into training.
+        """
+        if settings.node_role != "desktop":
+            raise HTTPException(
+                status_code=403,
+                detail="retraining exports are produced on the desktop; this node is not the desktop.",
+            )
+        from audtheia.analysis.retraining import (
+            RetrainingExportError, export_acoustic, export_vision,
+        )
+
+        kind = (request.kind or "").strip()
+        if kind not in ("vision", "acoustic"):
+            raise HTTPException(status_code=422, detail="kind must be 'vision' or 'acoustic'")
+        builder = export_vision if kind == "vision" else export_acoustic
+        try:
+            return builder(
+                db, settings,
+                station_id=request.station_id,
+                confidence_below=request.confidence_below if request.confidence_below is not None else 0.45,
+                include_disagreements=True if request.include_disagreements is None else request.include_disagreements,
+                include_deferred=True if request.include_deferred is None else request.include_deferred,
+                force=bool(request.force),
+            )
+        except RetrainingExportError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"could not write the export: {exc}") from exc
+
+    @app.get(f"{API_PREFIX}/brain/audit")
+    def brain_audit(station_id=Query(default=None), since=Query(default=None), until=Query(default=None)):
+        """Evidence of how the system behaved, derived from the stored record."""
+        return _compute_audit(db, station_id=station_id, since=since, until=until)
+
     @app.get(f"{API_PREFIX}/brain/skills")
     def brain_skills(tier=Query(default=None)):
         return db.list_skills(tier=tier)
@@ -1229,7 +1482,37 @@ def create_app(settings, database):
             "trigger_condition": _text(request.trigger_condition, "trigger", _SKILL_TEXT_MAX),
             "instruction": _text(request.instruction, "instruction", _SKILL_TEXT_MAX),
             "tier": tier,
+            "condition": _clean_skill_condition(request.condition, tier),
         }
+
+    def _clean_skill_condition(raw, tier) -> Optional[str]:
+        """Validate a skill's checkable condition, or refuse it with a reason.
+
+        The condition is what makes a field skill actually run, so it is checked
+        against the same narrow vocabulary the field engine compiles, here at the
+        door rather than silently failing later. An interpretive skill cannot
+        carry one: it does not run at the field tier, so a condition on it would
+        be a promise nothing keeps.
+        """
+        from audtheia.analysis.observation import parse_condition
+
+        if raw in (None, "", {}):
+            return None
+        if tier != "deterministic_flag":
+            raise HTTPException(
+                status_code=422,
+                detail="only a field skill can carry a checkable condition; an interpretive skill runs on the desktop",
+            )
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=422, detail="a skill condition must be an object")
+        spec = parse_condition(raw)
+        if spec is None:
+            raise HTTPException(
+                status_code=422,
+                detail=("this condition cannot be checked against a measured value. It needs a "
+                        "source, a field, a comparison, and a number the record actually holds"),
+            )
+        return json.dumps(spec)
 
     @app.post(f"{API_PREFIX}/brain/skills", status_code=201)
     def create_skill(request: SkillRequest):
@@ -1250,6 +1533,7 @@ def create_app(settings, database):
             trigger_condition=fields["trigger_condition"],
             instruction=fields["instruction"],
             tier=fields["tier"],
+            condition=fields["condition"],
             created_at=now,
             updated_at=now,
         )
@@ -1272,6 +1556,7 @@ def create_app(settings, database):
             trigger_condition=fields["trigger_condition"],
             instruction=fields["instruction"],
             tier=fields["tier"],
+            condition=fields["condition"],
             created_at=existing["created_at"],
             updated_at=_utc_now_iso(),
         )

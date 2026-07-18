@@ -167,8 +167,13 @@ class FieldStation:
 
         has_gps = _sensor_enabled(station, "gps")
         has_channels = any(c.get("enabled", False) for c in station.get("channels", []))
-        if not has_gps and not has_channels:
-            active["environment"] = "inactive: no receiver or sensors configured"
+        # A station with an entered fixed position but no receiver and no sensors
+        # still has a location worth recording on every event, so the capture is
+        # built for it rather than skipped.
+        location = station.get("location") or {}
+        has_location = location.get("latitude") is not None and location.get("longitude") is not None
+        if not has_gps and not has_channels and not has_location:
+            active["environment"] = "inactive: no receiver, sensors, or coordinates configured"
             return NullEnvironmentCapture()
 
         gps_source = None

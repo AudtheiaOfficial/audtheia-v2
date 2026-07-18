@@ -703,6 +703,18 @@ def _validate(raw: dict) -> None:
     loc = _require(raw, "localization", "settings")
     _require_type(_require(loc, "local_timezone", "localization"), (str,), "localization.local_timezone")
 
+    # -- ui (optional) ---------------------------------------------------
+    # Remembered interface preferences, so a choice such as the color theme
+    # survives a restart and follows the hub rather than living only in one
+    # browser. The block is optional and every value in it is optional, so a
+    # configuration without it simply falls back to the interface defaults.
+    ui = raw.get("ui")
+    if ui is not None:
+        _require_type(ui, (dict,), "ui")
+        for key in ("theme", "last_dark", "last_light"):
+            if key in ui and ui[key] is not None:
+                _require_type(ui[key], (str,), f"ui.{key}")
+
     # -- privacy (optional) ----------------------------------------------
     privacy = raw.get("privacy")
     if privacy is not None:
@@ -771,6 +783,26 @@ def _validate_station(station: Any, index: int, seen_ids: set, seen_names: set) 
             f"{where}.habitat {habitat!r} is not in the allowed habitat list; "
             f"omit it or choose a listed value"
         )
+
+    # Optional fixed position. A station deployed at a known, surveyed point may
+    # record its coordinates here so events carry a location even with no live
+    # receiver. Each part is optional and may be null; when present it is bounded
+    # to a valid decimal-degree range so a typo is caught here rather than at
+    # capture. Coordinates are WGS84 decimal degrees, elevation is meters.
+    location = station.get("location")
+    if location is not None:
+        _require_type(location, (dict,), f"{where}.location")
+        latitude = location.get("latitude")
+        if latitude is not None:
+            if isinstance(latitude, bool) or not isinstance(latitude, (int, float)) or not (-90 <= latitude <= 90):
+                raise ConfigError(f"{where}.location.latitude must be a number between -90 and 90, or null")
+        longitude = location.get("longitude")
+        if longitude is not None:
+            if isinstance(longitude, bool) or not isinstance(longitude, (int, float)) or not (-180 <= longitude <= 180):
+                raise ConfigError(f"{where}.location.longitude must be a number between -180 and 180, or null")
+        elevation = location.get("elevation")
+        if elevation is not None and (isinstance(elevation, bool) or not isinstance(elevation, (int, float))):
+            raise ConfigError(f"{where}.location.elevation must be a number, or null")
 
     target_species = station.get("target_species", [])
     _require_type(target_species, (list,), f"{where}.target_species")

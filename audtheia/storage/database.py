@@ -257,6 +257,8 @@ class Skill:
     tier: str  # deterministic_flag (runs on the station) / interpretive (runs on the desktop)
     created_at: str
     updated_at: str
+    # JSON condition the field engine compiles into a pure function, or None.
+    condition: Optional[str] = None
 
 
 @dataclass
