@@ -2029,10 +2029,11 @@
     ]));
     wrap.appendChild(el("p", { class: "card-note", text: description }));
 
-    if (!entry || (!entry.path && !entry.version)) {
-      // Stated as its own status rather than another line of prose, so it is not
-      // mistaken for part of the description above it.
-      wrap.appendChild(el("p", { class: "model-status is-absent", text: "Not configured yet" }));
+    // A version without a path is not a model, so presence of a path is the only
+    // test. Stated as its own status rather than another line of prose, so it is
+    // not mistaken for part of the description above it.
+    if (!entry || !entry.path) {
+      wrap.appendChild(el("p", { class: "model-status is-absent", text: "No model set" }));
       return wrap;
     }
     var kv = el("div", { class: "kv-list" });
@@ -2920,7 +2921,7 @@
       renderStationsEditor(stations);
       renderSensorsSettings(stations);
       renderCaptureEditor(cfg.media);
-      renderModelsEditor(cfg.desktop_models);
+      renderModelsEditor(cfg);
       renderSchedulesEditor(cfg.schedules);
       renderCredentialsEditor(s.secrets_status || {});
       renderAnalysisEditor(cfg.analysis);
@@ -3410,16 +3411,12 @@
     locEditor("station_elevation", "Elevation (meters, optional)", loc.elevation);
     body.appendChild(locGroup);
 
-    var models = st.models || {};
-    var piPath = (models.visual_pi && models.visual_pi.path) || "";
-    var piIn = el("input", { type: "text", class: "form-input", value: piPath });
-    editors.push({ scope: "station", field: "visual_pi_path", station_id: sid, original: piPath, get: function () { return piIn.value; }, kind: "text" });
-    body.appendChild(editField("Pi detection model (.hef)", piIn, "Path to this station's field detection model."));
-
-    var dtPath = (models.visual_desktop && models.visual_desktop.path) || "";
-    var dtIn = el("input", { type: "text", class: "form-input", value: dtPath });
-    editors.push({ scope: "station", field: "visual_desktop_path", station_id: sid, original: dtPath, get: function () { return dtIn.value; }, kind: "textSkipBlank" });
-    body.appendChild(editField("Desktop screening model (.onnx)", dtIn, "Optional. Used when running capture on the desktop without field hardware."));
+    // This station's models are not edited here. They live under Settings, Model
+    // paths, where every model a station uses is shown together with whether its
+    // file is actually present, so a model is never set from a form that cannot
+    // show that.
+    body.appendChild(el("p", { class: "form-hint", text:
+      "This station's models are set under Settings, Model paths, where each one is shown with its version, its citation, and whether the file is present." }));
 
     var cap = st.capture || {};
     var adv = el("details", { class: "subgroup edit-advanced" }, [el("summary", { text: "Advanced capture tuning" })]);
@@ -3493,18 +3490,220 @@
       "Save schedules");
   }
 
-  function renderModelsEditor(desktopModels) {
-    desktopModels = desktopModels || {};
-    var rf = desktopModels.visual_rfdetr || {};
-    editableSection("settings-models",
-      "The models this hub uses and where they are stored.",
-      [
-        { label: "Verification model (RF-DETR ONNX) path", field: "visual_rfdetr_path", value: rf.path, kind: "text", hint: "Must match the model file you placed under models/." },
-        { label: "Version", field: "visual_rfdetr_version", value: rf.version, kind: "textOrNull", hint: "Optional. Set it to match your model." },
-        { label: "Citation", field: "visual_rfdetr_citation", value: rf.citation, kind: "textOrNull", hint: "Optional. Credit the model's source." }
-      ],
-      "Save model paths",
-      "The language model is chosen in Brain, under Models and Memory.");
+  // ---- Settings, Model paths --------------------------------------------
+  //
+  // Every model the system can be pointed at, in one place, grouped by the
+  // station that uses it. A station's models are per-station configuration, so
+  // the panel is built from the configured stations rather than from a fixed
+  // list of files. Each entry carries the same measured-versus-configured
+  // distinction the Brain panel uses: a path that is set but whose file is not
+  // on disk is never shown as ready, and a slot with no path says plainly that
+  // no model is set rather than displaying a guess.
+  function renderModelsEditor(cfg) {
+    var host = region("settings-models");
+    if (!host) { return; }
+    cfg = cfg || {};
+    clear(host);
+    host.appendChild(el("p", { class: "settings-desc", text:
+      "Every model this system uses, grouped by the station that uses it. Audtheia ships with no species models of its own: you supply models trained on the species each station was deployed to watch, and point each slot at the file. A slot with no file is reported as having no model set." }));
+    var loading = el("p", { class: "empty-state", text: "Reading model files." });
+    host.appendChild(loading);
+
+    // The presence of each file is read from the backend rather than assumed,
+    // so a path that points at nothing cannot be mistaken for a working model.
+    apiGet("/brain/models").then(function (models) {
+      if (loading.parentNode === host) { host.removeChild(loading); }
+      var files = models.files || {};
+      var desktop = cfg.desktop_models || {};
+      var verifierPath = (desktop.visual_rfdetr || {}).path || null;
+      var stations = cfg.stations || [];
+
+      host.appendChild(el("h4", { text: "This computer" }));
+      host.appendChild(modelBox({
+        title: "Desktop hub",
+        subtitle: "Runs after an observation has been captured",
+        build: function (box) {
+          box.appendChild(modelEntry(
+            "Vision verification",
+            "on this computer",
+            "Re-scores the saved frames of an event to a publication standard. It can overrule the field station's call.",
+            desktop.visual_rfdetr, files));
+          box.appendChild(el("p", { class: "card-note", text:
+            "The language model is chosen in Brain, under Models and Memory." }));
+        },
+        edit: function (box, editors) {
+          var rf = desktop.visual_rfdetr || {};
+          modelPathFields(editors, box, "global", null, "Verification model (ONNX)",
+            "visual_rfdetr_path", "visual_rfdetr_version", "visual_rfdetr_citation", rf,
+            "The high-accuracy model that re-scores saved frames on this computer. Leave empty to set no model.");
+        }
+      }));
+
+      host.appendChild(el("h4", { text: "Stations" }));
+      if (!stations.length) {
+        host.appendChild(el("p", { class: "card-note", text: "No stations are configured yet." }));
+        return;
+      }
+      var grid = el("div", { class: "card-grid" });
+      stations.forEach(function (st) {
+        grid.appendChild(stationModelBox(st, files, verifierPath));
+      });
+      host.appendChild(grid);
+    }).catch(function (e) {
+      if (loading.parentNode === host) { host.removeChild(loading); }
+      host.appendChild(el("p", { class: "card-note", text: "Could not read the model files: " + e.message }));
+    });
+  }
+
+  // A model box in the same shape as the Brain panel's station cards: a read
+  // view with an Edit affordance that swaps in a form, so every configuration
+  // surface in the application is edited the same way.
+  function modelBox(spec) {
+    var card = el("article", { class: "card" }, [
+      el("div", { class: "card-title", text: spec.title }),
+      spec.subtitle ? el("p", { class: "card-meta", text: spec.subtitle }) : null
+    ]);
+    var body = el("div");
+    card.appendChild(body);
+
+    function read() {
+      clear(body);
+      spec.build(body);
+      if (!state.settingsCanEdit) {
+        body.appendChild(el("p", { class: "card-note", text:
+          "Models are configured on the desktop. This node is not the desktop." }));
+        return;
+      }
+      var edit = el("button", { type: "button", class: "btn", text: "Edit" });
+      edit.addEventListener("click", form);
+      body.appendChild(el("div", { class: "form-actions" }, [edit]));
+    }
+
+    function form() {
+      clear(body);
+      var editors = [];
+      var msg = el("p", { class: "form-message" });
+      spec.edit(body, editors);
+      body.appendChild(msg);
+      var save = el("button", { type: "button", class: "btn btn-primary", text: "Save models" });
+      var cancel = el("button", { type: "button", class: "btn", text: "Cancel", onclick: read });
+      save.addEventListener("click", function () {
+        var changes = collectChanges(editors, msg);
+        if (changes === null) { return; }
+        if (!changes.length) { read(); return; }
+        save.disabled = true; msg.textContent = "Saving.";
+        saveSettings(changes).then(settingsSaved).catch(function (e) {
+          save.disabled = false; msg.textContent = "Could not save: " + e.message;
+        });
+      });
+      body.appendChild(el("div", { class: "form-actions" }, [save, cancel]));
+    }
+
+    read();
+    return card;
+  }
+
+  // One station's models: what screens in the field, what screens on the desktop
+  // when there is no field hardware, and what listens. The hub's verification
+  // model is named here too, because whether it differs from this station's
+  // desktop screening model decides whether verification means anything.
+  function stationModelBox(st, files, verifierPath) {
+    var sid = st.station_id;
+    var m = st.models || {};
+    var acoustic = m.acoustic || {};
+    var slots = acoustic.options || {};
+
+    return modelBox({
+      title: st.station_name || sid,
+      subtitle: [st.environment_type, st.habitat].filter(Boolean).map(humanize).join(", "),
+      build: function (box) {
+        box.appendChild(modelEntry(
+          "Field screening",
+          "on the station's accelerator",
+          "Checks every frame the camera produces. A frame with nothing in it is discarded straight away, so only real detections reach storage.",
+          m.visual_pi, files));
+
+        box.appendChild(modelEntry(
+          "Desktop screening",
+          "stands in when there is no field hardware",
+          "Used only when this station's capture is run on this computer, from a video file or a webcam, instead of on a field station.",
+          m.visual_desktop, files));
+
+        // Screening and verification by the same weights is not verification.
+        // Stated on the card rather than left to be noticed, because an audit
+        // that compares a model against itself reports agreement that carries
+        // no evidence.
+        var dtPath = (m.visual_desktop || {}).path;
+        if (dtPath && verifierPath && String(dtPath) === String(verifierPath)) {
+          box.appendChild(el("p", { class: "model-status is-absent", text:
+            "This is the same file as the desktop verification model. In desktop mode this station would be screened and then re-scored by identical weights, so its agreement figures are not independent evidence." }));
+        }
+
+        var activeKey = acoustic.active;
+        box.appendChild(modelEntry(
+          "Acoustic recognition" + (activeKey ? " (" + humanize(activeKey) + " slot)" : ""),
+          "on the station's processor",
+          "Listens to the audio stream. A recognised sound opens an observation of its own, so the station hears as well as sees.",
+          slots[activeKey], files));
+      },
+      edit: function (box, editors) {
+        modelPathFields(editors, box, "station", sid, "Field screening model (.hef)",
+          "visual_pi_path", "visual_pi_version", "visual_pi_citation", m.visual_pi,
+          "Compiled for the station's accelerator. Leave empty to set no model.");
+
+        modelPathFields(editors, box, "station", sid, "Desktop screening model (.onnx)",
+          "visual_desktop_path", "visual_desktop_version", "visual_desktop_citation", m.visual_desktop,
+          "Used only when running this station's capture on this computer. Point it at a different model from the verification model, otherwise verification re-scores with identical weights and proves nothing.");
+
+        var sel = el("select", { class: "form-input" });
+        ["birdnet", "marine", "custom"].forEach(function (key) {
+          var opt = el("option", { value: key, text: humanize(key) });
+          if (key === acoustic.active) { opt.selected = true; }
+          sel.appendChild(opt);
+        });
+        editors.push({ scope: "station", field: "acoustic_active", station_id: sid, original: acoustic.active, get: function () { return sel.value; }, kind: "text" });
+        box.appendChild(editField("Active acoustic slot", sel, "Which listener this station runs. A slot can be filled before it is selected."));
+
+        // All three slots are editable, not only the active one, so a station can
+        // be prepared for a change of listener before it is switched over.
+        ["birdnet", "marine", "custom"].forEach(function (key) {
+          var group = el("details", { class: "subgroup edit-advanced" }, [
+            el("summary", { text: humanize(key) + " acoustic slot" + (key === acoustic.active ? " (active)" : "") })
+          ]);
+          var entry = slots[key] || {};
+          modelPathFields(editors, group, "station", sid, "Model file",
+            "acoustic_" + key + "_path", "acoustic_" + key + "_version", "acoustic_" + key + "_citation", entry,
+            "Leave empty to set no model for this slot.");
+          var labelsIn = el("input", { type: "text", class: "form-input", value: entry.labels_path || "" });
+          editors.push({ scope: "station", field: "acoustic_" + key + "_labels_path", station_id: sid, original: entry.labels_path || "", get: function () { return labelsIn.value; }, kind: "textOrNull" });
+          group.appendChild(editField("Labels file", labelsIn, "Optional. The class list that names what the model reports."));
+          box.appendChild(group);
+        });
+      }
+    });
+  }
+
+  // Path, version and citation for one model slot. Every path field clears to
+  // null when emptied, so a model can be unset as deliberately as it is set,
+  // and no field is ever pre-filled with a filename the system merely guessed.
+  function modelPathFields(editors, host, scope, sid, label, pathField, versionField, citationField, entry, hint) {
+    entry = entry || {};
+    function push(field, input, original) {
+      var e = { scope: scope, field: field, original: original == null ? "" : original, get: function () { return input.value; }, kind: "textOrNull" };
+      if (sid) { e.station_id = sid; }
+      editors.push(e);
+    }
+    var pathIn = el("input", { type: "text", class: "form-input", value: entry.path || "", placeholder: "No model set" });
+    push(pathField, pathIn, entry.path);
+    host.appendChild(editField(label, pathIn, hint));
+
+    var verIn = el("input", { type: "text", class: "form-input", value: entry.version || "" });
+    push(versionField, verIn, entry.version);
+    host.appendChild(editField(label + " version", verIn, "Optional. Record which version of the model this is, so an observation can name the model that actually ran."));
+
+    var citeIn = el("input", { type: "text", class: "form-input", value: entry.citation || "" });
+    push(citationField, citeIn, entry.citation);
+    host.appendChild(editField(label + " citation", citeIn, "Optional. Credit the model's source."));
   }
 
   // Shared builders for the global-scope editors below. Each records an editor in

@@ -257,7 +257,7 @@
       ],
       "models": {
         "visual_pi": {
-          "path": "models/visual/pi/yolo11_porifera.hef",
+          "path": null,
           "version": null,
           "citation": null
         },
@@ -283,7 +283,9 @@
           }
         },
         "visual_desktop": {
-          "path": "models/visual/porifera_rfdetr.onnx"
+          "path": null,
+          "version": null,
+          "citation": null
         }
       },
       "capture": {
@@ -434,12 +436,12 @@
       ],
       "models": {
         "visual_pi": {
-          "path": "models/visual/pi/yolo11_fauna.hef",
+          "path": null,
           "version": null,
           "citation": null
         },
         "visual_desktop": {
-          "path": "models/visual/desktop/screen_demo.onnx",
+          "path": null,
           "version": null,
           "citation": null
         },

@@ -469,10 +469,15 @@ _AUDIO_CAPTURE_JOBS: dict = {}
 def _new_station_dict(station_id: str, name: str, environment: str, habitat: Optional[str]) -> dict:
     """A complete, valid station configuration with sensible defaults.
 
-    The identifier is generated, the device sensors default to on, the channel
-    list starts empty (environmental sensors are added from the Sensors settings),
-    and the capture and model blocks carry the same defaults as the reference
-    stations, so a new station validates and runs without further editing.
+    The identifier is generated, the device sensors default to on, and the
+    channel list starts empty (environmental sensors are added from the Sensors
+    settings). Every model slot is present but unset. A station's models are the
+    one thing this cannot guess: the field screener and the desktop verifier are
+    trained on the species the person deployed the station to watch, so naming a
+    file here would assert a model that does not exist and, worse, would name an
+    architecture the model may not be. The station validates with the slots null
+    and reports itself honestly as having no model set until it is pointed at
+    real files under Settings, Model paths.
     """
     station = {
         "station_id": station_id,
@@ -483,11 +488,12 @@ def _new_station_dict(station_id: str, name: str, environment: str, habitat: Opt
         "sensors": {"camera": {"enabled": True}, "audio": {"enabled": True}, "gps": {"enabled": True}},
         "channels": [],
         "models": {
-            "visual_pi": {"path": "models/visual/pi/yolo11.hef", "version": None, "citation": None},
+            "visual_pi": {"path": None, "version": None, "citation": None},
+            "visual_desktop": {"path": None, "version": None, "citation": None},
             "acoustic": {
                 "active": "birdnet",
                 "options": {
-                    "birdnet": {"path": "models/acoustic/birdnet/BirdNET_GLOBAL_6K.tflite", "version": None, "citation": "Kahl et al., BirdNET, Ecological Informatics, 2021"},
+                    "birdnet": {"path": None, "labels_path": None, "version": None, "citation": None},
                     "marine": {"path": None, "version": None, "citation": None},
                     "custom": {"path": None, "version": None, "citation": None},
                 },
@@ -591,6 +597,24 @@ def _v_str_or_null(value: Any, where: str) -> Optional[str]:
     return trimmed or None
 
 
+def _v_path_or_null(value: Any, where: str) -> Optional[str]:
+    """A model path, or null to state plainly that no model is set.
+
+    Clearing a model path has to be possible, because the alternative is a
+    configuration that always names a file whether or not one exists. The key
+    itself must stay: the configuration validator requires the key to be
+    present, and only its value may be null, so this returns None rather than
+    signalling a deletion. Backslashes are normalised so a path pasted from a
+    Windows file dialog resolves the same way on the field station.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise SettingsUpdateError(f"{where} must be a file path, or empty to clear it")
+    trimmed = value.strip().replace("\\", "/")
+    return trimmed or None
+
+
 def _v_choice(choices):
     def _inner(value: Any, where: str):
         if value not in choices:
@@ -673,6 +697,7 @@ def _editable_field_specs() -> dict:
         DREAM_SCHEDULES,
         ANALYSIS_LOCATIONS,
         BASELINE_PERIOD_GRANULARITIES,
+        ACOUSTIC_MODEL_SLOTS,
     )
 
     return {
@@ -684,7 +709,7 @@ def _editable_field_specs() -> dict:
             "ui_theme": {"path": ["ui", "theme"], "validate": _v_str_or_null},
             "ui_last_dark": {"path": ["ui", "last_dark"], "validate": _v_str_or_null},
             "ui_last_light": {"path": ["ui", "last_light"], "validate": _v_str_or_null},
-            "visual_rfdetr_path": {"path": ["desktop_models", "visual_rfdetr", "path"], "validate": _v_nonempty_str, "is_path": True},
+            "visual_rfdetr_path": {"path": ["desktop_models", "visual_rfdetr", "path"], "validate": _v_path_or_null, "is_path": True},
             "visual_rfdetr_version": {"path": ["desktop_models", "visual_rfdetr", "version"], "validate": _v_str_or_null},
             "visual_rfdetr_citation": {"path": ["desktop_models", "visual_rfdetr", "citation"], "validate": _v_str_or_null},
             "analysis_location": {"path": ["analysis", "per_observation_analysis_location"], "validate": _v_choice(ANALYSIS_LOCATIONS)},
@@ -720,8 +745,29 @@ def _editable_field_specs() -> dict:
             "station_latitude": {"path": ["location", "latitude"], "validate": _v_number_in_range(-90, 90, "degrees")},
             "station_longitude": {"path": ["location", "longitude"], "validate": _v_number_in_range(-180, 180, "degrees")},
             "station_elevation": {"path": ["location", "elevation"], "validate": _v_number_or_null},
-            "visual_pi_path": {"path": ["models", "visual_pi", "path"], "validate": _v_nonempty_str, "is_path": True},
-            "visual_desktop_path": {"path": ["models", "visual_desktop", "path"], "validate": _v_nonempty_str, "is_path": True},
+            "visual_pi_path": {"path": ["models", "visual_pi", "path"], "validate": _v_path_or_null, "is_path": True},
+            "visual_pi_version": {"path": ["models", "visual_pi", "version"], "validate": _v_str_or_null},
+            "visual_pi_citation": {"path": ["models", "visual_pi", "citation"], "validate": _v_str_or_null},
+            "visual_desktop_path": {"path": ["models", "visual_desktop", "path"], "validate": _v_path_or_null, "is_path": True},
+            "visual_desktop_version": {"path": ["models", "visual_desktop", "version"], "validate": _v_str_or_null},
+            "visual_desktop_citation": {"path": ["models", "visual_desktop", "citation"], "validate": _v_str_or_null},
+            # The acoustic model was previously unreachable from the interface, so
+            # a station could only be made to listen by editing settings.json by
+            # hand. Each slot is addressed by name rather than through the active
+            # one, so a slot can be prepared before it is selected.
+            "acoustic_active": {"path": ["models", "acoustic", "active"], "validate": _v_choice(ACOUSTIC_MODEL_SLOTS)},
+            "acoustic_birdnet_path": {"path": ["models", "acoustic", "options", "birdnet", "path"], "validate": _v_path_or_null, "is_path": True},
+            "acoustic_birdnet_labels_path": {"path": ["models", "acoustic", "options", "birdnet", "labels_path"], "validate": _v_path_or_null, "is_path": True},
+            "acoustic_birdnet_version": {"path": ["models", "acoustic", "options", "birdnet", "version"], "validate": _v_str_or_null},
+            "acoustic_birdnet_citation": {"path": ["models", "acoustic", "options", "birdnet", "citation"], "validate": _v_str_or_null},
+            "acoustic_marine_path": {"path": ["models", "acoustic", "options", "marine", "path"], "validate": _v_path_or_null, "is_path": True},
+            "acoustic_marine_labels_path": {"path": ["models", "acoustic", "options", "marine", "labels_path"], "validate": _v_path_or_null, "is_path": True},
+            "acoustic_marine_version": {"path": ["models", "acoustic", "options", "marine", "version"], "validate": _v_str_or_null},
+            "acoustic_marine_citation": {"path": ["models", "acoustic", "options", "marine", "citation"], "validate": _v_str_or_null},
+            "acoustic_custom_path": {"path": ["models", "acoustic", "options", "custom", "path"], "validate": _v_path_or_null, "is_path": True},
+            "acoustic_custom_labels_path": {"path": ["models", "acoustic", "options", "custom", "labels_path"], "validate": _v_path_or_null, "is_path": True},
+            "acoustic_custom_version": {"path": ["models", "acoustic", "options", "custom", "version"], "validate": _v_str_or_null},
+            "acoustic_custom_citation": {"path": ["models", "acoustic", "options", "custom", "citation"], "validate": _v_str_or_null},
             "capture_fps": {"path": ["capture", "fps"], "validate": _v_positive_number},
             "resolution_width": {"path": ["capture", "resolution", "width"], "validate": _v_positive_number},
             "resolution_height": {"path": ["capture", "resolution", "height"], "validate": _v_positive_number},
@@ -756,6 +802,31 @@ def _set_nested(target: dict, segments: list, value: Any) -> None:
             cursor[segment] = nxt
         cursor = nxt
     cursor[segments[-1]] = value
+
+
+def _same_model_file(left: Any, right: Any, repo_root) -> bool:
+    """Whether two configured paths name the same file on this machine.
+
+    Compared after resolution rather than as text, so a relative path and an
+    absolute one that reach the same file are recognised as the same model. A
+    path that cannot be resolved falls back to a normalised text comparison.
+    """
+    if not isinstance(left, str) or not isinstance(right, str):
+        return False
+
+    def _resolve(value: str):
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            candidate = Path(repo_root) / candidate
+        try:
+            return candidate.resolve()
+        except OSError:
+            return None
+
+    a, b = _resolve(left), _resolve(right)
+    if a is not None and b is not None:
+        return a == b
+    return left.strip().replace("\\", "/") == right.strip().replace("\\", "/")
 
 
 def _find_station_in(draft: dict, station_id: Any) -> dict:
@@ -803,13 +874,30 @@ def _apply_setting_change(draft: dict, change: Any, specs: dict, warnings: list,
     _set_nested(target, spec["path"], value)
 
     # A model path that names a file not yet present is allowed and noted, not
-    # refused, so a person can point at a model they are about to add.
+    # refused, so a person can point at a model they are about to add. Clearing a
+    # path to null is a deliberate statement that no model is set and needs no
+    # warning at all.
     if spec.get("is_path") and isinstance(value, str):
         candidate = Path(value)
         if not candidate.is_absolute():
             candidate = Path(repo_root) / candidate
         if not candidate.exists():
             warnings.append(f"{where}: no file is present yet at {value}")
+
+    # Verification by the same weights is not verification. A desktop screening
+    # model that is the same file as the hub verifier means an event is scored
+    # and then re-scored by one model, so the agreement recorded against it
+    # carries no independent evidence. Allowed, because a person may deliberately
+    # run one model while trialling, but never allowed to happen silently.
+    if spec.get("is_path") and field == "visual_desktop_path" and isinstance(value, str):
+        verifier = ((draft.get("desktop_models") or {}).get("visual_rfdetr") or {}).get("path")
+        if verifier and _same_model_file(value, verifier, repo_root):
+            warnings.append(
+                f"{where}: this is the same file as the desktop verification model. "
+                f"Screening and verification would run identical weights, so the "
+                f"agreement figures recorded for this station would not be "
+                f"independent evidence."
+            )
 
 
 # How many recent observations to scan when finding each channel's most recent

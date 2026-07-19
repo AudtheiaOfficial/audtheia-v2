@@ -57,6 +57,11 @@ REPORT_FORMATS = ("pdf", "csv")
 
 REPRESENTATIVE_FRAME_RULES = ("highest_confidence",)
 
+# The acoustic model slots a station can select between. These are the names of
+# the slots, not of any model: which file fills a slot is configuration, and the
+# adapter each slot uses is chosen by the acoustic pipeline from the slot name.
+ACOUSTIC_MODEL_SLOTS = ("birdnet", "marine", "custom")
+
 # The recurring-period binning rules the longitudinal baseline can use. A cell
 # groups a signal's readings by one of these, so a January reading is compared
 # against other Januaries rather than against a year-round average that the
