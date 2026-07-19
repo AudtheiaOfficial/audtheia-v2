@@ -497,7 +497,7 @@
         },
         "source": {
           "video": "0",
-          "audio": "file:\"C:\\Users\\user\\Downloads\\blue-jay-93532.mp3\""
+          "audio": null
         }
       }
     }

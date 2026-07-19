@@ -237,22 +237,70 @@
     return node;
   }
 
+  var _chartSeq = 0;
+
   // A simple horizontal bar chart drawn as inline SVG, themed through the CSS
   // variables so it matches every palette. Values is an array of {label,value}.
+  //
+  // Taxon labels are long and of unpredictable length: a scientific name joined
+  // to a common name ("Haemorhous mexicanus_House Finch") is routinely wider than
+  // the gutter. SVG text does not wrap and does not clip on its own, so an
+  // untreated label runs underneath its own bar and the chart becomes unreadable
+  // exactly where the record is richest.
+  //
+  // Two mechanisms, deliberately overlapping. The label is truncated to a
+  // character budget so the reader sees an ellipsis and knows the name continues,
+  // and the whole gutter is additionally clipped so that a name whose glyphs are
+  // wider than the estimate still cannot reach the bars. The estimate alone would
+  // be a guess about font metrics; the clip makes the guarantee structural. The
+  // full, untruncated name is always available through a <title>, which is also
+  // what a screen reader announces.
   function barChart(values, opts) {
     opts = opts || {};
-    var width = 640, rowH = 30, pad = 8, labelW = 170;
+    var width = 640, rowH = 30, pad = 8;
+    // Widened from 170 so ordinary binomials fit outright, with a gap held back
+    // so a truncated label never sits flush against the bar it labels.
+    var labelW = 210, labelGap = 14;
+    var textMax = labelW - labelGap;
+    // 13px in the sans stack, from .chart-label. Averaged across mixed-case
+    // Latin, which is what a scientific name is; deliberately generous, since
+    // over-truncating costs a few characters and under-truncating is caught by
+    // the clip below.
+    var avgGlyph = 6.8;
+    var charBudget = Math.max(4, Math.floor(textMax / avgGlyph));
+
     var max = values.reduce(function (m, d) { return Math.max(m, Number(d.value) || 0); }, 0) || 1;
     var height = pad * 2 + values.length * rowH;
     var svg = svgEl("svg", {
       viewBox: "0 0 " + width + " " + height, width: "100%", height: height,
       role: "img", "aria-label": opts.title || "bar chart", class: "chart"
     });
+
+    var clipId = "chart-label-clip-" + (++_chartSeq);
+    var defs = svgEl("defs", {});
+    var clip = svgEl("clipPath", { id: clipId });
+    clip.appendChild(svgEl("rect", { x: 0, y: 0, width: textMax, height: height }));
+    defs.appendChild(clip);
+    svg.appendChild(defs);
+
     values.forEach(function (d, i) {
       var y = pad + i * rowH;
       var barMax = width - labelW - 60;
       var w = Math.max(2, Math.round((Number(d.value) || 0) / max * barMax));
-      svg.appendChild(svgEl("text", { x: 0, y: y + 19, class: "chart-label" })).appendChild(document.createTextNode(d.label));
+
+      var full = String(d.label == null ? "" : d.label);
+      var shown = full.length > charBudget ? full.slice(0, charBudget - 1) + "…" : full;
+      var label = svgEl("text", {
+        x: 0, y: y + 19, class: "chart-label", "clip-path": "url(#" + clipId + ")"
+      });
+      label.appendChild(document.createTextNode(shown));
+      // Present whether or not the label was shortened, so hovering any bar
+      // always confirms the taxon rather than only sometimes.
+      var title = svgEl("title", {});
+      title.appendChild(document.createTextNode(full));
+      label.appendChild(title);
+      svg.appendChild(label);
+
       svg.appendChild(svgEl("rect", { x: labelW, y: y + 6, width: w, height: rowH - 14, rx: 4, class: "chart-bar" }));
       var val = svgEl("text", { x: labelW + w + 8, y: y + 19, class: "chart-value" });
       val.appendChild(document.createTextNode(String(d.value)));
