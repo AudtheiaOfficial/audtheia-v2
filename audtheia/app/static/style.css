@@ -1297,8 +1297,12 @@ textarea:hover {
 .model-entry-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
 /* Where a model runs is aligned to the right edge of its row rather than
    trailing the title, so the badges form one column down the card instead of
-   starting at a different place on every entry. */
+   starting at a different place on every entry. The name of the model's role is
+   a heading for everything below it, so it carries a heavier weight at the same
+   colour: a reader should be able to find the next entry without first reading
+   the description of the one before it. */
 .model-entry-head .badge { margin-left: auto; }
+.model-entry-head .form-label { font-weight: 650; }
 .model-citation { font-family: var(--font-mono); font-size: 11px; line-height: 1.5; word-break: break-word; white-space: normal; }
 
 /* Whether a model's file is actually on disk, stated as its own small status so
