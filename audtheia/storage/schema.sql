@@ -322,6 +322,97 @@ CREATE TABLE observation_verification (
 CREATE INDEX idx_observation_verification_gate ON observation_verification(observation_id) WHERE verified = 1;
 
 -- ============================================================================
+-- OBSERVATION_CORRECTIONS  (desktop-owned)
+-- A human expert's verdict on an event, or on one child detection within it.
+-- The field screening call and the desktop verification are both model claims;
+-- this is a third, separately sourced claim standing beside them, and it never
+-- overwrites either.
+--
+-- The separation is structural rather than conventional: child_detections
+-- carries CHECK (data_source = 'model'), so the storage layer physically refuses
+-- to hold a human judgement in that table. Being desktop-owned also puts a
+-- correction outside the append-only Pi -> desktop pull, so a later sync cannot
+-- clobber a taxonomist's work (decision #47).
+--
+-- Append-only. A change of mind is a new row, so the review history of a
+-- contested identification is never destroyed; readers take the most recent row
+-- for a target.
+--
+-- No confidence number is written by a correction. An expert identification is a
+-- different kind of statement from a model score rather than the top of the same
+-- scale, so writing one into screening_confidence would corrupt every
+-- mean-confidence figure in Analytics and every drift measurement in the Brain
+-- versions panel with a value no model produced. The salience implied by the
+-- verdict is stored on this row instead, leaving the station-owned provisional
+-- value and the desktop-owned authoritative value exactly as their own producers
+-- wrote them.
+-- ============================================================================
+CREATE TABLE observation_corrections (
+    id                          TEXT PRIMARY KEY,       -- UUID
+    observation_id              TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+
+    -- Which claim the expert is correcting. NULL means the verdict applies to
+    -- the event as a whole; a value names the one child detection being
+    -- corrected, which is what lets a single wrong box in a multi-taxon event be
+    -- fixed without disturbing the others.
+    detection_id                TEXT REFERENCES child_detections(id) ON DELETE CASCADE,
+    modality                    TEXT CHECK (modality IS NULL OR modality IN ('vision', 'audio')),
+
+    -- The three-way vocabulary. 'confirm' is an expert agreeing with the model,
+    -- which is a real and valuable signal rather than a no-op: it is the only
+    -- way a true positive is ever distinguished from an unreviewed one.
+    -- 'reject' states that no organism is present, which is what allows a
+    -- retraining export to carry true negatives and so teach a model what a
+    -- false positive looks like.
+    verdict                     TEXT NOT NULL CHECK (verdict IN ('confirm', 'relabel', 'reject')),
+
+    -- The corrected taxon. Resolved against the shipped GBIF backbone before the
+    -- row is ever written, so a correction cannot introduce a taxon that does
+    -- not exist; an unresolvable name is refused rather than stored as free text.
+    corrected_scientific_name   TEXT,
+    corrected_common_name       TEXT,
+    corrected_gbif_usage_key    TEXT,
+    gbif_snapshot_date          TEXT,     -- backbone snapshot the corrected name resolved against
+
+    -- Who made the call and why. The corrector is required: an anonymous expert
+    -- identification is not reviewable, and reviewability is the entire point.
+    corrector                   TEXT NOT NULL,
+    corrected_at                TEXT NOT NULL,          -- UTC ISO8601
+    reason                      TEXT,
+
+    -- Salience recomputed under this verdict. Stored here rather than on the
+    -- observation so the station-owned provisional value and the desktop-owned
+    -- authoritative value both stay exactly as their own producers wrote them.
+    salience_corrected          REAL CHECK (salience_corrected IS NULL OR
+                                    (salience_corrected >= 0 AND salience_corrected <= 1)),
+
+    data_source                 TEXT NOT NULL CHECK (data_source = 'human_expert'),
+    status                      TEXT NOT NULL DEFAULT 'measured' CHECK (status IN
+                                    ('measured', 'not_measured', 'below_detection_limit',
+                                     'sensor_error', 'not_applicable')),
+    created_at                  TEXT NOT NULL,
+
+    -- A rejection asserts that nothing is there, so it must not carry a name; a
+    -- relabel exists precisely to supply one, so it must. A confirmation may
+    -- echo the model's name or leave it out, since the name it agrees with is
+    -- already on the detection.
+    CHECK (
+        (verdict = 'reject'  AND corrected_scientific_name IS NULL) OR
+        (verdict = 'relabel' AND corrected_scientific_name IS NOT NULL) OR
+        (verdict = 'confirm')
+    )
+) STRICT;
+
+-- The dominant read is "the correction history of this observation, in order",
+-- which the composite serves directly and which by leftmost prefix also serves
+-- every observation_id-only lookup.
+CREATE INDEX idx_observation_corrections_observation_id
+    ON observation_corrections(observation_id, corrected_at);
+-- Per-box lookup when rendering one child detection's corrected state.
+CREATE INDEX idx_observation_corrections_detection_id
+    ON observation_corrections(detection_id);
+
+-- ============================================================================
 -- INTERPRETATIONS  (desktop-owned)
 -- The interpretive points owned by the desktop verification step, plus
 -- interpretive-skill outputs. Always data_source = 'llm_inferred'; never

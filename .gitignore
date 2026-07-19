@@ -49,6 +49,17 @@ audtheia/resources/gbif_backbone/
 config/settings.local.json
 .keys/
 
+# Throwaway configurations the test suites write beside the real settings file.
+# Each suite copies config/settings.json, redirects its writable paths into a
+# temp tree, and writes the copy here so the real loader can read it. They are
+# normally removed when the suite finishes, but a suite that fails partway leaves
+# one behind, and a station identifier or a local absolute path inside one must
+# never reach the repository.
+config/settings.env.test.*.json
+config/settings.qc.test.*.json
+config/settings.pi.acoustic.*.json
+config/settings.pi.test.json
+
 # --- Python ---
 __pycache__/
 *.py[cod]
