@@ -39,6 +39,7 @@ and tooling that do not need a live server.
 import copy
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -71,6 +72,26 @@ SKILL_TIERS = ("deterministic_flag", "interpretive")
 # of a whole document from being stored, not a policy on wording.
 _SKILL_TITLE_MAX = 200
 _SKILL_TEXT_MAX = 4000
+
+
+# The three-way correction vocabulary, matching the CHECK constraint on
+# observation_corrections. Kept here so a request is refused with a clear
+# message before it reaches the database rather than as a constraint failure.
+_CORRECTION_VERDICTS = ("confirm", "relabel", "reject")
+
+# Until the application has user accounts, every correction is attributed to a
+# single generic expert. The column is NOT NULL because an anonymous
+# identification is not reviewable, and this is the honest placeholder rather
+# than a fabricated identity.
+_DEFAULT_CORRECTOR = "expert"
+
+# The prebuilt taxonomic index, written beside the shipped backbone by
+# scripts/build_gbif_index.py.
+_GBIF_INDEX_FILENAME = "index.db"
+
+# A correction search box is read at a glance, so more rows than this would be
+# scrolled past rather than considered.
+_SPECIES_SEARCH_LIMIT = 20
 
 
 class BackendError(RuntimeError):
@@ -112,6 +133,67 @@ def _redact(value: Any) -> Any:
     if isinstance(value, list):
         return [_redact(item) for item in value]
     return value
+
+
+def _gbif_index_path(settings) -> Path:
+    """Where the prebuilt taxonomic index lives, following the configured backbone."""
+    return Path(settings.path("gbif_backbone_path")) / _GBIF_INDEX_FILENAME
+
+
+def _resolve_usage_key(settings, usage_key: str) -> Optional[dict]:
+    """Resolve a usage key to the accepted taxon it names, or None if unknown.
+
+    A key that the interface offered can still be a synonym, so this follows
+    accepted_key to the taxon the record should actually carry. That means an
+    expert can search under the name they know and the database still ends up
+    with one name per organism rather than a scatter of historical ones.
+
+    Returns None rather than raising for an unknown key, so the caller decides
+    whether that is a client error or a missing index.
+    """
+    index_path = _gbif_index_path(settings)
+    if not index_path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{index_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute(
+            "SELECT usage_key, canonical_name, scientific_name, status, accepted_key "
+            "FROM taxon_index WHERE usage_key = ?",
+            (str(usage_key),),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["status"] != "ACCEPTED" and row["accepted_key"]:
+            accepted = conn.execute(
+                "SELECT usage_key, canonical_name, scientific_name FROM taxon_index "
+                "WHERE usage_key = ?",
+                (row["accepted_key"],),
+            ).fetchone()
+            if accepted is not None:
+                row = accepted
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+    # The snapshot the name resolved against, so a later backbone revision can
+    # be told apart from the taxonomy in force when the call was made.
+    try:
+        snapshot = datetime.fromtimestamp(
+            index_path.stat().st_mtime, tz=timezone.utc
+        ).strftime("%Y-%m-%d")
+    except OSError:
+        snapshot = None
+
+    return {
+        "usage_key": row["usage_key"],
+        "scientific_name": row["canonical_name"],
+        "snapshot_date": snapshot,
+    }
 
 
 def _frame_pattern(pattern: dict, supporting_ids: Optional[list] = None) -> dict:
@@ -363,30 +445,28 @@ def _llm_runtime_available() -> bool:
     return importlib.util.find_spec("llama_cpp") is not None
 
 
-def _persist_settings(settings) -> None:
-    """Write the in-memory configuration back to its file, validated and atomically.
+# The header written into the local override file, so a person who opens it
+# knows what it is and why their paths are in it rather than in the main file.
+_LOCAL_OVERRIDES_COMMENT = (
+    "Machine-specific absolute paths for this computer only. Written "
+    "automatically. This file is excluded from version control so that an "
+    "account name, home directory, or drive letter is never published. Edit "
+    "config/settings.json for anything that describes the deployment rather "
+    "than this machine."
+)
 
-    The configuration is validated before it is written, so an invalid change is
-    refused rather than saved, and the file is replaced in a single step, so a
-    reader never sees a half-written file. Secrets live in their own file and are
-    never part of what is written here.
-    """
-    from audtheia.config import _validate, ConfigError
 
-    try:
-        _validate(settings.raw)
-    except ConfigError as exc:
-        raise BackendError(f"refusing to save an invalid configuration: {exc}") from exc
-
-    target = Path(settings.settings_path)
-    fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=".settings-", suffix=".tmp")
+def _write_json_atomically(target: Path, payload: dict, prefix: str) -> None:
+    """Replace a JSON file in one step so a reader never sees it half written."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=prefix, suffix=".tmp")
     try:
         # newline="\n" pins the line endings. Without it, Python's text mode
         # writes Windows line endings on Windows, so the same configuration file
         # would differ byte for byte between a desktop and a field station and
         # would show up as an entirely rewritten file in version control.
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as fh:
-            json.dump(settings.raw, fh, indent=2)
+            json.dump(payload, fh, indent=2)
             fh.write("\n")
         os.replace(tmp_name, str(target))
     except Exception:
@@ -395,6 +475,123 @@ def _persist_settings(settings) -> None:
         except OSError:
             pass
         raise
+
+
+def _persist_settings(settings) -> list:
+    """Write the configuration back to disk, machine-specific paths separated out.
+
+    The configuration is validated before anything is written, so an invalid
+    change is refused rather than saved. What is then written goes to two files.
+    Every absolute path is a description of this one computer and carries the
+    account name of whoever is running it, so those values go to the gitignored
+    local file; the committed file keeps the value it already held. The split is
+    decided by shape, not by a list of known fields, so a path field added later
+    is covered without anyone remembering to cover it.
+
+    The check before the write is deliberate rather than defensive. A leak of
+    this kind is silent, reaches a public remote, and survives in the history
+    after the file is cleaned, so a save that would reintroduce one is refused
+    outright instead of trusted to the splitting logic being correct.
+
+    A configuration that already holds a machine path is migrated rather than
+    rejected. Refusing the save in that case blocked every unrelated edit, down
+    to changing the colour theme, because the offending value was one the person
+    had not touched. The live value is filed in the local override file and the
+    committed file is cleaned wherever a clean value can stand in its place.
+    Where the field is required and no published value exists to fall back to,
+    the save still proceeds and reports what remains, since blocking the edit
+    neither removes the path nor tells anyone it is there.
+
+    Returns the warnings raised while splitting, so a caller can pass them on.
+    """
+    from audtheia.config import (
+        _validate,
+        ConfigError,
+        collect_absolute_paths,
+        pointer_value,
+        _is_absolute_path_value,
+        _contains_machine_path,
+    )
+
+    try:
+        _validate(settings.raw)
+    except ConfigError as exc:
+        raise BackendError(f"refusing to save an invalid configuration: {exc}") from exc
+
+    target = Path(settings.settings_path)
+
+    # What the committed file holds today. Any path being moved out keeps the
+    # value already published rather than being blanked, so a save made on a
+    # machine with an external store does not strip the defaults every other
+    # machine relies on.
+    previous: dict = {}
+    if target.exists():
+        try:
+            loaded = json.loads(target.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                previous = loaded
+        except (OSError, json.JSONDecodeError):
+            previous = {}
+
+    overrides = collect_absolute_paths(settings.raw)
+
+    tracked = copy.deepcopy(settings.raw)
+    from audtheia.config import apply_local_overrides as _apply
+
+    warnings: list = []
+
+    # What the committed file should hold in place of each machine path. The
+    # value already published is the right stand-in, unless it is itself a
+    # machine path, in which case there is nothing clean to fall back to and the
+    # field is cleared so the path stops being published.
+    stand_in = {}
+    polluted = []
+    for pointer in overrides:
+        prior = pointer_value(previous, pointer)
+        if _is_absolute_path_value(prior) or _contains_machine_path(prior):
+            stand_in[pointer] = None
+            polluted.append(pointer)
+        else:
+            stand_in[pointer] = prior
+    _apply(tracked, stand_in)
+
+    # Clearing a required field would make the committed file unloadable, which
+    # helps nobody. Where that happens the published value is put back and the
+    # person is told which field still names their machine, so they can point it
+    # somewhere shared or accept it knowingly.
+    if polluted:
+        try:
+            _validate(tracked)
+        except ConfigError:
+            _apply(tracked, {p: pointer_value(previous, p) for p in polluted})
+            listed = ", ".join(sorted(polluted))
+            warnings.append(
+                f"the saved configuration still names this machine at {listed}, "
+                "because the field is required and has no shared value to fall "
+                "back to. Point it at a location inside the repository, or move "
+                "it to the local override file, before publishing this file."
+            )
+
+    introduced = sorted(set(collect_absolute_paths(tracked)) - set(polluted))
+    if introduced:
+        listed = ", ".join(introduced)
+        raise BackendError(
+            "refusing to save: absolute paths would be written to the committed "
+            f"configuration ({listed}). An absolute path identifies one machine "
+            "and must go to the local override file instead."
+        )
+
+    _write_json_atomically(target, tracked, ".settings-")
+
+    local_target = Path(settings.local_overrides_path)
+    if overrides or local_target.exists():
+        _write_json_atomically(
+            local_target,
+            {"_comment": _LOCAL_OVERRIDES_COMMENT, "overrides": overrides},
+            ".settings-local-",
+        )
+
+    return warnings
 
 
 # The credential keys a person may set from the interface. These are the
@@ -1130,6 +1327,14 @@ def create_app(settings, database):
     class ObservationDeleteRequest(BaseModel):
         ids: Optional[list] = None
 
+    class CorrectionRequest(BaseModel):
+        verdict: Optional[str] = None
+        detection_id: Optional[str] = None
+        modality: Optional[str] = None
+        gbif_usage_key: Optional[str] = None
+        reason: Optional[str] = None
+        corrector: Optional[str] = None
+
     # -- meta ------------------------------------------------------------
 
     @app.get(f"{API_PREFIX}/health")
@@ -1166,6 +1371,10 @@ def create_app(settings, database):
             item = dict(obs)
             item["vision_detections"] = [c for c in db.list_child_detections(obs["id"]) if c.get("modality") == "vision"]
             item["verification"] = db.get_observation_verification(obs["id"])
+            # The expert's current position on this event, so a card can show a
+            # reviewed identification instead of a model percentage without a
+            # second request per card.
+            item["correction"] = db.latest_correction(obs["id"])
             out.append(item)
         return {"items": out, "total": total, "limit": limit, "offset": offset}
 
@@ -1300,6 +1509,164 @@ def create_app(settings, database):
 
         return {"observation": obs, "manifest": manifest, "frames": frames}
 
+    # -- expert corrections ----------------------------------------------
+
+    @app.get(f"{API_PREFIX}/species/search")
+    def species_search(q: str | None = Query(default=None)):
+        """Prefix search over the shipped taxonomic backbone.
+
+        This is the only way a corrected name can enter the record. The caller
+        gets back usage keys, and the correction endpoint accepts nothing else,
+        so a typo cannot become a taxon. Synonyms are returned with the accepted
+        name they resolve to, because an expert who types a name they learned
+        thirty years ago should still find the taxon it became.
+
+        An absent index is not an error. The confirm and reject verdicts need no
+        index at all, so a missing one degrades relabelling rather than breaking
+        review, and the interface can say so plainly instead of failing.
+        """
+        term = (q or "").strip().lower()
+        if len(term) < 2:
+            return {"results": [], "index_available": True}
+
+        index_path = _gbif_index_path(settings)
+        if not index_path.is_file():
+            return {"results": [], "index_available": False}
+
+        # Read-only, and the LIKE pattern is escaped so a name containing a
+        # wildcard character is searched for literally rather than matching
+        # everything.
+        pattern = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+        try:
+            conn = sqlite3.connect(f"file:{index_path}?mode=ro", uri=True)
+        except sqlite3.Error:
+            return {"results": [], "index_available": False}
+        try:
+            conn.row_factory = sqlite3.Row
+            rows = conn.execute(
+                "SELECT usage_key, canonical_name, scientific_name, status, accepted_name "
+                "FROM taxon_index WHERE name_lower LIKE ? ESCAPE '\\' "
+                "ORDER BY LENGTH(canonical_name), canonical_name LIMIT ?",
+                (pattern, _SPECIES_SEARCH_LIMIT),
+            ).fetchall()
+        except sqlite3.Error:
+            return {"results": [], "index_available": False}
+        finally:
+            conn.close()
+
+        return {
+            "results": [
+                {
+                    "usage_key": r["usage_key"],
+                    "canonical_name": r["canonical_name"],
+                    "scientific_name": r["scientific_name"],
+                    "status": r["status"],
+                    "accepted_name": r["accepted_name"],
+                }
+                for r in rows
+            ],
+            "index_available": True,
+        }
+
+    @app.get(f"{API_PREFIX}/observations/{{observation_id}}/corrections")
+    def observation_corrections(observation_id):
+        obs = db.get_observation(observation_id)
+        if obs is None:
+            raise HTTPException(status_code=404, detail=f"no observation with id {observation_id}")
+        return {"corrections": db.corrections_for_observation(observation_id)}
+
+    @app.post(f"{API_PREFIX}/observations/{{observation_id}}/correct", status_code=201)
+    def correct_observation(observation_id, request: CorrectionRequest):
+        """Record one expert judgement about one claim.
+
+        Nothing the model wrote is touched. The screening confidence, the field
+        species call, and the desktop verification verdict all stay exactly as
+        their producers recorded them; this appends a separate assertion with
+        its own provenance. A change of mind is another append, so the review
+        history stays legible rather than being flattened into a final state.
+
+        A relabel must arrive as a usage key the backbone returned. Free text is
+        refused outright, because a correction that cannot be resolved to a real
+        taxon is worth less than no correction at all.
+        """
+        obs = db.get_observation(observation_id)
+        if obs is None:
+            raise HTTPException(status_code=404, detail=f"no observation with id {observation_id}")
+
+        verdict = (request.verdict or "").strip()
+        if verdict not in _CORRECTION_VERDICTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"verdict must be one of {', '.join(_CORRECTION_VERDICTS)}",
+            )
+
+        modality = (request.modality or "").strip() or None
+        if modality is not None and modality not in ("vision", "audio"):
+            raise HTTPException(status_code=400, detail="modality must be vision or audio")
+
+        detection_id = (request.detection_id or "").strip() or None
+        if detection_id is not None:
+            known = {c["id"] for c in db.list_child_detections(observation_id)}
+            if detection_id not in known:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"detection {detection_id} does not belong to observation {observation_id}",
+                )
+
+        usage_key = (request.gbif_usage_key or "").strip() or None
+        if verdict == "reject" and usage_key is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="a rejection asserts that nothing is present, so it cannot carry a species",
+            )
+        if verdict == "relabel" and usage_key is None:
+            raise HTTPException(
+                status_code=400,
+                detail="a relabel must name a species chosen from the taxonomic search",
+            )
+
+        scientific_name = None
+        common_name = None
+        snapshot_date = None
+        if usage_key is not None:
+            resolved = _resolve_usage_key(settings, usage_key)
+            if resolved is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"usage key {usage_key} is not in the shipped taxonomic backbone",
+                )
+            # A synonym is stored as the accepted taxon it resolves to, so the
+            # record never accumulates two names for one organism.
+            usage_key = resolved["usage_key"]
+            scientific_name = resolved["scientific_name"]
+            snapshot_date = resolved["snapshot_date"]
+            reference = db.get_species_reference(usage_key)
+            if reference is not None:
+                common_name = reference.get("common_name")
+
+        stored = db.add_correction(
+            observation_id,
+            verdict=verdict,
+            corrector=(request.corrector or "").strip() or _DEFAULT_CORRECTOR,
+            detection_id=detection_id,
+            modality=modality,
+            corrected_scientific_name=scientific_name,
+            corrected_common_name=common_name,
+            corrected_gbif_usage_key=usage_key,
+            gbif_snapshot_date=snapshot_date,
+            reason=(request.reason or "").strip() or None,
+            # Left unset deliberately. Salience is normalised against k, the size
+            # of the detecting model's label universe, and the desktop backend
+            # does not have the field detector loaded, so any k it picked would
+            # be a different denominator from the one the provisional value used.
+            # A number computed that way would not be comparable to the value
+            # sitting beside it, and an incomparable number is worse than none.
+            # The column is nullable precisely so this can be filled in later by
+            # the pass that does know k.
+            salience_corrected=None,
+        )
+        return {"correction": stored}
+
     # -- audio -----------------------------------------------------------
 
     @app.get(f"{API_PREFIX}/audio")
@@ -1316,6 +1683,7 @@ def create_app(settings, database):
             item = dict(obs)
             item["audio_detections"] = [c for c in db.list_child_detections(obs["id"]) if c.get("modality") == "audio"]
             item["verification"] = db.get_observation_verification(obs["id"])
+            item["correction"] = db.latest_correction(obs["id"])
             out.append(item)
         return {"items": out, "total": total, "limit": limit, "offset": offset}
 
@@ -1835,7 +2203,7 @@ def create_app(settings, database):
         original = settings.raw
         settings.raw = draft
         try:
-            _persist_settings(settings)
+            warnings = list(warnings) + list(_persist_settings(settings) or [])
         except BackendError as exc:
             settings.raw = original
             raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -13,6 +13,11 @@ What the loader does:
   - Reads config/settings.json (the committed, secret-free configuration).
   - Reads an optional, gitignored config/secrets.json and lets environment
     variables override any secret, so credentials stay out of the repository.
+  - Reads an optional, gitignored config/settings.local.json holding the
+    absolute filesystem paths that belong to one machine and to no other, so a
+    person's account name, home directory, or external drive letter never
+    becomes part of the committed configuration. See the local-overrides
+    section below for why this is a hard rule rather than a convention.
   - Resolves every path against the repository root using pathlib, so one
     forward-slash configuration works the same on Windows, macOS, Linux, and
     Raspberry Pi OS. Absolute paths are honored so a desktop store can live on
@@ -30,8 +35,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone, tzinfo
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Optional
 
 
@@ -223,11 +229,31 @@ class Settings:
     file or guessing a default.
     """
 
-    def __init__(self, raw: dict, *, settings_path: Path, repo_root: Path, secrets: dict) -> None:
+    def __init__(
+        self,
+        raw: dict,
+        *,
+        settings_path: Path,
+        repo_root: Path,
+        secrets: dict,
+        local_overrides_path: Optional[Path] = None,
+        stale_local_overrides: Optional[list] = None,
+    ) -> None:
         self.raw = raw
         self.settings_path = settings_path
         self.repo_root = repo_root
         self.secrets = secrets
+        # Where this machine's absolute paths are kept. Defaulted rather than
+        # required so a Settings built directly by a test still works.
+        self.local_overrides_path = (
+            local_overrides_path
+            if local_overrides_path is not None
+            else repo_root / LOCAL_OVERRIDES_DEFAULT_PATH
+        )
+        # Pointers in the local file that matched nothing in the committed
+        # configuration, usually a station that has since been removed. Kept so
+        # the interface can report a stale local file instead of ignoring it.
+        self.stale_local_overrides = list(stale_local_overrides or [])
 
     # -- paths -----------------------------------------------------------
 
@@ -480,10 +506,235 @@ def _load_secrets(secrets_path: Path) -> dict:
     return secrets
 
 
+# ===========================================================================
+# Local overrides
+#
+# An absolute filesystem path describes one machine. It carries the account
+# name of whoever is logged in, their home directory, and often the drive they
+# happened to plug in. config/settings.json is committed, so an absolute path
+# written into it is published to everyone who reads the repository, and stays
+# in the history after it is removed from the file.
+#
+# Absolute paths are still legitimate: a desktop store may live on an external
+# drive and a model folder may sit outside the repository. So they are not
+# refused, they are relocated. Every absolute path lives in
+# config/settings.local.json, which .gitignore excludes, and is merged back
+# over the committed configuration at load time. The committed file therefore
+# describes the deployment and the local file describes the machine.
+#
+# The split is decided by shape rather than by a list of known fields, so a
+# path field added later is protected without anyone remembering to protect
+# it. A value qualifies when its key names a path and the value is absolute.
+# ===========================================================================
+
+
+LOCAL_OVERRIDES_DEFAULT_PATH = "config/settings.local.json"
+
+# The one configuration file that machine overrides apply to. Anything else is a
+# scenario configuration that must describe itself completely; see load_settings
+# for why inheriting a machine path into one of those is dangerous.
+CANONICAL_SETTINGS_FILENAME = "settings.json"
+
+# Keys whose value is a filesystem path. Matched by shape so a field added
+# later is covered without editing this module.
+_PATH_KEY_SUFFIXES = ("_path", "_dir")
+_PATH_KEY_EXACT = ("path",)
+
+# Keys that identify an element of a list, so an override written against a
+# station survives that station being reordered in the committed file. Checked
+# in order; the first one an element carries is the one used.
+_IDENTITY_KEYS = ("station_id", "channel_id", "id")
+
+# Containers whose every scalar member may name something on this machine, and
+# so must be addressable by an override whatever it currently holds.
+#
+# A capture source is the case this exists for. It is stored as a source
+# expression rather than as a path, and it is legitimately empty on a fresh
+# clone, so neither the key nor the value identifies it as machine specific
+# while it is blank. Recognising it by the container it sits in gives it a
+# stable pointer from the start. Without one, a machine path entered in the
+# interface is routed correctly into the local file and then cannot be read
+# back, because the pointer it was filed under does not exist in a
+# configuration whose committed value is still empty. The setting appears to
+# save and is gone on the next load.
+_MACHINE_VALUE_CONTAINERS = ("capture.source",)
+
+
+def _is_path_key(key: str) -> bool:
+    """Whether a configuration key holds a filesystem path."""
+    return key in _PATH_KEY_EXACT or key.endswith(_PATH_KEY_SUFFIXES)
+
+
+def _is_machine_value_container(prefix: str) -> bool:
+    """Whether a container holds values that may name this machine.
+
+    Matched on the pointer rather than on a station identifier so it holds for
+    every station, and for a desktop configuration that has no station list.
+    """
+    return any(prefix == name or prefix.endswith("." + name) for name in _MACHINE_VALUE_CONTAINERS)
+
+
+def _is_absolute_path_value(value: Any) -> bool:
+    """Whether a value is an absolute path under either operating system's rules.
+
+    Both conventions are checked because one configuration travels between a
+    Windows desktop and a Raspberry Pi. Python's own Path only understands the
+    host's convention, so a Windows drive letter read on the Pi, or a POSIX
+    root read on Windows, would otherwise look relative and slip through.
+    """
+    if not isinstance(value, str) or not value:
+        return False
+    return PureWindowsPath(value).is_absolute() or PurePosixPath(value).is_absolute()
+
+
+# A machine path buried inside a longer string. The capture source is the case
+# this exists for: it is stored as a source expression rather than as a path,
+# something of the form  file:"C:\Users\somebody\Downloads\clip.mp3" , so the
+# key is not a path key and the value is not a bare path, and both of the checks
+# above miss it entirely. A drive letter or a UNC prefix appearing anywhere in a
+# string is machine-specific wherever it sits, so it is matched on sight.
+#
+# The lookbehind is what keeps a URL out of this. A drive letter is a single
+# letter before the colon, so without it the "s://" inside "https://" matches
+# and every citation and video source in the configuration is mistaken for a
+# machine path.
+_EMBEDDED_MACHINE_PATH = re.compile(r"(?<![A-Za-z])[A-Za-z]:[\\/]|\\\\[^\\/\s]+[\\/]")
+
+
+def _contains_machine_path(value: Any) -> bool:
+    """Whether a string carries a machine-specific path anywhere inside it."""
+    if not isinstance(value, str) or not value:
+        return False
+    return _EMBEDDED_MACHINE_PATH.search(value) is not None
+
+
+def _element_pointer(element: Any, index: int) -> str:
+    """The pointer segment naming one element of a list.
+
+    An element that identifies itself is referred to by that identity, so the
+    override still applies after the list is reordered. Anything else falls
+    back to its position, which is all there is to go on.
+    """
+    if isinstance(element, dict):
+        for key in _IDENTITY_KEYS:
+            value = element.get(key)
+            if isinstance(value, str) and value:
+                return f"[{key}={value}]"
+    return f"[{index}]"
+
+
+def _walk_path_values(node: Any, prefix: str = ""):
+    """Yield every (pointer, key, container, value) whose key names a path.
+
+    Walks dictionaries and lists together because model paths live inside the
+    stations list, not only at the top level.
+    """
+    if isinstance(node, dict):
+        for key, value in node.items():
+            pointer = f"{prefix}.{key}" if prefix else key
+            scalar = not isinstance(value, (dict, list))
+            named_path = _is_path_key(key) and scalar
+            # A capture source is addressable whether or not it is filled in,
+            # so an override survives the value being empty in the committed
+            # file, which is how a fresh clone and a privacy-cleaned station
+            # both start out.
+            machine_slot = _is_machine_value_container(prefix) and scalar
+            # A value carrying a drive letter is machine-specific whatever its
+            # key is called, so it is treated as a path field on the strength of
+            # its content alone.
+            if named_path or machine_slot or _contains_machine_path(value):
+                yield pointer, key, node, value
+            else:
+                yield from _walk_path_values(value, pointer)
+    elif isinstance(node, list):
+        for index, element in enumerate(node):
+            yield from _walk_path_values(element, f"{prefix}{_element_pointer(element, index)}")
+
+
+def collect_absolute_paths(raw: dict) -> dict:
+    """Every absolute path in a configuration, as a pointer to value map.
+
+    This is what must not reach the committed file. Exposed rather than kept
+    private because both the loader and the backend's save path need it, and
+    because a test proves the guarantee by calling it directly.
+    """
+    found = {}
+    for pointer, _key, _container, value in _walk_path_values(raw):
+        if _is_absolute_path_value(value) or _contains_machine_path(value):
+            found[pointer] = value
+    return found
+
+
+def _set_pointer(raw: dict, pointer: str, value: Any) -> bool:
+    """Write a value at a pointer, returning whether the pointer resolved.
+
+    A pointer that names a station no longer present resolves to nothing and is
+    ignored, so a stale local file is inert rather than an error.
+    """
+    for target_pointer, key, container, _value in _walk_path_values(raw):
+        if target_pointer == pointer:
+            container[key] = value
+            return True
+    return False
+
+
+def pointer_value(raw: dict, pointer: str, default: Any = None) -> Any:
+    """The value at a pointer, or a default when the pointer resolves to nothing."""
+    for target_pointer, _key, _container, value in _walk_path_values(raw):
+        if target_pointer == pointer:
+            return value
+    return default
+
+
+def apply_local_overrides(raw: dict, overrides: dict) -> list:
+    """Merge a local override map into a configuration in place.
+
+    Returns the pointers that did not resolve, so a caller can report a stale
+    local file rather than silently ignoring it.
+    """
+    stale = []
+    for pointer, value in overrides.items():
+        if not _set_pointer(raw, pointer, value):
+            stale.append(pointer)
+    return stale
+
+
+def _load_local_overrides(local_path: Path) -> dict:
+    """Read the optional local override file.
+
+    The file may be absent, which is the normal case on a fresh clone and means
+    the committed configuration is used exactly as written.
+    """
+    if not local_path.exists():
+        return {}
+    try:
+        loaded = json.loads(local_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ConfigError(f"local settings file is not valid JSON: {exc}") from None
+    if not isinstance(loaded, dict):
+        raise ConfigError("local settings file must contain a JSON object")
+    overrides = loaded.get("overrides", {})
+    if not isinstance(overrides, dict):
+        raise ConfigError("local settings file: 'overrides' must be a JSON object")
+    return overrides
+
+
+def local_overrides_path_for(raw: dict, repo_root: Path) -> Path:
+    """Where the local override file lives for a given configuration.
+
+    Configurable in the same way the secrets file is, so a deployment that
+    keeps machine state elsewhere can say so, and defaulted otherwise.
+    """
+    ref = (raw.get("local_overrides") or {}).get("path") or LOCAL_OVERRIDES_DEFAULT_PATH
+    path = Path(ref)
+    return path if path.is_absolute() else repo_root / path
+
+
 def load_settings(
     settings_path: Optional[str | Path] = None,
     *,
     secrets_path: Optional[str | Path] = None,
+    apply_local: Optional[bool] = None,
 ) -> Settings:
     """Read, validate, and resolve a configuration file.
 
@@ -492,6 +743,11 @@ def load_settings(
     different file (for example a field station's own copy). The returned
     Settings object is fully validated; if anything is wrong, a ConfigError
     explains exactly what and where.
+
+    Machine-specific absolute paths are merged in from config/settings.local.json
+    when the canonical settings file is being loaded. Pass apply_local to force
+    that on or off; the default decides by filename, which keeps a throwaway
+    scenario configuration from inheriting this machine's paths.
     """
     if settings_path is None:
         # audtheia/config.py -> repository root -> config/settings.json
@@ -512,6 +768,23 @@ def load_settings(
 
     repo_root = _repo_root_for(settings_path)
 
+    # The machine's own absolute paths are merged in before validation, so what
+    # is checked is the configuration that will actually run, and so a required
+    # path supplied only by the local file is not reported as missing.
+    #
+    # Overrides apply only to the canonical settings file. The test suites write
+    # throwaway configurations beside the real one, each deliberately redirected
+    # at a temporary sandbox, and several of them clear their working directories
+    # with shutil.rmtree. If a machine override could reach one of those, a
+    # sandboxed data directory could be silently replaced by the real one and a
+    # suite would delete captured field data. A scenario configuration therefore
+    # describes itself completely and inherits nothing from this machine.
+    local_path = local_overrides_path_for(raw, repo_root)
+    if apply_local is None:
+        apply_local = settings_path.name == CANONICAL_SETTINGS_FILENAME
+    local_overrides = _load_local_overrides(local_path) if apply_local else {}
+    stale_pointers = apply_local_overrides(raw, local_overrides)
+
     _validate(raw)
 
     if secrets_path is None:
@@ -523,7 +796,14 @@ def load_settings(
         )
     secrets = _load_secrets(Path(secrets_path))
 
-    return Settings(raw, settings_path=settings_path, repo_root=repo_root, secrets=secrets)
+    return Settings(
+        raw,
+        settings_path=settings_path,
+        repo_root=repo_root,
+        secrets=secrets,
+        local_overrides_path=local_path,
+        stale_local_overrides=stale_pointers,
+    )
 
 
 def _validate(raw: dict) -> None:

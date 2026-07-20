@@ -990,6 +990,9 @@ a:hover {
 .badge-status { color: var(--text-2); }
 .badge-ok { color: var(--ok); border-color: var(--ok); }
 .badge-muted { color: var(--text-muted); }
+/* A rejected detection is neither a healthy state nor a fault, so it reads in
+   the warning colour rather than the error one. */
+.badge-warn { color: var(--warning); border-color: var(--warning); }
 
 .metric-row {
   display: grid;
@@ -1323,6 +1326,20 @@ textarea:hover {
    columns with dead space beside them: auto-fit collapses the empty tracks that
    auto-fill would leave behind. */
 .station-model-grid { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+
+/* The section headings in Model paths ("This computer", "Stations") label the
+   cards underneath them. Headings carry no margin globally, so these sat tight
+   against both the card above and the card below and read as a stray line of
+   text rather than as a heading. The space above is the larger of the two, so
+   each heading separates from the section before it and groups with the cards
+   it introduces. */
+[data-region="settings-models"] > h4 {
+  margin: var(--space-5) 0 var(--space-3);
+}
+
+[data-region="settings-models"] > h4:first-of-type {
+  margin-top: var(--space-3);
+}
 
 /* A model path is long and unbreakable, so it stacks under its label and wraps
    inside the card instead of running past the edge. */
@@ -2014,6 +2031,85 @@ textarea:hover {
 .audit-cell { font-size: var(--text-xs, 11px); }
 .audit-thumb-wrap { margin-bottom: 4px; cursor: zoom-in; }
 .audit-cell-meta { font-family: var(--font-mono); color: var(--text-muted); }
+
+/* The expert review controls inside an audit modal. They sit at the top of the
+   modal because the question the modal exists to answer is whether the call was
+   right; the derivation and the frames below are the evidence for that answer.
+   The block is boxed and set off from the frames so a judgement is never made
+   by accident while scrolling. */
+.correction-panel {
+  margin-bottom: var(--space-4);
+  padding: var(--space-4);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2, transparent);
+}
+
+.correction-context {
+  margin: var(--space-2) 0 var(--space-3) 0;
+}
+
+.correction-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* The chosen verdict is held visibly selected until it is saved, so the
+   reviewer can see what they are about to commit before committing it. */
+.correction-btn.selected {
+  border-color: var(--accent);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.correction-search {
+  margin-top: var(--space-3);
+}
+
+.correction-input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: var(--border-width) solid var(--border);
+  background: var(--surface, transparent);
+  color: var(--text);
+  font-family: inherit;
+  font-size: var(--text-sm);
+}
+
+/* The result list is capped and scrolls rather than pushing the save control
+   off the modal, which would hide the only way to finish the review. */
+.correction-results {
+  margin-top: var(--space-2);
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.correction-result {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border: none;
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  cursor: pointer;
+}
+
+.correction-result:hover {
+  background: var(--surface-2, transparent);
+  color: var(--accent);
+}
+
+.correction-footer {
+  margin-top: var(--space-3);
+}
+
+.hidden { display: none; }
 
 .audio-clip {
   width: 100%;

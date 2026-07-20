@@ -22,6 +22,10 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+# The same shape checks the loader and the save path use, so a path this suite
+# calls shareable is exactly one the rest of the system will also accept.
+from audtheia.config import _contains_machine_path, _is_absolute_path_value  # noqa: E402
+
 PASSED = 0
 FAILED = 0
 
@@ -65,9 +69,14 @@ def main() -> int:
     check("every acoustic slot named in the vocabulary exists",
           all(k in slots for k in ACOUSTIC_MODEL_SLOTS))
 
-    # No configured path may name a file that is not in the repository. This is
-    # the specific failure being guarded against: an invented filename that
-    # looked configured and was never produced by anything.
+    # A configured path must be a shareable destination: repository relative,
+    # inside the models directory, and naming no one machine. Presence on disk
+    # is deliberately not checked. Model weights are downloaded by setup and
+    # excluded from version control, so on a fresh clone none of them exist yet
+    # and a presence check would fail for every user before they had done
+    # anything wrong. What must be guarded is the shape of the value: an
+    # invented filename that was never produced by anything, or a path carrying
+    # an account name into the published configuration.
     def configured_paths(node, found=None):
         found = [] if found is None else found
         if isinstance(node, dict):
@@ -82,13 +91,27 @@ def main() -> int:
         return found
 
     settings_raw = json.loads((REPO_ROOT / "config" / "settings.json").read_text(encoding="utf-8"))
-    missing = [
-        p for p in configured_paths(settings_raw.get("stations", []))
-        + configured_paths(settings_raw.get("desktop_models", {}))
-        if not (REPO_ROOT / p).exists() and not p.endswith("/")
-    ]
-    check("no shipped station or desktop model path names a file that is absent",
-          not missing, f"absent: {missing}")
+    shipped = (configured_paths(settings_raw.get("stations", []))
+               + configured_paths(settings_raw.get("desktop_models", {})))
+
+    machine_specific = [p for p in shipped if _is_absolute_path_value(p) or _contains_machine_path(p)]
+    check("no shipped model path names one person's machine",
+          not machine_specific, f"machine specific: {machine_specific}")
+
+    models_dir = settings_raw.get("paths", {}).get("models_dir", "models")
+    stray = [p for p in shipped if not p.replace("\\", "/").startswith(models_dir.rstrip("/") + "/")]
+    check("every shipped model path sits under the models directory",
+          not stray, f"outside {models_dir}: {stray}")
+
+    # The destination a downloader actually writes, rather than a filename that
+    # reads plausibly and is produced by nothing, is what makes a path real.
+    birdnet_default = "BirdNET_GLOBAL_6K_V2.4_Model_FP16.tflite"
+    fetch_source = (REPO_ROOT / "scripts" / "fetch_birdnet.py").read_text(encoding="utf-8")
+    named_birdnet = [p for p in shipped if p.endswith(".tflite")]
+    check("a shipped BirdNET path names the file its downloader writes",
+          all(Path(p).name == birdnet_default for p in named_birdnet)
+          and birdnet_default in fetch_source,
+          f"named: {named_birdnet}")
 
     # -- clearing a path to null, through the guarded write path ----------
     with tempfile.TemporaryDirectory() as tmp:

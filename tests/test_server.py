@@ -100,8 +100,18 @@ def run() -> None:
         # -- detections with verification, provenance intact ------------
         r = client.get("/api/detections")
         check(r.status_code == 200, "detections did not return")
-        det = r.json()
-        check(len(det) == 4, f"expected 4 events, got {len(det)}")
+        # The list surfaces answer with a page of items alongside the total, so
+        # the interface can show "showing 20 of 400" without a second request.
+        #
+        # This surface is visual events only. Acoustic events are served by the
+        # audio endpoint checked below, so a station's four seeded events are
+        # split across the two views rather than repeated in both.
+        payload = r.json()
+        det = payload["items"]
+        check(payload["total"] == 2, f"expected 2 visual events, got {payload['total']}")
+        check(len(det) == payload["total"], "the page did not carry every counted event")
+        check(all(d["trigger_source"] == "vision" for d in det),
+              "an acoustic event leaked into the visual detections surface")
         with_vision = [d for d in det if d["vision_detections"]]
         check(with_vision, "no event carried vision detections")
         sample_child = with_vision[0]["vision_detections"][0]
@@ -120,7 +130,7 @@ def run() -> None:
         check(client.get("/api/detections/nope").status_code == 404, "unknown observation not a 404")
 
         # -- audio ------------------------------------------------------
-        audio = client.get("/api/audio").json()
+        audio = client.get("/api/audio").json()["items"]
         names = {c["scientific_name"] for a in audio for c in a["audio_detections"]}
         check("Coereba flaveola" in names, "resolved audio taxon missing from audio surface")
         check(any(not a["audio_detections"] for a in audio), "unresolved audio capture missing from audio surface")

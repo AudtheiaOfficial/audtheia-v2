@@ -374,7 +374,15 @@ def run() -> int:
             client = TestClient(app)
             check("the interface is healthy", client.get("/api/health").status_code == 200)
             det = client.get("/api/detections")
-            check("the interface serves every detection", det.status_code == 200 and len(det.json()) == len(all_ids))
+            # The Detections view is visual events only, so what it must account
+            # for is every visually triggered observation in the run. Acoustic
+            # events belong to the Audio view and are counted there.
+            visual_ids = [oid for oid in all_ids if db.get_observation(oid)["trigger_source"] == "vision"]
+            audio = client.get("/api/audio")
+            check("the interface serves every visual detection",
+                  det.status_code == 200 and det.json()["total"] == len(visual_ids))
+            check("the interface serves the acoustic events on the audio view",
+                  audio.status_code == 200 and audio.json()["total"] == len(all_ids) - len(visual_ids))
             check("the interface serves analytics", client.get("/api/analytics").status_code == 200)
             ds = client.get("/api/dream/status")
             check("the interface reports the completed pass",

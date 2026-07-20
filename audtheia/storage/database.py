@@ -287,6 +287,39 @@ class ObservationVerification:
 
 
 @dataclass
+class ObservationCorrection:
+    """One expert judgement about one claim, appended and never overwritten.
+
+    A correction is a separate assertion standing alongside the model's, not a
+    replacement for it. The field call and the desktop verdict stay exactly as
+    their producers recorded them, which is what keeps a measured observation
+    distinguishable from a human interpretation of it. A change of mind is a
+    new row; the newest row per target wins on read.
+
+    No confidence is ever carried here. A percentage is a property of a model's
+    output and means nothing attached to a person, so an expert identification
+    is displayed as such rather than as a number.
+    """
+
+    id: str
+    observation_id: str
+    verdict: str  # confirm / relabel / reject
+    corrector: str
+    corrected_at: str
+    created_at: str
+    data_source: str = "human_expert"
+    status: str = "measured"
+    detection_id: Optional[str] = None
+    modality: Optional[str] = None
+    corrected_scientific_name: Optional[str] = None
+    corrected_common_name: Optional[str] = None
+    corrected_gbif_usage_key: Optional[str] = None
+    gbif_snapshot_date: Optional[str] = None
+    reason: Optional[str] = None
+    salience_corrected: Optional[float] = None
+
+
+@dataclass
 class Interpretation:
     id: str
     observation_id: str
@@ -408,6 +441,7 @@ _TABLE_FOR_TYPE = {
     SpeciesReference: "species_reference",
     Skill: "skills",
     ObservationVerification: "observation_verification",
+    ObservationCorrection: "observation_corrections",
     Interpretation: "interpretations",
     StationTelemetry: "station_telemetry",
     TelemetryError: "station_telemetry_errors",
@@ -1166,6 +1200,128 @@ class Database:
                     observation_id,
                 ),
             )
+
+    # -- expert corrections (human-owned) --------------------------------
+
+    def add_correction(
+        self,
+        observation_id: str,
+        *,
+        verdict: str,
+        corrector: str,
+        detection_id: Optional[str] = None,
+        modality: Optional[str] = None,
+        corrected_scientific_name: Optional[str] = None,
+        corrected_common_name: Optional[str] = None,
+        corrected_gbif_usage_key: Optional[str] = None,
+        gbif_snapshot_date: Optional[str] = None,
+        reason: Optional[str] = None,
+        salience_corrected: Optional[float] = None,
+    ) -> dict:
+        """Append one expert judgement and return the row as stored.
+
+        Nothing already in the database is modified. The model's screening
+        confidence, the field species call, and the desktop verification verdict
+        are all left untouched, because a correction is an additional claim
+        rather than an edit to an existing one. The table's own CHECK
+        constraints are the last line of defence on the verdict vocabulary and
+        on whether a name is required, so this deliberately does not duplicate
+        that validation in Python where the two could drift apart.
+        """
+        row = ObservationCorrection(
+            id=new_id(),
+            observation_id=observation_id,
+            verdict=verdict,
+            corrector=corrector,
+            corrected_at=utc_now_iso(),
+            created_at=utc_now_iso(),
+            detection_id=detection_id,
+            modality=modality,
+            corrected_scientific_name=corrected_scientific_name,
+            corrected_common_name=corrected_common_name,
+            corrected_gbif_usage_key=corrected_gbif_usage_key,
+            gbif_snapshot_date=gbif_snapshot_date,
+            reason=reason,
+            salience_corrected=salience_corrected,
+        )
+        with self.connect() as conn:
+            self._insert_row(conn, row)
+            return self._one(
+                conn, "SELECT * FROM observation_corrections WHERE id = ?", (row.id,)
+            )
+
+    def corrections_for_observation(self, observation_id: str) -> list[dict]:
+        """Every correction on one event, newest first.
+
+        Newest first because the history is read to answer "what does the expert
+        currently say", and the answer is the first row rather than the last.
+        The tiebreak is rowid rather than the primary key, because the key is a
+        random UUID and would order two same-instant corrections arbitrarily,
+        whereas rowid follows insertion order and so keeps a fast
+        confirm-then-change-mind in the sequence it actually happened.
+        """
+        with self.connect() as conn:
+            return self._all(
+                conn,
+                "SELECT * FROM observation_corrections WHERE observation_id = ? "
+                "ORDER BY corrected_at DESC, rowid DESC",
+                (observation_id,),
+            )
+
+    def latest_correction(
+        self, observation_id: str, detection_id: Optional[str] = None
+    ) -> Optional[dict]:
+        """The current expert position on one target.
+
+        A detection_id names one box inside a multi-taxon event; omitting it
+        asks about the event as a whole. The two are kept strictly separate:
+        an event-level rejection does not answer a question about a specific
+        box, and a correction to one box says nothing about its neighbours.
+        """
+        sql = "SELECT * FROM observation_corrections WHERE observation_id = ?"
+        params: tuple = (observation_id,)
+        if detection_id is None:
+            sql += " AND detection_id IS NULL"
+        else:
+            sql += " AND detection_id = ?"
+            params += (detection_id,)
+        sql += " ORDER BY corrected_at DESC, rowid DESC LIMIT 1"
+        with self.connect() as conn:
+            try:
+                return self._one(conn, sql, params)
+            except sqlite3.OperationalError:
+                # A database that predates the corrections migration has no such
+                # table. That is a database waiting to be migrated, not a fault,
+                # and it must not cost the reader their detection list: an
+                # unreviewed event and an unmigratable one look the same here,
+                # and both are correctly described as "no correction yet".
+                return None
+
+    def correction_counts(self) -> dict:
+        """How much of the record a person has actually reviewed.
+
+        Counts distinct targets rather than rows so that a corrector who
+        changed their mind three times about one detection is not mistaken for
+        three reviews. This is what the Brain audit view reports against.
+        """
+        with self.connect() as conn:
+            rows = self._all(
+                conn,
+                "SELECT verdict, COUNT(*) AS n FROM ("
+                "  SELECT observation_id, detection_id, verdict FROM ("
+                "    SELECT observation_id, detection_id, verdict,"
+                "      ROW_NUMBER() OVER ("
+                "        PARTITION BY observation_id, IFNULL(detection_id, '')"
+                "        ORDER BY corrected_at DESC, rowid DESC) AS rn"
+                "    FROM observation_corrections"
+                "  ) WHERE rn = 1"
+                ") GROUP BY verdict",
+            )
+        counts = {"confirm": 0, "relabel": 0, "reject": 0}
+        for row in rows:
+            counts[row["verdict"]] = row["n"]
+        counts["total"] = sum(counts[v] for v in ("confirm", "relabel", "reject"))
+        return counts
 
     # -- interpretations (desktop-owned) ---------------------------------
 

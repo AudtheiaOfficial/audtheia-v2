@@ -917,12 +917,223 @@
     document.body.appendChild(overlay);
   }
 
+  // ----------------------------------------------------------------------
+  // Expert corrections
+  //
+  // A correction is an additional claim standing beside the model's, never an
+  // edit to it. The field call and the desktop verdict are shown unchanged
+  // above the controls so the reviewer can see exactly what they are agreeing
+  // with or overruling, and so a later reader can tell the machine's assertion
+  // from the person's. Nothing here displays a confidence for a human
+  // judgement: a percentage is a property of a model's output and means
+  // nothing attached to an expert.
+  // ----------------------------------------------------------------------
+
+  // The name an expert put on this event, or null when nobody has ruled on it.
+  function correctedName(obs) {
+    var c = obs && obs.correction;
+    if (!c) { return null; }
+    if (c.verdict === "reject") { return null; }
+    return c.corrected_common_name || c.corrected_scientific_name || null;
+  }
+
+  // The badges a reviewed event carries, appended to the provenance row so the
+  // expert's position is visible without opening the card.
+  function correctionBadges(obs) {
+    var c = obs && obs.correction;
+    if (!c) { return []; }
+    if (c.verdict === "reject") { return [badge("rejected · not an organism", "warn")]; }
+    if (c.verdict === "relabel") { return [badge("expert identification", "ok")]; }
+    return [badge("expert confirmed", "ok")];
+  }
+
+  // The species line for a card: the corrected name when there is one, so the
+  // reviewed identification is what the reader sees first.
+  function displaySpecies(obs, modelSpecies) {
+    var name = correctedName(obs);
+    if (name) { return name; }
+    if (obs && obs.correction && obs.correction.verdict === "reject") {
+      return "no organism present";
+    }
+    return modelSpecies;
+  }
+
+  // The confidence cell for a card. A corrected or confirmed event reports an
+  // expert identification in place of the model's percentage, because the
+  // number no longer describes the claim being made.
+  function displayConfidence(obs, modelConfidence) {
+    if (obs && obs.correction) { return "expert identification"; }
+    return "confidence " + fmtConfidence(modelConfidence);
+  }
+
+  // A one-line restatement of a stored correction, used to show the reviewer
+  // what they or a colleague said last time.
+  function correctionSummary(c) {
+    if (!c) { return "not yet reviewed"; }
+    var who = c.corrector || "expert";
+    var when = c.corrected_at ? fmtTime(c.corrected_at) : "";
+    var what;
+    if (c.verdict === "reject") { what = "not an organism"; }
+    else if (c.verdict === "relabel") {
+      what = "corrected to " + (c.corrected_scientific_name || c.corrected_gbif_usage_key);
+    } else { what = "confirmed as identified"; }
+    return what + " · " + who + (when ? " · " + when : "");
+  }
+
+  // The correction control block, shared by the Detections and Audio audits.
+  // `modality` tags the row so a call heard and an organism seen stay
+  // distinguishable in the review record. `onSaved` lets the calling view
+  // refresh itself without a full page reload.
+  function correctionPanel(obs, modality, onSaved) {
+    var wrap = el("div", { class: "correction-panel" });
+    wrap.appendChild(el("div", { class: "card-title", text: "Was this right?" }));
+
+    // What is being judged, laid out before the controls.
+    var context = el("div", { class: "correction-context" });
+    function ctxRow(k, v) {
+      return el("div", { class: "audit-row" }, [
+        el("span", { class: "audit-k", text: k }),
+        el("span", { class: "audit-v", text: v })
+      ]);
+    }
+    var dets = (modality === "audio") ? (obs.audio_detections || []) : (obs.vision_detections || []);
+    var fieldCall = dets.map(taxonName).join(", ") || "no resolved taxon";
+    context.appendChild(ctxRow("Field call", fieldCall));
+    var v = obs.verification;
+    if (v && (v.rfdetr_scientific_name || v.verified)) {
+      context.appendChild(ctxRow("Desktop verification",
+        v.rfdetr_scientific_name || (v.verified ? "verified, no species recorded" : "not verified")));
+    } else {
+      context.appendChild(ctxRow("Desktop verification", "not verified"));
+    }
+    context.appendChild(ctxRow("Expert review", correctionSummary(obs.correction)));
+    wrap.appendChild(context);
+
+    var chosen = null;
+    var chosenKey = null;
+    var status = el("p", { class: "form-hint", text: "" });
+    var searchBox = el("div", { class: "correction-search hidden" });
+
+    var buttons = el("div", { class: "correction-actions" });
+    var defs = [
+      { verdict: "confirm", label: "Correct" },
+      { verdict: "relabel", label: "Not this species" },
+      { verdict: "reject", label: "Not an organism" }
+    ];
+    var btns = {};
+    defs.forEach(function (d) {
+      var b = el("button", { type: "button", class: "btn correction-btn", text: d.label });
+      b.addEventListener("click", function () {
+        chosen = d.verdict;
+        Object.keys(btns).forEach(function (k) { btns[k].classList.remove("selected"); });
+        b.classList.add("selected");
+        if (d.verdict === "relabel") {
+          searchBox.classList.remove("hidden");
+          status.textContent = "Search for the correct species, then choose it from the list.";
+        } else {
+          searchBox.classList.add("hidden");
+          chosenKey = null;
+          status.textContent = "";
+        }
+        saveBtn.disabled = !canSave();
+      });
+      btns[d.verdict] = b;
+      buttons.appendChild(b);
+    });
+
+    // The species picker. Only a key the backbone returned is ever submitted,
+    // so typing a name and walking away cannot put free text into the record.
+    var input = el("input", { type: "text", class: "correction-input",
+      placeholder: "Type at least two letters, for example junco" });
+    var results = el("div", { class: "correction-results" });
+    searchBox.appendChild(input);
+    searchBox.appendChild(results);
+
+    var searchTimer = null;
+    input.addEventListener("input", function () {
+      chosenKey = null;
+      saveBtn.disabled = !canSave();
+      if (searchTimer) { clearTimeout(searchTimer); }
+      var term = input.value.trim();
+      if (term.length < 2) { clear(results); return; }
+      searchTimer = setTimeout(function () {
+        apiGet("/species/search" + query({ q: term })).then(function (data) {
+          clear(results);
+          if (data.index_available === false) {
+            results.appendChild(el("p", { class: "form-hint", text:
+              "The taxonomic index has not been built yet, so a species cannot be chosen. Confirm and reject still work." }));
+            return;
+          }
+          var list = data.results || [];
+          if (!list.length) {
+            results.appendChild(el("p", { class: "form-hint", text: "No matching taxon in the shipped backbone." }));
+            return;
+          }
+          list.forEach(function (r) {
+            var line = r.canonical_name;
+            if (r.status === "SYNONYM" && r.accepted_name) {
+              line += "  (synonym of " + r.accepted_name + ")";
+            }
+            var opt = el("button", { type: "button", class: "correction-result", text: line });
+            opt.addEventListener("click", function () {
+              chosenKey = r.usage_key;
+              input.value = r.canonical_name;
+              clear(results);
+              status.textContent = "Will record " + (r.accepted_name || r.canonical_name) + ".";
+              saveBtn.disabled = !canSave();
+            });
+            results.appendChild(opt);
+          });
+        }).catch(function (e) {
+          clear(results);
+          results.appendChild(el("p", { class: "form-hint", text: "Species search failed: " + e.message }));
+        });
+      }, 150);
+    });
+
+    function canSave() {
+      if (!chosen) { return false; }
+      if (chosen === "relabel") { return !!chosenKey; }
+      return true;
+    }
+
+    var saveBtn = el("button", { type: "button", class: "btn btn-primary", text: "Save review" });
+    saveBtn.disabled = true;
+    saveBtn.addEventListener("click", function () {
+      if (!canSave()) { return; }
+      saveBtn.disabled = true;
+      status.textContent = "Saving.";
+      apiSend("/observations/" + encodeURIComponent(obs.id) + "/correct", "POST", {
+        verdict: chosen,
+        modality: modality,
+        gbif_usage_key: (chosen === "relabel") ? chosenKey : null
+      }).then(function (data) {
+        // Update the record in hand so the modal and the card behind it both
+        // reflect the new state without a reload.
+        obs.correction = data.correction;
+        status.textContent = "Saved · " + correctionSummary(data.correction);
+        if (onSaved) { onSaved(data.correction); }
+      }).catch(function (e) {
+        status.textContent = "Could not save: " + e.message;
+        saveBtn.disabled = false;
+      });
+    });
+
+    wrap.appendChild(buttons);
+    wrap.appendChild(searchBox);
+    var footer = el("div", { class: "correction-footer" });
+    footer.appendChild(saveBtn);
+    wrap.appendChild(footer);
+    wrap.appendChild(status);
+    return wrap;
+  }
+
   // The frame-audit modal: a zoom-style view opened from a detection card. It
   // shows every stored frame of the event with its own box and confidence, and a
   // panel deriving the card's numbers (frame count, duration, confidence,
   // salience) from those frames, so a scientist can verify the stats rather than
   // trust them.
-  function openFrameAudit(obs) {
+  function openFrameAudit(obs, onCorrected) {
     var overlay = el("div", { class: "audit-modal" });
     function close() {
       if (overlay.parentNode) { overlay.parentNode.removeChild(overlay); }
@@ -938,27 +1149,38 @@
     panel.appendChild(closeBtn);
 
     var species = (obs.vision_detections || []).map(taxonName).join(", ") || "no resolved taxon";
-    panel.appendChild(el("div", { class: "audit-title", text: species }));
+    var title = el("div", { class: "audit-title", text: displaySpecies(obs, species) });
+    panel.appendChild(title);
     panel.appendChild(el("div", { class: "card-meta", text: obs.event_name || obs.id }));
 
     var body = el("div", { class: "audit-body" });
-    body.appendChild(el("p", { class: "card-note", text: "Loading frames." }));
+    // The review controls sit above the frames, because the question the modal
+    // exists to answer is whether the call was right, not what the numbers were.
+    body.appendChild(correctionPanel(obs, "vision", function () {
+      title.textContent = displaySpecies(obs, species);
+      if (onCorrected) { onCorrected(obs); }
+    }));
+    // The frames load into their own host so that refreshing them never removes
+    // the review controls the reviewer may already be part-way through using.
+    var framesHost = el("div", { class: "audit-frames" });
+    framesHost.appendChild(el("p", { class: "card-note", text: "Loading frames." }));
+    body.appendChild(framesHost);
     panel.appendChild(body);
     overlay.appendChild(panel);
     document.body.appendChild(overlay);
 
     apiGet("/detections/" + encodeURIComponent(obs.id) + "/frames").then(function (data) {
-      clear(body);
+      clear(framesHost);
       var frames = data.frames || [];
-      body.appendChild(auditDerivation(obs, frames));
+      framesHost.appendChild(auditDerivation(obs, frames));
       if (!frames.length) {
-        body.appendChild(el("p", { class: "empty-state", text: "No stored frames were found for this event on disk." }));
+        framesHost.appendChild(el("p", { class: "empty-state", text: "No stored frames were found for this event on disk." }));
       } else {
-        body.appendChild(auditFrameStrip(frames, species));
+        framesHost.appendChild(auditFrameStrip(frames, species));
       }
     }).catch(function (e) {
-      clear(body);
-      body.appendChild(el("p", { class: "empty-state", text: "Could not load frames: " + e.message }));
+      clear(framesHost);
+      framesHost.appendChild(el("p", { class: "empty-state", text: "Could not load frames: " + e.message }));
     });
   }
 
@@ -1278,6 +1500,7 @@
         var badges = provenanceBadges(obs.data_source, obs.qc_state);
         if (v && v.verified) { badges.push(badge("verified", "ok")); }
         else { badges.push(badge("not verified", "muted")); }
+        correctionBadges(obs).forEach(function (b) { badges.push(b); });
         var meta = [
           obs.event_name || obs.id,
           fmtTime(obs.first_seen),
@@ -1289,15 +1512,15 @@
 
         if (obs.representative_frame) {
           card.appendChild(detectionFrame(obs.representative_frame, species, obs.vision_detections,
-            (function (o) { return function () { openFrameAudit(o); }; })(obs)));
+            (function (o) { return function () { openFrameAudit(o, ctx.reload); }; })(obs)));
           card.appendChild(el("div", { class: "frame-note", text: "highest-confidence frame of this event" }));
         }
         card.appendChild(el("div", { class: "card-meta", text: meta }));
-        card.appendChild(el("div", { class: "card-title", text: species }));
+        card.appendChild(el("div", { class: "card-title", text: displaySpecies(obs, species) }));
         card.appendChild(el("div", { class: "card-stats", text:
           "tracked across " + fmtNum(obs.frame_count) + " frames" +
           "  ·  " + fmtNum(obs.duration, 1) + "s" +
-          "  ·  confidence " + fmtConfidence(obs.screening_confidence) +
+          "  ·  " + displayConfidence(obs, obs.screening_confidence) +
           "  ·  salience " + fmtNum(obs.salience_provisional, 2) }));
         card.appendChild(el("div", { class: "badge-row" }, badges));
         grid.appendChild(card);
@@ -1399,6 +1622,7 @@
         var av = a.verification;
         if (av && av.verified) { badges.push(badge("verified", "ok")); }
         else { badges.push(badge("not verified", "muted")); }
+        correctionBadges(a).forEach(function (b) { badges.push(b); });
         var aConfs = (a.audio_detections || [])
           .map(function (d) { return Number(d.confidence); })
           .filter(function (x) { return !isNaN(x); });
@@ -1412,17 +1636,17 @@
         var head = el("div", { class: "audio-open", role: "button", tabindex: "0",
           "aria-label": "Open audit for this acoustic detection" });
         head.appendChild(el("div", { class: "card-meta", text: (a.event_name || a.id) + " · " + fmtTime(a.first_seen) }));
-        head.appendChild(el("div", { class: "card-title", text: species }));
+        head.appendChild(el("div", { class: "card-title", text: displaySpecies(a, species) }));
         head.appendChild(el("div", { class: "card-stats", text:
           "true duration: " + fmtNum(a.audio_true_duration_seconds, 1) + "s" +
           (a.audio_capped ? " (stored clip capped)" : "") +
-          "  ·  confidence " + fmtConfidence(aPeak) +
+          "  ·  " + displayConfidence(a, aPeak) +
           "  ·  salience " + fmtNum(a.salience_provisional, 2) }));
         head.appendChild(el("div", { class: "badge-row" }, badges));
         (function (obs) {
-          head.addEventListener("click", function () { openAudioAudit(obs); });
+          head.addEventListener("click", function () { openAudioAudit(obs, ctx.reload); });
           head.addEventListener("keydown", function (e) {
-            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openAudioAudit(obs); }
+            if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openAudioAudit(obs, ctx.reload); }
           });
         })(a);
         card.appendChild(head);
@@ -1444,7 +1668,7 @@
   // the stored clip and lists every acoustic detection with its own confidence,
   // then derives the card's numbers (call count, true duration, peak confidence,
   // salience) from those detections so a scientist can verify rather than trust.
-  function openAudioAudit(obs) {
+  function openAudioAudit(obs, onCorrected) {
     var overlay = el("div", { class: "audit-modal" });
     function close() {
       if (overlay.parentNode) { overlay.parentNode.removeChild(overlay); }
@@ -1461,10 +1685,17 @@
 
     var dets = obs.audio_detections || [];
     var species = dets.map(taxonName).join(", ") || "unclassified sound";
-    panel.appendChild(el("div", { class: "audit-title", text: species }));
+    var title = el("div", { class: "audit-title", text: displaySpecies(obs, species) });
+    panel.appendChild(title);
     panel.appendChild(el("div", { class: "card-meta", text: obs.event_name || obs.id }));
 
     var body = el("div", { class: "audit-body" });
+    // The same three verdicts as the visual path, tagged audio so a call heard
+    // and an organism seen stay distinguishable in the review record.
+    body.appendChild(correctionPanel(obs, "audio", function () {
+      title.textContent = displaySpecies(obs, species);
+      if (onCorrected) { onCorrected(obs); }
+    }));
     body.appendChild(audioAuditDerivation(obs, dets));
     if (obs.audio_clip_path) {
       body.appendChild(el("div", { class: "card-note", text: "Stored clip · the exact audio these calls were recognized from" }));
@@ -3429,11 +3660,11 @@
     var src = (st.capture && st.capture.source) || {};
     var vidIn = el("input", { type: "text", class: "form-input", value: src.video || "" });
     editors.push({ scope: "station", field: "capture_source_video", station_id: sid, original: src.video || "", get: function () { return vidIn.value; }, kind: "textOrNull" });
-    body.appendChild(editField("Capture source (video)", vidIn, "webcam:0, url:rtsp://..., stream:<page url>, or file:C:/clip.mp4"));
+    body.appendChild(editField("Capture source (video)", vidIn, "webcam:0, url:rtsp://..., stream:<page url>, or file:C:/clip.mp4. Leave blank for none (Optional)."));
 
     var audIn = el("input", { type: "text", class: "form-input", value: src.audio || "" });
     editors.push({ scope: "station", field: "capture_source_audio", station_id: sid, original: src.audio || "", get: function () { return audIn.value; }, kind: "textOrNull" });
-    body.appendChild(editField("Capture source (audio)", audIn, "Optional. Leave blank for none."));
+    body.appendChild(editField("Capture source (audio)", audIn, "file:C:/clip.wav, url:<direct stream>, stream:<page url>, or a plain path. Leave blank for none (Optional)."));
 
     var sensors = st.sensors || {};
     [["camera", "sensor_camera_enabled", "Camera"], ["audio", "sensor_audio_enabled", "Audio"], ["gps", "sensor_gps_enabled", "GPS"]].forEach(function (t) {
@@ -3592,7 +3823,12 @@
         host.appendChild(el("p", { class: "card-note", text: "No stations are configured yet." }));
         return;
       }
-      var grid = el("div", { class: "card-grid" });
+      // station-model-grid, as the Brain panel's identical grid already uses.
+      // Plain card-grid fills fixed tracks, so two stations sit in the first two
+      // of five and the row trails off into empty space; this variant divides
+      // the row between the cards that exist, so two stations read as two wide
+      // cards rather than a pair pushed into the corner.
+      var grid = el("div", { class: "card-grid station-model-grid" });
       stations.forEach(function (st) {
         grid.appendChild(stationModelBox(st, files, verifierPath));
       });
