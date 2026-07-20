@@ -1421,6 +1421,25 @@ textarea:hover {
   color: var(--text-2);
 }
 
+/* Names the hardware a group of model fields applies to. A model form that is
+   simply a run of similar looking path boxes gives no clue why a desktop model
+   is being set inside a station, so each group states the case it covers and
+   carries a rule above it to separate it from the group before. */
+.form-group-title {
+  margin: var(--space-4) 0 var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+  font-size: var(--text-sm);
+  font-weight: 650;
+  color: var(--text-1);
+}
+
+.form-group-title:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
 /* Inside a station or channel card, each item sits in its own quiet, rounded
    container with even spacing, so the eye tracks one item at a time rather than
    reading a run of rows against a single divider line. The treatment is

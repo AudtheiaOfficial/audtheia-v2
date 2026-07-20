@@ -3658,11 +3658,13 @@
     body.appendChild(editField("Station name", nameIn));
 
     var src = (st.capture && st.capture.source) || {};
-    var vidIn = el("input", { type: "text", class: "form-input", value: src.video || "" });
+    var vidIn = el("input", { type: "text", class: "form-input", value: src.video || "",
+      placeholder: "webcam:0" });
     editors.push({ scope: "station", field: "capture_source_video", station_id: sid, original: src.video || "", get: function () { return vidIn.value; }, kind: "textOrNull" });
     body.appendChild(editField("Capture source (video)", vidIn, "webcam:0, url:rtsp://..., stream:<page url>, or file:C:/clip.mp4. Leave blank for none (Optional)."));
 
-    var audIn = el("input", { type: "text", class: "form-input", value: src.audio || "" });
+    var audIn = el("input", { type: "text", class: "form-input", value: src.audio || "",
+      placeholder: "file:C:/clip.wav" });
     editors.push({ scope: "station", field: "capture_source_audio", station_id: sid, original: src.audio || "", get: function () { return audIn.value; }, kind: "textOrNull" });
     body.appendChild(editField("Capture source (audio)", audIn, "file:C:/clip.wav, url:<direct stream>, stream:<page url>, or a plain path. Leave blank for none (Optional)."));
 
@@ -3800,7 +3802,7 @@
       host.appendChild(el("h4", { text: "This computer" }));
       host.appendChild(modelBox({
         title: "Desktop hub",
-        subtitle: "Runs after an observation has been captured",
+        subtitle: "Runs after an observation has been captured, for every station",
         build: function (box) {
           box.appendChild(modelEntry(
             "Vision verification",
@@ -3814,7 +3816,8 @@
           var rf = desktop.visual_rfdetr || {};
           modelPathFields(editors, box, "global", null, "Verification model (ONNX)",
             "visual_rfdetr_path", "visual_rfdetr_version", "visual_rfdetr_citation", rf,
-            "The high-accuracy model that re-scores saved frames on this computer. Leave empty to set no model.");
+            "The high-accuracy model that re-scores saved frames on this computer, for every station. This is not the model that runs during capture: each station's screening model is set on that station's card below. Leave empty to set no model.",
+            "models/visual/my_verification_model.onnx");
         }
       }));
 
@@ -3931,14 +3934,23 @@
           slots[activeKey], files));
       },
       edit: function (box, editors) {
+        // Both screening models belong to the station, not to a machine: they
+        // are the same job, done wherever this station's capture is running.
+        // Saying so above each group answers the question the old layout
+        // raised, which was why a desktop model is being set inside a station.
+        box.appendChild(el("h5", { class: "form-group-title", text: "When this station runs on its own hardware" }));
         modelPathFields(editors, box, "station", sid, "Field screening model (.hef)",
           "visual_pi_path", "visual_pi_version", "visual_pi_citation", m.visual_pi,
-          "Compiled for the station's accelerator. Leave empty to set no model.");
+          "Compiled for the station's accelerator. Leave empty to set no model.",
+          "models/visual/pi/my_screening_model.hef");
 
+        box.appendChild(el("h5", { class: "form-group-title", text: "When you run this station's capture on this computer" }));
         modelPathFields(editors, box, "station", sid, "Desktop screening model (.onnx)",
           "visual_desktop_path", "visual_desktop_version", "visual_desktop_citation", m.visual_desktop,
-          "Used only when running this station's capture on this computer. Point it at a different model from the verification model, otherwise verification re-scores with identical weights and proves nothing.");
+          "This station's screening model for desktop mode, which is why it is set here and not under This computer. It replaces the field screening model above when there is no field hardware. Point it at a different model from the verification model, otherwise verification re-scores with identical weights and proves nothing.",
+          "models/visual/desktop/my_screening_model.onnx");
 
+        box.appendChild(el("h5", { class: "form-group-title", text: "What this station listens with" }));
         var sel = el("select", { class: "form-input" });
         ["birdnet", "marine", "custom"].forEach(function (key) {
           var opt = el("option", { value: key, text: humanize(key) });
@@ -3955,10 +3967,18 @@
             el("summary", { text: humanize(key) + " acoustic slot" + (key === acoustic.active ? " (active)" : "") })
           ]);
           var entry = slots[key] || {};
+          var modelExample = key === "birdnet"
+            ? "models/acoustic/birdnet/BirdNET_GLOBAL_6K_V2.4_Model_FP16.tflite"
+            : "models/acoustic/" + key + "/my_model.tflite";
+          var labelsExample = key === "birdnet"
+            ? "models/acoustic/birdnet/BirdNET_GLOBAL_6K_V2.4_Labels_en_uk.txt"
+            : "models/acoustic/" + key + "/my_labels.txt";
           modelPathFields(editors, group, "station", sid, "Model file",
             "acoustic_" + key + "_path", "acoustic_" + key + "_version", "acoustic_" + key + "_citation", entry,
-            "Leave empty to set no model for this slot.");
-          var labelsIn = el("input", { type: "text", class: "form-input", value: entry.labels_path || "" });
+            "Leave empty to set no model for this slot. Use the exact filename you downloaded; the example shown is the usual one, not a guarantee.",
+            modelExample);
+          var labelsIn = el("input", { type: "text", class: "form-input", value: entry.labels_path || "",
+            placeholder: labelsExample });
           editors.push({ scope: "station", field: "acoustic_" + key + "_labels_path", station_id: sid, original: entry.labels_path || "", get: function () { return labelsIn.value; }, kind: "textOrNull" });
           group.appendChild(editField("Labels file", labelsIn, "Optional. The class list that names what the model reports."));
           box.appendChild(group);
@@ -3970,14 +3990,18 @@
   // Path, version and citation for one model slot. Every path field clears to
   // null when emptied, so a model can be unset as deliberately as it is set,
   // and no field is ever pre-filled with a filename the system merely guessed.
-  function modelPathFields(editors, host, scope, sid, label, pathField, versionField, citationField, entry, hint) {
+  function modelPathFields(editors, host, scope, sid, label, pathField, versionField, citationField, entry, hint, example) {
     entry = entry || {};
     function push(field, input, original) {
       var e = { scope: scope, field: field, original: original == null ? "" : original, get: function () { return input.value; }, kind: "textOrNull" };
       if (sid) { e.station_id = sid; }
       editors.push(e);
     }
-    var pathIn = el("input", { type: "text", class: "form-input", value: entry.path || "", placeholder: "No model set" });
+    // The example lives in the placeholder, never as a stored value. A shipped
+    // path that names a file nobody has reads as a model that is set and then
+    // fails at capture; shown here it is plainly a form to fill in.
+    var pathIn = el("input", { type: "text", class: "form-input", value: entry.path || "",
+      placeholder: example || "No model set" });
     push(pathField, pathIn, entry.path);
     host.appendChild(editField(label, pathIn, hint));
 

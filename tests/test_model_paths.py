@@ -179,8 +179,37 @@ def main() -> int:
         check("a pasted Windows path is stored with forward slashes",
               stored == "models/visual/mine.onnx", repr(stored))
 
-        # Screening and verification by identical weights.
-        verifier = (draft.get("desktop_models") or {}).get("visual_rfdetr", {}).get("path")
+        # Windows "Copy as path" wraps the path in double quotes and people
+        # paste exactly that. Kept as written, the quotes become part of the
+        # filename, nothing is ever found at it, and the interface reports a
+        # model as missing while displaying a path that looks right on screen.
+        _apply_setting_change(
+            draft,
+            {"scope": "station", "field": "visual_desktop_path", "station_id": sid,
+             "value": '"C:\\Users\\somebody\\models\\mine.onnx"'},
+            specs, warnings, root)
+        quoted = draft["stations"][0]["models"]["visual_desktop"]["path"]
+        check("a quoted Windows path loses its quotes",
+              quoted == "C:/Users/somebody/models/mine.onnx", repr(quoted))
+
+        _apply_setting_change(
+            draft,
+            {"scope": "station", "field": "visual_desktop_path", "station_id": sid,
+             "value": "'models/visual/mine.onnx'"},
+            specs, warnings, root)
+        single = draft["stations"][0]["models"]["visual_desktop"]["path"]
+        check("a single quoted path loses its quotes too",
+              single == "models/visual/mine.onnx", repr(single))
+
+        # Screening and verification by identical weights. The verifier is set
+        # here rather than read from the shipped configuration, which names no
+        # model at all: nothing ships as set, so a suite that needs a configured
+        # model configures one.
+        verifier = "models/visual/shared_weights.onnx"
+        _apply_setting_change(
+            draft,
+            {"scope": "global", "field": "visual_rfdetr_path", "value": verifier},
+            specs, warnings, root)
         warnings.clear()
         _apply_setting_change(
             draft,

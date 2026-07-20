@@ -803,12 +803,23 @@ def _v_path_or_null(value: Any, where: str) -> Optional[str]:
     present, and only its value may be null, so this returns None rather than
     signalling a deletion. Backslashes are normalised so a path pasted from a
     Windows file dialog resolves the same way on the field station.
+
+    A matched pair of surrounding quotes is removed first. Windows "Copy as
+    path" wraps the path in double quotes and people paste exactly that, which
+    is the normal way to get a long path into the field. Kept as written, the
+    quotes become part of the name, no file is ever found at it, and the
+    interface reports a model as missing while pointing at a path that looks
+    correct on screen. Capture sources have always accepted the quoted form, so
+    a model path accepting it too is consistency rather than a new allowance.
     """
     if value is None:
         return None
     if not isinstance(value, str):
         raise SettingsUpdateError(f"{where} must be a file path, or empty to clear it")
-    trimmed = value.strip().replace("\\", "/")
+    trimmed = value.strip()
+    if len(trimmed) >= 2 and trimmed[0] == trimmed[-1] and trimmed[0] in ("'", '"'):
+        trimmed = trimmed[1:-1].strip()
+    trimmed = trimmed.replace("\\", "/")
     return trimmed or None
 
 

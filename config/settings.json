@@ -132,12 +132,12 @@
   },
   "desktop_models": {
     "visual_rfdetr": {
-      "path": "models/visual/porifera_rfdetr.onnx",
-      "version": "2",
-      "citation": "@misc{ official-porifera-classifier-ju8er_dataset,   title = { Official Porifera Classifier Dataset },   type = { Open Source Dataset },   author = { Marine Sciences Research Station },   howpublished = { \\url{ https://universe.roboflow.com/marine-sciences-research-station/official-porifera-classifier-ju8er } },   url = { https://universe.roboflow.com/marine-sciences-research-station/official-porifera-classifier-ju8er },   journal = { Roboflow Universe },   publisher = { Roboflow },   year = { 2025 },   month = { dec },   note = { visited on 2026-07-13 }, }"
+      "path": null,
+      "version": null,
+      "citation": null
     },
     "llm": {
-      "path": "models/llm/",
+      "path": null,
       "version": null,
       "citation": null
     }
@@ -265,10 +265,10 @@
           "active": "marine",
           "options": {
             "birdnet": {
-              "path": "models/acoustic/birdnet/BirdNET_GLOBAL_6K_V2.4_Model_FP16.tflite",
-              "labels_path": "models/acoustic/birdnet/BirdNET_GLOBAL_6K_V2.4_Labels_en_uk.txt",
-              "version": "V2.4",
-              "citation": "Kahl et al., BirdNET, Ecological Informatics, 2021"
+              "path": null,
+              "labels_path": null,
+              "version": null,
+              "citation": null
             },
             "marine": {
               "path": null,
@@ -317,7 +317,7 @@
           "cadence_seconds": 60
         },
         "source": {
-          "video": "https://youtu.be/e1HunZ_Iqac",
+          "video": null,
           "audio": null
         }
       }
@@ -449,10 +449,10 @@
           "active": "birdnet",
           "options": {
             "birdnet": {
-              "path": "models/acoustic/birdnet/BirdNET_GLOBAL_6K_V2.4_Model_FP16.tflite",
-              "labels_path": "models/acoustic/birdnet/BirdNET_GLOBAL_6K_V2.4_Labels_en_uk.txt",
-              "version": "V2.4",
-              "citation": "Kahl et al., BirdNET, Ecological Informatics, 2021"
+              "path": null,
+              "labels_path": null,
+              "version": null,
+              "citation": null
             },
             "marine": {
               "path": null,
@@ -496,7 +496,7 @@
           "cadence_seconds": 60
         },
         "source": {
-          "video": "0",
+          "video": null,
           "audio": null
         }
       }
