@@ -8,7 +8,7 @@ hands it out in fixed-length blocks with media-time timestamps, so a recording
 yields the same event durations no matter how fast the desktop processes it.
 
 `read()` returns `None` once the audio is exhausted, which ends the monitor's
-`run()` cleanly — the desktop analogue of a recorded video reaching its end.
+`run()` cleanly, the desktop analogue of a recorded video reaching its end.
 """
 from __future__ import annotations
 
@@ -106,7 +106,7 @@ def _load_audio(path: Path):
     raise ValueError(
         f"{path.name}: only .wav is decoded with no extra setup. To read "
         f"{path.suffix.lower().lstrip('.') or 'this format'}, put ffmpeg on PATH or "
-        f"install 'soundfile' — or convert the file to a 48 kHz mono WAV."
+        f"install 'soundfile', or convert the file to a 48 kHz mono WAV."
     )
 
 

@@ -63,10 +63,22 @@ REPORT_FORMATS = ("pdf", "csv")
 
 REPRESENTATIVE_FRAME_RULES = ("highest_confidence",)
 
-# The acoustic model slots a station can select between. These are the names of
-# the slots, not of any model: which file fills a slot is configuration, and the
-# adapter each slot uses is chosen by the acoustic pipeline from the slot name.
-ACOUSTIC_MODEL_SLOTS = ("birdnet", "marine", "custom")
+# The acoustic model is a single flat block per station, not a set of named
+# slots. A station sits in one place and listens with one model, so the block
+# carries that model's path, labels path, and the audio shape read from or
+# proposed for the file (sample_rate, window_seconds, output_key), plus version
+# and citation. The keys a valid block may carry; each is optional, and the
+# shape is checked in _validate_station. No model family is ever named here: the
+# adapter is chosen at load time from the file's own form, not from any name.
+ACOUSTIC_BLOCK_KEYS = (
+    "path",
+    "labels_path",
+    "sample_rate",
+    "window_seconds",
+    "output_key",
+    "version",
+    "citation",
+)
 
 # The recurring-period binning rules the longitudinal baseline can use. A cell
 # groups a signal's readings by one of these, so a January reading is compared
@@ -608,6 +620,38 @@ def _contains_machine_path(value: Any) -> bool:
     return _EMBEDDED_MACHINE_PATH.search(value) is not None
 
 
+def unquote_path_value(value: Any) -> Any:
+    """A configured path with one matched pair of surrounding quotes removed.
+
+    Windows "Copy as path" wraps a path in double quotes and people paste that
+    verbatim. Left as written the quotes become part of the filename, nothing is
+    ever found there, and the interface truthfully reports a missing file while
+    displaying a path that looks correct. Removing them on load rather than only
+    on save means a path stored before this existed starts working by itself,
+    instead of having to be found and retyped.
+
+    Separators are deliberately left alone. The save path evens them out, and a
+    value written into the local override file by hand is that machine's own
+    business; rewriting it here would change a stored value that already works.
+
+    Only values under a path key are passed here. A capture source is a source
+    expression rather than a path, and its own reader already unquotes it.
+    """
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in ("'", '"'):
+        text = text[1:-1].strip()
+    return text
+
+
+def normalise_path_values(raw: dict) -> None:
+    """Unquote every configured path in place, so every reader sees the same thing."""
+    for _pointer, key, container, value in _walk_path_values(raw):
+        if _is_path_key(key) and isinstance(value, str):
+            container[key] = unquote_path_value(value)
+
+
 def _element_pointer(element: Any, index: int) -> str:
     """The pointer segment naming one element of a list.
 
@@ -784,6 +828,11 @@ def load_settings(
         apply_local = settings_path.name == CANONICAL_SETTINGS_FILENAME
     local_overrides = _load_local_overrides(local_path) if apply_local else {}
     stale_pointers = apply_local_overrides(raw, local_overrides)
+
+    # Paths are cleaned before validation so what is checked, displayed, and
+    # opened at runtime are the same string, whether it came from the committed
+    # file, the local override file, or a quoted paste made before this existed.
+    normalise_path_values(raw)
 
     _validate(raw)
 
@@ -1105,8 +1154,26 @@ def _validate_station(station: Any, index: int, seen_ids: set, seen_names: set) 
     _require_type(models, (dict,), f"{where}.models")
     visual_pi = _require(models, "visual_pi", f"{where}.models")
     _require(visual_pi, "path", f"{where}.models.visual_pi")
+
+    # The acoustic model is one flat block. Every key is optional, so a station
+    # with no acoustic model set still loads and honestly reads as having none;
+    # what is present is shape-checked so the acoustic capture can rely on it.
     acoustic = _require(models, "acoustic", f"{where}.models")
-    _require(acoustic, "active", f"{where}.models.acoustic")
+    _require_type(acoustic, (dict,), f"{where}.models.acoustic")
+    for str_key in ("path", "labels_path", "output_key"):
+        value = acoustic.get(str_key)
+        if value is not None and not isinstance(value, str):
+            raise ConfigError(f"{where}.models.acoustic.{str_key} must be a string or null")
+    sample_rate = acoustic.get("sample_rate")
+    if sample_rate is not None and (
+        isinstance(sample_rate, bool) or not isinstance(sample_rate, int) or sample_rate <= 0
+    ):
+        raise ConfigError(f"{where}.models.acoustic.sample_rate must be a positive integer or null")
+    window_seconds = acoustic.get("window_seconds")
+    if window_seconds is not None and (
+        isinstance(window_seconds, bool) or not isinstance(window_seconds, (int, float)) or window_seconds <= 0
+    ):
+        raise ConfigError(f"{where}.models.acoustic.window_seconds must be a positive number or null")
 
     # Optional desktop screening model. A desktop node that runs capture without
     # field hardware detects with this model through ONNX Runtime. When absent, a

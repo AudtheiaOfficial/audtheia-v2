@@ -542,6 +542,44 @@ a:hover {
   color: var(--text);
 }
 
+/* A station's summary stacks its name and its deployment badge on separate
+   lines with room to breathe, rather than crowding the badge against the name.
+   The extra vertical padding keeps the card from reading as a thin, compact
+   strip, especially once several stations are listed. */
+.config-card > summary.station-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+}
+.station-summary-name { font-weight: 600; color: var(--text); }
+.station-summary-badges { margin-top: 0; }
+
+/* A visible disclosure caret on the name line, so a collapsed station card reads
+   as an expandable summary rather than a bare title. The default triangle is
+   hidden above; without a replacement, a closed card showed only its name and
+   badge with no affordance, which looked like a card that had rendered its title
+   and lost its rows. The caret points down when closed and up when open. */
+.config-card > summary.station-summary .station-summary-name {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+.config-card > summary.station-summary .station-summary-name::after {
+  content: "";
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-right: 2px solid var(--text-2);
+  border-bottom: 2px solid var(--text-2);
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+}
+.config-card[open] > summary.station-summary .station-summary-name::after {
+  transform: rotate(225deg);
+}
+
 /* ======================================================================
    5. Responsive behavior
    On narrow widths the sidebar collapses to icons, then the labels and brand
@@ -890,8 +928,8 @@ a:hover {
   box-shadow: 0 0 0 2px var(--accent);
 }
 
-/* Cloud Dancer's signature: the boxes that pop up over the page — the audit
-   modal, the enlarged frame, and the source/capture/delete panels — get a soft,
+/* Cloud Dancer's signature: the boxes that pop up over the page (the audit
+   modal, the enlarged frame, and the source/capture/delete panels) get a soft,
    sky-blue "cloud" glow around their border, a nod to the theme's cloudy-sky
    note. This is a theme-scoped component rule (not a variable), which is how a
    theme gets a unique effect rather than only different colours. */
@@ -1298,14 +1336,17 @@ textarea:hover {
 .model-entry { padding: 12px 0; border-top: var(--border-width) solid var(--border-subtle); }
 .model-entry:first-of-type { border-top: 0; }
 .model-entry-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
-/* Where a model runs is aligned to the right edge of its row rather than
-   trailing the title, so the badges form one column down the card instead of
-   starting at a different place on every entry. The name of the model's role is
-   a heading for everything below it, so it carries a heavier weight at the same
-   colour: a reader should be able to find the next entry without first reading
-   the description of the one before it. */
-.model-entry-head .badge { margin-left: auto; }
+/* Where a model runs sits on its own line below the role name rather than being
+   pushed out to the right of it, so the badge never crowds the title and the
+   layout reads the same no matter how many stations are shown. The role name is
+   a heading for everything below it, so it carries a heavier weight. */
+.model-entry-where { margin-top: 6px; margin-bottom: 2px; }
 .model-entry-head .form-label { font-weight: 650; }
+/* The station's deployment badge, directly under the card title, gets the same
+   breathing room below it (down to the first entry's separator line) that a
+   "where it runs" badge has to the text beneath it, so the two badges read with
+   matching rhythm rather than the top one sitting cramped against the line. */
+.card-deployment-row { margin-bottom: var(--space-3); }
 .model-citation { font-family: var(--font-mono); font-size: 11px; line-height: 1.5; word-break: break-word; white-space: normal; }
 
 /* Whether a model's file is actually on disk, stated as its own small status so
@@ -1338,6 +1379,20 @@ textarea:hover {
 }
 
 [data-region="settings-models"] > h4:first-of-type {
+  margin-top: var(--space-3);
+}
+
+/* The same for the Brain panel's section headings ("This computer", "Stations
+   run from this computer", "Vision verification", "Pi Field Stations", and the
+   rest). Without this the "Vision verification" heading sat tight against the
+   station cards above it; the space above each heading separates it from the
+   section before and groups it with the block it introduces. */
+[data-region="brain-models"] > h3,
+[data-region="brain-models"] > h4 {
+  margin: var(--space-5) 0 var(--space-3);
+}
+
+[data-region="brain-models"] > h3:first-of-type {
   margin-top: var(--space-3);
 }
 
@@ -2135,7 +2190,7 @@ textarea:hover {
   margin-top: var(--space-3);
 }
 
-/* Audio cards carry no frame image — only text and a player — so they read as a
+/* Audio cards carry no frame image, only text and a player, so they read as a
    flatter, wider rectangle than a detection card rather than a tall one. The
    head (meta, species, stats, badges) is the click target that opens the audit;
    the player sits below it, outside that target, so pressing play never opens
@@ -2162,7 +2217,7 @@ textarea:hover {
 }
 
 /* The audit's per-call list: one row per recognized call, a species swatch, the
-   name, a confidence bar, and the percentage — the acoustic parallel of the
+   name, a confidence bar, and the percentage, the acoustic parallel of the
    frame strip. */
 .audio-det-list {
   display: flex;

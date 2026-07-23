@@ -93,7 +93,7 @@ def run() -> None:
         r = client.get("/api/health")
         check(r.status_code == 200 and r.json()["status"] == "ok", "health did not report ok")
         r = client.get("/api/stations")
-        check(r.status_code == 200 and len(r.json()) == 2, "stations did not return both stations")
+        check(r.status_code == 200 and len(r.json()) == 2, "stations did not return both seeded stations")
         check(client.get(f"/api/stations/{tr.REEF_ID}").status_code == 200, "known station not served")
         check(client.get("/api/stations/does-not-exist").status_code == 404, "unknown station not a 404")
 
@@ -150,7 +150,11 @@ def run() -> None:
 
         # -- brain ------------------------------------------------------
         models = client.get("/api/brain/models").json()
-        check("desktop_models" in models and len(models["stations"]) == 2, "brain models incomplete")
+        brain_ids = {s.get("station_id") for s in models.get("stations", [])}
+        check("desktop_models" in models and {tr.REEF_ID, tr.FOREST_ID} <= brain_ids,
+              "brain models incomplete")
+        check(all("deployment" in s for s in models.get("stations", [])),
+              "brain models did not classify each station's deployment")
         memory = client.get("/api/brain/memory").json()
         check("site_baselines" in memory, "brain memory did not return the gist container")
         learning = client.get("/api/brain/learning").json()

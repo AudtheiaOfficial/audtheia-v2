@@ -296,6 +296,19 @@ def _compute_audit(db, *, station_id, since, until) -> dict:
     }
     periods: dict = {}
 
+    # Expert corrections are a separate, human-sourced producer and are counted on
+    # their own line, never folded into the automated verifier's numbers, because a
+    # human confirmation and a machine re-score are different claims with different
+    # provenance. "targets" counts distinct corrected targets (a whole event, or one
+    # box inside a multi-taxon event); "observations_with_correction" counts events
+    # carrying any expert verdict. "available" is False only when the database
+    # predates the corrections table, which is a database waiting to be migrated
+    # rather than a fault, and reads as "no corrections yet".
+    expert: dict = {
+        "observations_with_correction": 0, "confirm": 0, "relabel": 0,
+        "reject": 0, "targets": 0, "available": True,
+    }
+
     def _bump(bucket: dict, value) -> None:
         bucket_key = value if value not in (None, "") else "not stated"
         bucket[bucket_key] = bucket.get(bucket_key, 0) + 1
@@ -342,6 +355,27 @@ def _compute_audit(db, *, station_id, since, until) -> dict:
             cell["sum"] += float(value)
             cell["n"] += 1
 
+        # The current expert position on each corrected target in this event. Rows
+        # come back newest first, so the first verdict seen for a target is the one
+        # that currently stands; a corrector who changed their mind is counted once.
+        if expert["available"]:
+            try:
+                rows = db.corrections_for_observation(obs["id"])
+            except sqlite3.OperationalError:
+                expert["available"] = False
+                rows = []
+            latest_by_target: dict = {}
+            for row in rows:
+                target = row.get("detection_id")
+                if target not in latest_by_target:
+                    latest_by_target[target] = row.get("verdict")
+            if latest_by_target:
+                expert["observations_with_correction"] += 1
+                for verdict in latest_by_target.values():
+                    if verdict in ("confirm", "relabel", "reject"):
+                        expert[verdict] += 1
+                        expert["targets"] += 1
+
     def _stats(values: list) -> dict:
         if not values:
             return {"n": 0, "mean": None, "min": None, "max": None}
@@ -377,6 +411,7 @@ def _compute_audit(db, *, station_id, since, until) -> dict:
         "window": {"station_id": station_id, "since": since, "until": until},
         "events": total,
         "verification": verification,
+        "expert": expert,
         "qc": {"by_state": by_state, "by_reason": by_reason},
         "confidence": {"by_modality": {k: _stats(v) for k, v in confidence.items()}, "buckets": buckets},
         "versions": versions,
@@ -688,12 +723,13 @@ def _new_station_dict(station_id: str, name: str, environment: str, habitat: Opt
             "visual_pi": {"path": None, "version": None, "citation": None},
             "visual_desktop": {"path": None, "version": None, "citation": None},
             "acoustic": {
-                "active": "birdnet",
-                "options": {
-                    "birdnet": {"path": None, "labels_path": None, "version": None, "citation": None},
-                    "marine": {"path": None, "version": None, "citation": None},
-                    "custom": {"path": None, "version": None, "citation": None},
-                },
+                "path": None,
+                "labels_path": None,
+                "sample_rate": None,
+                "window_seconds": None,
+                "output_key": None,
+                "version": None,
+                "citation": None,
             },
         },
         "capture": {
@@ -855,6 +891,28 @@ def _v_number_or_null(value: Any, where: str) -> Optional[float]:
     return _v_number(value, where)
 
 
+def _v_positive_number_or_null(value: Any, where: str) -> Optional[float]:
+    """A number greater than zero, or null to clear the value.
+
+    Used for an acoustic model's window length, which a person may enter or
+    leave unset for the model file's own shape to supply.
+    """
+    if value is None:
+        return None
+    return _v_positive_number(value, where)
+
+
+def _v_positive_int_or_null(value: Any, where: str) -> Optional[int]:
+    """A whole number greater than zero, or null to clear the value.
+
+    Used for an acoustic model's sample rate, which is not stored in the model
+    file and so is entered or confirmed once rather than read.
+    """
+    if value is None:
+        return None
+    return _v_positive_int(value, where)
+
+
 def _v_report_formats(value: Any, where: str) -> list:
     from audtheia.config import REPORT_FORMATS
 
@@ -905,7 +963,6 @@ def _editable_field_specs() -> dict:
         DREAM_SCHEDULES,
         ANALYSIS_LOCATIONS,
         BASELINE_PERIOD_GRANULARITIES,
-        ACOUSTIC_MODEL_SLOTS,
     )
 
     return {
@@ -959,23 +1016,17 @@ def _editable_field_specs() -> dict:
             "visual_desktop_path": {"path": ["models", "visual_desktop", "path"], "validate": _v_path_or_null, "is_path": True},
             "visual_desktop_version": {"path": ["models", "visual_desktop", "version"], "validate": _v_str_or_null},
             "visual_desktop_citation": {"path": ["models", "visual_desktop", "citation"], "validate": _v_str_or_null},
-            # The acoustic model was previously unreachable from the interface, so
-            # a station could only be made to listen by editing settings.json by
-            # hand. Each slot is addressed by name rather than through the active
-            # one, so a slot can be prepared before it is selected.
-            "acoustic_active": {"path": ["models", "acoustic", "active"], "validate": _v_choice(ACOUSTIC_MODEL_SLOTS)},
-            "acoustic_birdnet_path": {"path": ["models", "acoustic", "options", "birdnet", "path"], "validate": _v_path_or_null, "is_path": True},
-            "acoustic_birdnet_labels_path": {"path": ["models", "acoustic", "options", "birdnet", "labels_path"], "validate": _v_path_or_null, "is_path": True},
-            "acoustic_birdnet_version": {"path": ["models", "acoustic", "options", "birdnet", "version"], "validate": _v_str_or_null},
-            "acoustic_birdnet_citation": {"path": ["models", "acoustic", "options", "birdnet", "citation"], "validate": _v_str_or_null},
-            "acoustic_marine_path": {"path": ["models", "acoustic", "options", "marine", "path"], "validate": _v_path_or_null, "is_path": True},
-            "acoustic_marine_labels_path": {"path": ["models", "acoustic", "options", "marine", "labels_path"], "validate": _v_path_or_null, "is_path": True},
-            "acoustic_marine_version": {"path": ["models", "acoustic", "options", "marine", "version"], "validate": _v_str_or_null},
-            "acoustic_marine_citation": {"path": ["models", "acoustic", "options", "marine", "citation"], "validate": _v_str_or_null},
-            "acoustic_custom_path": {"path": ["models", "acoustic", "options", "custom", "path"], "validate": _v_path_or_null, "is_path": True},
-            "acoustic_custom_labels_path": {"path": ["models", "acoustic", "options", "custom", "labels_path"], "validate": _v_path_or_null, "is_path": True},
-            "acoustic_custom_version": {"path": ["models", "acoustic", "options", "custom", "version"], "validate": _v_str_or_null},
-            "acoustic_custom_citation": {"path": ["models", "acoustic", "options", "custom", "citation"], "validate": _v_str_or_null},
+            # The acoustic model is one flat block: a station listens with one
+            # model in one place. The path and labels file are set here, along
+            # with the audio shape the file expects (sample rate, window length,
+            # output key) and the version and citation. No model family is named.
+            "acoustic_path": {"path": ["models", "acoustic", "path"], "validate": _v_path_or_null, "is_path": True},
+            "acoustic_labels_path": {"path": ["models", "acoustic", "labels_path"], "validate": _v_path_or_null, "is_path": True},
+            "acoustic_sample_rate": {"path": ["models", "acoustic", "sample_rate"], "validate": _v_positive_int_or_null},
+            "acoustic_window_seconds": {"path": ["models", "acoustic", "window_seconds"], "validate": _v_positive_number_or_null},
+            "acoustic_output_key": {"path": ["models", "acoustic", "output_key"], "validate": _v_str_or_null},
+            "acoustic_version": {"path": ["models", "acoustic", "version"], "validate": _v_str_or_null},
+            "acoustic_citation": {"path": ["models", "acoustic", "citation"], "validate": _v_str_or_null},
             "capture_fps": {"path": ["capture", "fps"], "validate": _v_positive_number},
             "resolution_width": {"path": ["capture", "resolution", "width"], "validate": _v_positive_number},
             "resolution_height": {"path": ["capture", "resolution", "height"], "validate": _v_positive_number},
@@ -1092,6 +1143,41 @@ def _apply_setting_change(draft: dict, change: Any, specs: dict, warnings: list,
         if not candidate.exists():
             warnings.append(f"{where}: no file is present yet at {value}")
 
+        # A slot takes one kind of file, and the kinds are not interchangeable:
+        # an acoustic model in a visual screening slot reports itself present
+        # and then fails at capture, while the acoustic slot it belonged in
+        # still reads as empty. The shape is knowable from the filename, so it
+        # is said here rather than left to be discovered during a run.
+        expected = _EXPECTED_MODEL_SUFFIXES.get(field)
+        suffix = candidate.suffix.lower()
+        if expected and suffix and suffix not in expected:
+            warnings.append(
+                f"{where}: this slot expects {' or '.join(sorted(expected))} and "
+                f"the file given ends in {suffix}. {_SLOT_PURPOSE.get(field, '')} "
+                f"Check the file is in the slot you meant."
+            )
+
+        # A classifier reports a class number, and the labels file is what turns
+        # that number into a name. Without one the model runs perfectly well and
+        # every detection is recorded as a bare index, which reads like a
+        # species identifier and is not one. Said at the moment the model is
+        # set, because that is the moment the labels file is to hand. The
+        # acoustic slot never enforces a file type: the model may be TFLite, a
+        # SavedModel, ONNX, or another form, so only the missing-labels case and
+        # a label-count mismatch are reported, never a suffix.
+        if field == "acoustic_path":
+            station = _find_station_in(draft, change.get("station_id")) or {}
+            acoustic = ((station.get("models") or {}).get("acoustic")) or {}
+            labels_value = acoustic.get("labels_path")
+            if not labels_value:
+                warnings.append(
+                    f"{where}: no labels file is set for this model, so detections "
+                    f"will be recorded by class number instead of a name. Set the "
+                    f"acoustic labels file as well."
+                )
+            else:
+                warnings.extend(_acoustic_label_count_warnings(where, candidate, labels_value, repo_root))
+
     # Verification by the same weights is not verification. A desktop screening
     # model that is the same file as the hub verifier means an event is scored
     # and then re-scored by one model, so the agreement recorded against it
@@ -1106,6 +1192,143 @@ def _apply_setting_change(draft: dict, change: Any, specs: dict, warnings: list,
                 f"agreement figures recorded for this station would not be "
                 f"independent evidence."
             )
+
+
+# What kind of file each visual slot takes. These two are fixed by the runtime
+# that loads them, not by what is being studied: a Hailo accelerator reads a
+# compiled .hef and nothing else, and the desktop reads ONNX through ONNX
+# Runtime. So a mismatch here is always an error worth reporting.
+#
+# The acoustic slots are deliberately absent. An acoustic model may be TFLite,
+# a TensorFlow SavedModel, ONNX, or another form entirely, depending on what
+# the person trained and on what they are listening to. Whoever is recording
+# cetaceans, bats, or reef fish will not be carrying the same file type as
+# whoever is recording birds, and the application must not assume otherwise.
+_EXPECTED_MODEL_SUFFIXES = {
+    "visual_pi_path": {".hef"},
+    "visual_desktop_path": {".onnx"},
+    "visual_rfdetr_path": {".onnx"},
+}
+
+# Said alongside a mismatch so the message names what the slot is for, rather
+# than only reporting that the file chosen is wrong.
+_SLOT_PURPOSE = {
+    "visual_pi_path": "This slot is the station's own screening model, compiled for its accelerator.",
+    "visual_desktop_path": "This slot screens video frames during desktop capture. A model that listens to audio belongs in the acoustic slot.",
+    "visual_rfdetr_path": "This slot re-scores saved video frames on this computer.",
+}
+
+def _station_deployment(station: dict) -> dict:
+    """Where a station runs, read from its configuration rather than assumed.
+
+    A station is a field deployment when it carries a screening model compiled
+    for its accelerator (models.visual_pi.path, a .hef that cannot exist without
+    the field hardware). It runs on the desktop when it carries a desktop
+    screening model (models.visual_desktop.path) or a desktop capture source
+    (capture.source.video or capture.source.audio). A station may be both, and
+    one that is neither is simply unconfigured and is reported as such rather
+    than being filed under either. This is what a station is classified by, so a
+    station created on this computer is not assumed to be out in a field.
+    """
+    models = station.get("models") or {}
+    source = (station.get("capture") or {}).get("source") or {}
+    field = bool((models.get("visual_pi") or {}).get("path"))
+    desktop = (
+        bool((models.get("visual_desktop") or {}).get("path"))
+        or bool(source.get("video"))
+        or bool(source.get("audio"))
+    )
+    return {"field": field, "desktop": desktop, "configured": field or desktop}
+
+
+def _normalise_entered_path(text: str) -> str:
+    """Strip one matched quote pair and normalise separators, as the save path does.
+
+    Windows "Copy as path" wraps a path in double quotes and uses backslashes;
+    pasted verbatim, the quotes would become part of the name and no file would
+    be found. This applies the same healing the guarded save applies, so a probe
+    at entry resolves the same file the save eventually will.
+    """
+    trimmed = str(text).strip()
+    if len(trimmed) >= 2 and trimmed[0] == trimmed[-1] and trimmed[0] in ("'", '"'):
+        trimmed = trimmed[1:-1].strip()
+    return trimmed.replace("\\", "/")
+
+
+def _load_acoustic_shape_proposals(settings) -> dict:
+    """The sample-rate proposal table, keyed by measured model fingerprint.
+
+    Lives in config/model_sources.json as data, not code, so no model family is
+    named in any configuration key or validation rule. Read only to offer a
+    proposed sample rate for a recognised fingerprint; a missing or unreadable
+    file simply yields no proposal, and the rate is then entered by hand.
+    """
+    try:
+        path = Path(settings.repo_root) / "config" / "model_sources.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        block = data.get("acoustic_shape_proposals", {})
+        by_fingerprint = block.get("by_fingerprint", {})
+        return by_fingerprint if isinstance(by_fingerprint, dict) else {}
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return {}
+
+
+def _count_label_lines(labels_path: Path) -> Optional[int]:
+    """How many class names a labels file holds, or None if it cannot be read.
+
+    A `.json` file may hold a list of names or an index-to-name map; any other
+    file is one name per line, blank lines and comment lines ignored. A file that
+    cannot be read yields None so the caller simply skips the count check.
+    """
+    try:
+        text = labels_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if labels_path.suffix.lower() == ".json":
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return None
+        if isinstance(parsed, (list, tuple)):
+            return len(parsed)
+        if isinstance(parsed, dict):
+            return len(parsed)
+        return None
+    return len([ln for ln in text.splitlines() if ln.strip() and not ln.strip().startswith("#")])
+
+
+def _acoustic_label_count_warnings(where: str, model_candidate: Path, labels_value: str, repo_root) -> list:
+    """Warn when a labels file's line count disagrees with the model's class head.
+
+    A labels file with one fewer or one more line than the model has classes is
+    a silent off-by-one that a presence check cannot catch: every detection is
+    then named by the wrong neighbour. The class-head width is read from the
+    model file when it is a probeable `.tflite`; when it is not, or either file
+    is absent, no count is possible and nothing is warned, since a missing file
+    is already reported elsewhere. No file type is required of the model here.
+    """
+    warnings: list = []
+    labels_candidate = Path(labels_value)
+    if not labels_candidate.is_absolute():
+        labels_candidate = Path(repo_root) / labels_candidate
+    if not labels_candidate.exists() or not model_candidate.exists():
+        return warnings
+    if model_candidate.suffix.lower() != ".tflite":
+        return warnings
+    try:
+        from audtheia.pipeline.acoustic import probe_acoustic_model
+        probed = probe_acoustic_model(model_candidate)
+        class_count = probed.get("read", {}).get("class_count")
+    except Exception:  # noqa: BLE001 - a model that cannot be probed just skips the check
+        class_count = None
+    label_count = _count_label_lines(labels_candidate)
+    if class_count and label_count and class_count != label_count:
+        warnings.append(
+            f"{where}: this labels file has {label_count} names but the model has "
+            f"{class_count} classes. A mismatch means detections are named by the "
+            f"wrong class. Check the labels file matches the model."
+        )
+    return warnings
 
 
 # How many recent observations to scan when finding each channel's most recent
@@ -1346,6 +1569,12 @@ def create_app(settings, database):
         reason: Optional[str] = None
         corrector: Optional[str] = None
 
+    class ModelProbeRequest(BaseModel):
+        path: Optional[str] = None
+        kind: Optional[str] = None
+        labels_path: Optional[str] = None
+        field: Optional[str] = None
+
     # -- meta ------------------------------------------------------------
 
     @app.get(f"{API_PREFIX}/health")
@@ -1452,8 +1681,8 @@ def create_app(settings, database):
         The capture pipeline writes each detected frame to the event directory and
         appends one line per frame to `annotations.jsonl` (index, timestamp,
         confidence, box), alongside an `annotations.json` manifest. This read-only
-        endpoint surfaces both so the interface can audit an observation's stats —
-        the frame count, the true duration, and the per-frame confidences — rather
+        endpoint surfaces both so the interface can audit an observation's stats
+        (the frame count, the true duration, and the per-frame confidences) rather
         than asking the scientist to trust them. Boxes are converted to the same
         x/y/w/h form the card overlay uses. Nothing is written or deleted.
         """
@@ -1748,6 +1977,7 @@ def create_app(settings, database):
                 "station_id": station_conf.get("station_id"),
                 "station_name": station_conf.get("station_name"),
                 "models": station_conf.get("models", {}),
+                "deployment": _station_deployment(station_conf),
             })
         desktop_models = settings.raw.get("desktop_models", {})
 
@@ -1780,6 +2010,74 @@ def create_app(settings, database):
             _walk(item.get("models", {}))
 
         return {"desktop_models": desktop_models, "stations": stations_models, "files": files}
+
+    @app.post(f"{API_PREFIX}/models/probe")
+    def probe_model(request: ModelProbeRequest):
+        """Confirm, at the moment a path is entered, whether its file is present.
+
+        A path typed or pasted into a model field is checked here without waiting
+        for a save or a trip elsewhere: the same quote and separator handling the
+        save path uses is applied, so a path copied from a Windows dialog resolves
+        to the same file, and the file's presence and size are reported so a
+        zero-byte or partial download is visible. For an acoustic model the file's
+        own audio shape is read and reported separately from any proposed sample
+        rate, and when a labels file is given its line count is compared with the
+        model's class-head width. No file type is ever required of an acoustic
+        model; only visual slots have a fixed runtime format, reported on save.
+        """
+        raw = request.path
+        if not isinstance(raw, str) or not raw.strip():
+            return {"path": raw, "present": False, "size_bytes": None, "note": "no path given"}
+        resolved_text = _normalise_entered_path(raw)
+        resolved = Path(resolved_text)
+        if not resolved.is_absolute():
+            resolved = Path(settings.repo_root) / resolved
+        present = resolved.exists()
+        is_file = resolved.is_file()
+        size_bytes = resolved.stat().st_size if is_file else None
+        result: dict = {
+            "path": resolved_text,
+            "present": present,
+            "is_file": is_file,
+            "size_bytes": size_bytes,
+        }
+
+        # A visual slot is fixed by the runtime that loads it (a Hailo accelerator
+        # reads .hef, the desktop reads .onnx), so the wrong file type is worth
+        # flagging at the moment it is entered. Acoustic slots never enforce a
+        # type, per the taxon-agnostic rule, so no suffix is checked for them.
+        expected = _EXPECTED_MODEL_SUFFIXES.get(request.field or "")
+        if expected:
+            suffix = resolved.suffix.lower()
+            result["expected_suffixes"] = sorted(expected)
+            result["suffix_ok"] = (not suffix) or (suffix in expected)
+
+        if (request.kind or "").lower() == "acoustic" and present:
+            try:
+                from audtheia.pipeline.acoustic import probe_acoustic_model
+                proposals = _load_acoustic_shape_proposals(settings)
+                probed = probe_acoustic_model(resolved, proposals=proposals)
+                result["acoustic"] = probed
+                class_count = probed.get("read", {}).get("class_count")
+            except Exception as exc:  # noqa: BLE001 - an unprobeable model still reports presence
+                result["acoustic"] = {"error": str(exc)}
+                class_count = None
+
+            labels_raw = request.labels_path
+            if isinstance(labels_raw, str) and labels_raw.strip():
+                labels_resolved = Path(_normalise_entered_path(labels_raw))
+                if not labels_resolved.is_absolute():
+                    labels_resolved = Path(settings.repo_root) / labels_resolved
+                labels_present = labels_resolved.is_file()
+                label_count = _count_label_lines(labels_resolved) if labels_present else None
+                result["labels"] = {
+                    "present": labels_present,
+                    "count": label_count,
+                    "matches_class_count": (
+                        None if not (class_count and label_count) else class_count == label_count
+                    ),
+                }
+        return result
 
     @app.get(f"{API_PREFIX}/brain/llm")
     def brain_llm():
@@ -2114,6 +2412,143 @@ def create_app(settings, database):
         if not target.is_file():
             raise HTTPException(status_code=404, detail="no such report file")
         return FileResponse(str(target))
+
+    # -- on-demand processing: run the longitudinal pass, quality control,
+    # verification, and reports now, rather than waiting for the capture-time
+    # scheduler. The scheduler only advances while capture is running and counts
+    # elapsed capture-thread time, so a desktop that captures in bursts never
+    # reaches a weekly cadence; these controls let a person exercise each stage
+    # directly and see what it did.
+
+    def _station_ids_for(station_id):
+        """The station ids a run-now control should act on.
+
+        A named station acts on that station alone; no station named acts on every
+        configured station, so a control offered while viewing all stations does
+        what the reader sees. An unknown id is refused rather than silently doing
+        nothing.
+        """
+        if station_id:
+            _require_station(station_id)
+            return [station_id]
+        return [s.get("station_id") for s in settings.stations() if s.get("station_id")]
+
+    @app.post(f"{API_PREFIX}/qc/run")
+    def qc_run(station_id: Optional[str] = Query(default=None)):
+        """Finalize every observation still awaiting quality control, now."""
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="processing runs on the desktop; this node is not the desktop.")
+        from audtheia.app.orchestrator import DesktopStation
+
+        finalized = 0
+        stations = _station_ids_for(station_id)
+        try:
+            for sid in stations:
+                finalized += DesktopStation.build(settings, station_id=sid).qc_pending()
+        except Exception as exc:  # noqa: BLE001 - reported as a clear client error
+            raise HTTPException(status_code=422, detail=f"could not run quality control: {exc}") from exc
+        return {
+            "ran": True, "finalized": finalized, "stations": len(stations),
+            "note": ("finalized every record still awaiting quality control"
+                     if finalized else "no record was awaiting quality control"),
+        }
+
+    @app.post(f"{API_PREFIX}/verify/run")
+    def verify_run(station_id: Optional[str] = Query(default=None)):
+        """Re-score and gate every eligible observation not yet verified, now."""
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="processing runs on the desktop; this node is not the desktop.")
+        from audtheia.app.orchestrator import DesktopStation
+
+        verified = 0
+        stations = _station_ids_for(station_id)
+        try:
+            for sid in stations:
+                verified += DesktopStation.build(settings, station_id=sid).verify_pending()
+        except Exception as exc:  # noqa: BLE001 - reported as a clear client error
+            raise HTTPException(status_code=422, detail=f"could not run verification: {exc}") from exc
+        # The desktop verifier is a single installation-wide model, so it gives a
+        # meaningful verdict only for stations studying its target group; running
+        # it over records it was not trained for is why a per-station verifier is
+        # tracked but not built yet. That is stated so a zero here is read as scope,
+        # not failure.
+        note = (f"re-scored and gated {verified} eligible observation(s)" if verified
+                else "no eligible observation was awaiting verification, or none fell in the desktop verifier's target group")
+        return {"ran": True, "verified": verified, "stations": len(stations), "note": note}
+
+    @app.post(f"{API_PREFIX}/dream/run")
+    def dream_run(station_id: Optional[str] = Query(default=None)):
+        """Run one longitudinal (dream) pass over the verified record, now."""
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="the longitudinal pass runs on the desktop; this node is not the desktop.")
+        active = next((p for p in db.list_dream_passes() if p.get("status") == "running"), None)
+        if active:
+            raise HTTPException(status_code=409, detail="a longitudinal pass is already running; let it finish or pause it first.")
+        from audtheia.app.orchestrator import DesktopStation
+
+        # The pass reads the whole verified record, so it is built against one
+        # station only to wire the engine; its scope is the record, not that
+        # station. A configured station id is used when present so the build is
+        # deterministic even before any capture source is set.
+        stations = _station_ids_for(station_id)
+        if not stations:
+            raise HTTPException(status_code=422, detail="configure a station first; the longitudinal pass needs the record a station produces.")
+        try:
+            result = DesktopStation.build(settings, station_id=stations[0]).dream_once()
+        except Exception as exc:  # noqa: BLE001 - reported as a clear client error
+            raise HTTPException(status_code=422, detail=f"could not run the longitudinal pass: {exc}") from exc
+        narration = bool(_active_llm_name(settings))
+        note = "candidate patterns are hypotheses tagged 'dream', never findings"
+        if not narration:
+            note += "; the desktop language model is unavailable, so this pass ran its structural half only, with no narration"
+        return {
+            "ran": True,
+            "dream_pass_id": result.dream_pass_id,
+            "status": result.status,
+            "cycles_completed": result.cycles_completed,
+            "observations_consolidated": result.observations_consolidated,
+            "salience_scored": result.salience_scored,
+            "patterns_emitted": result.patterns_emitted,
+            "narration_available": narration,
+            "note": note,
+        }
+
+    @app.post(f"{API_PREFIX}/reports/run")
+    def reports_run(request: ReportRequest):
+        """Generate a report now and return where it was written.
+
+        This runs synchronously so the control can report exactly what it produced,
+        unlike POST /reports which schedules generation in the background.
+        """
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="report generation runs on the desktop; this node is not the desktop.")
+        from audtheia.reports.generate import generate_report
+
+        try:
+            result = generate_report(
+                settings, db,
+                station_id=request.station_id, start=request.start, end=request.end,
+                formats=request.formats, generated_at=_utc_now_iso(),
+            )
+        except Exception as exc:  # noqa: BLE001 - reported as a clear client error
+            raise HTTPException(status_code=422, detail=f"could not generate the report: {exc}") from exc
+        reports_dir = Path(settings.path("reports_dir")).resolve()
+
+        def _rel(p):
+            try:
+                return str(Path(p).resolve().relative_to(reports_dir))
+            except (ValueError, OSError):
+                return str(p)
+
+        return {
+            "ran": True,
+            "formats": result.formats,
+            "bundle": Path(result.bundle_dir).name,
+            "pdf": _rel(result.pdf_path) if result.pdf_path else None,
+            "csv": [_rel(p) for p in result.csv_paths],
+            "note": ("wrote " + ", ".join(result.formats) + " to the reports folder"
+                     if result.formats else "no output format was produced"),
+        }
 
     @app.get(f"{API_PREFIX}/media")
     def media_file(path: str = Query(...)):

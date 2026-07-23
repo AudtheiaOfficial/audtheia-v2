@@ -465,49 +465,50 @@ def scenario_tuning_from_config(settings):
 
 
 def scenario_model_selection(settings):
-    print("\n[8] The acoustic model is selected by configuration; swapping needs no code change")
+    print("\n[8] The acoustic model is selected by the file's form; swapping needs no code change")
     station = settings.active_station()
-    active = station["models"]["acoustic"]["active"]
-    check("marine station selects the marine slot by config", active == "marine")
+    acoustic = station["models"]["acoustic"]
+    check("the acoustic block is flat, with no slot selector", "active" not in acoustic and "options" not in acoustic)
 
-    # With no model file on disk the factory refuses clearly rather than guessing.
+    # With no model path configured the factory refuses clearly rather than guessing.
     raised = False
     try:
         build_acoustic_model(station, settings)
     except (FileNotFoundError, ValueError):
         raised = True
-    check("factory refuses a slot with no model file present", raised)
+    check("factory refuses an acoustic block with no model path", raised)
 
-    # Point the marine slot at a throwaway file and confirm the factory reaches
-    # the marine adapter (which then tries to load TensorFlow, absent here).
+    # A SavedModel directory routes to the SavedModel adapter, chosen from the
+    # file's own form and not from any configured name (which then tries to load
+    # TensorFlow, absent here).
     import copy
     st = copy.deepcopy(station)
     with tempfile.TemporaryDirectory() as d:
-        fake = Path(d) / "surfperch_savedmodel"
+        fake = Path(d) / "some_savedmodel"
         fake.mkdir()
-        st["models"]["acoustic"]["options"]["marine"]["path"] = str(fake)
+        (fake / "saved_model.pb").write_bytes(b"not a real saved model")
+        st["models"]["acoustic"]["path"] = str(fake)
         reached_adapter = False
         try:
             build_acoustic_model(st, settings)
         except Exception as exc:  # noqa: BLE001
             # A missing TensorFlow or an unreadable SavedModel both prove the
-            # marine adapter was reached without any code change to select it.
+            # SavedModel adapter was reached without any code change to select it.
             reached_adapter = "tensorflow" in str(exc).lower() or "saved" in str(exc).lower() or isinstance(exc, ImportError)
-        check("marine slot routes to the reef adapter with no code change", reached_adapter)
+        check("a SavedModel directory routes to the SavedModel adapter with no code change", reached_adapter)
 
-    # Switching the active slot to birdnet routes to the bird adapter instead.
+    # A .tflite file routes to the TFLite adapter instead, again by form alone.
     st2 = copy.deepcopy(station)
-    st2["models"]["acoustic"]["active"] = "birdnet"
     with tempfile.TemporaryDirectory() as d:
-        fake = Path(d) / "birdnet.tflite"
+        fake = Path(d) / "some_model.tflite"
         fake.write_bytes(b"not a real model")
-        st2["models"]["acoustic"]["options"]["birdnet"]["path"] = str(fake)
+        st2["models"]["acoustic"]["path"] = str(fake)
         routed = False
         try:
             build_acoustic_model(st2, settings)
         except Exception:  # noqa: BLE001 - reaching the adapter is the point
             routed = True
-        check("changing the active slot to birdnet routes to the bird adapter", routed)
+        check("a .tflite file routes to the TFLite adapter", routed)
 
 
 def scenario_soundscape_default_off(settings):

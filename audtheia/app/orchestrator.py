@@ -380,7 +380,7 @@ class DesktopStation:
         monitor.start()
         # A processing scheduler runs alongside capture so acoustic events are
         # quality-controlled, cleared by the acoustic-confidence gate, and fed to
-        # the dream pass without a terminal — the same chain the visual capture
+        # the dream pass without a terminal, the same chain the visual capture
         # gets, with run_qc on because there is no Pi to finalize QC first.
         stop = threading.Event()
         scheduler = threading.Thread(

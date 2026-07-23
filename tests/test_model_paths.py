@@ -51,7 +51,7 @@ def main() -> int:
         return 0
 
     from audtheia.app.server import _new_station_dict, _same_model_file
-    from audtheia.config import ACOUSTIC_MODEL_SLOTS, load_settings
+    from audtheia.config import ACOUSTIC_BLOCK_KEYS, load_settings
 
     # -- a new station claims no model at all ----------------------------
     station = _new_station_dict("11111111-1111-1111-1111-111111111111", "TestBay", "marine", None)
@@ -62,12 +62,15 @@ def main() -> int:
           repr(models["visual_pi"]["path"]))
     check("a new station claims no desktop screening model", models["visual_desktop"]["path"] is None,
           repr(models["visual_desktop"]["path"]))
-    slots = models["acoustic"]["options"]
-    check("a new station claims no acoustic model in any slot",
-          all(slots[k].get("path") is None for k in ACOUSTIC_MODEL_SLOTS),
-          repr({k: slots[k].get("path") for k in ACOUSTIC_MODEL_SLOTS}))
-    check("every acoustic slot named in the vocabulary exists",
-          all(k in slots for k in ACOUSTIC_MODEL_SLOTS))
+    acoustic = models["acoustic"]
+    check("the acoustic block is flat, with no slot selector or slot map",
+          "active" not in acoustic and "options" not in acoustic,
+          repr(sorted(acoustic.keys())))
+    check("a new station claims no acoustic model", acoustic.get("path") is None,
+          repr(acoustic.get("path")))
+    check("the flat acoustic block carries every expected key",
+          all(k in acoustic for k in ACOUSTIC_BLOCK_KEYS),
+          repr(sorted(acoustic.keys())))
 
     # A configured path must be a shareable destination: repository relative,
     # inside the models directory, and naming no one machine. Presence on disk
@@ -103,15 +106,13 @@ def main() -> int:
     check("every shipped model path sits under the models directory",
           not stray, f"outside {models_dir}: {stray}")
 
-    # The destination a downloader actually writes, rather than a filename that
-    # reads plausibly and is produced by nothing, is what makes a path real.
-    birdnet_default = "BirdNET_GLOBAL_6K_V2.4_Model_FP16.tflite"
-    fetch_source = (REPO_ROOT / "scripts" / "fetch_birdnet.py").read_text(encoding="utf-8")
-    named_birdnet = [p for p in shipped if p.endswith(".tflite")]
-    check("a shipped BirdNET path names the file its downloader writes",
-          all(Path(p).name == birdnet_default for p in named_birdnet)
-          and birdnet_default in fetch_source,
-          f"named: {named_birdnet}")
+    # Nothing ships as set, which is the point: the application is deployed to
+    # listen for and watch whatever the station was put there for, and naming a
+    # model in the shipped configuration would presume the subject. A person
+    # recording cetaceans, bats or reef fish starts from the same empty slots as
+    # a person recording birds.
+    check("the shipped configuration names no model at all",
+          not shipped, f"shipped: {shipped}")
 
     # -- clearing a path to null, through the guarded write path ----------
     with tempfile.TemporaryDirectory() as tmp:
@@ -152,22 +153,24 @@ def main() -> int:
         check("clearing a path keeps the key, which the validator requires", "path" in entry)
         check("clearing a path warns about nothing", not warnings, repr(warnings))
 
-        # The acoustic model was unreachable from the interface before this.
+        # The acoustic model is one flat block, reachable from the interface by
+        # the flat field keys. No model family is named here.
         _apply_setting_change(
             draft,
-            {"scope": "station", "field": "acoustic_birdnet_path", "station_id": sid,
-             "value": "models/acoustic/birdnet/BirdNET_GLOBAL_6K_V2.4_Model_FP16.tflite"},
+            {"scope": "station", "field": "acoustic_path", "station_id": sid,
+             "value": "models/acoustic/my_model.tflite"},
             specs, warnings, root)
-        heard = draft["stations"][0]["models"]["acoustic"]["options"]["birdnet"]["path"]
+        heard = draft["stations"][0]["models"]["acoustic"]["path"]
         check("an acoustic model path is editable",
-              heard == "models/acoustic/birdnet/BirdNET_GLOBAL_6K_V2.4_Model_FP16.tflite", repr(heard))
+              heard == "models/acoustic/my_model.tflite", repr(heard))
 
         _apply_setting_change(
             draft,
-            {"scope": "station", "field": "acoustic_active", "station_id": sid, "value": "birdnet"},
+            {"scope": "station", "field": "acoustic_sample_rate", "station_id": sid, "value": 48000},
             specs, warnings, root)
-        check("the active acoustic slot is selectable",
-              draft["stations"][0]["models"]["acoustic"]["active"] == "birdnet")
+        check("the acoustic sample rate is editable on the flat block",
+              draft["stations"][0]["models"]["acoustic"]["sample_rate"] == 48000,
+              repr(draft["stations"][0]["models"]["acoustic"]["sample_rate"]))
 
         # A Windows-style path saves in the one separator the field station reads.
         _apply_setting_change(

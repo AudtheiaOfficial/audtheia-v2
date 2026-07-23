@@ -4,20 +4,22 @@
 BirdNET (Kahl et al., 2021) is the terrestrial/avian acoustic classifier. Its
 model file is not bundled with Audtheia, so this one-time helper downloads the
 BirdNET GLOBAL 6K V2.4 audio classifier and drops it into
-`models/acoustic/birdnet/` where a station's `birdnet` model slot expects it.
-Labels are handled too: if a BirdNET labels file is already beside the model it
-is kept; otherwise pass one with `--labels`.
+`models/acoustic/birdnet/`. A station points its single acoustic model at the
+downloaded file, so this is one concrete model a person may choose; the platform
+itself names no model family. Labels are handled too: if a BirdNET labels file is
+already beside the model it is kept; otherwise pass one with `--labels`.
 
 This downloads only from the public URL below (a stable, widely-mirrored copy of
 the upstream BirdNET V2.4 model) and writes only into the destination folder. It
-is offline afterward — nothing here runs at capture time.
+is offline afterward, and nothing here runs at capture time.
 
 Usage (from the repo root, using the app's environment):
     .venv\\Scripts\\python.exe scripts/fetch_birdnet.py
     .venv\\Scripts\\python.exe scripts/fetch_birdnet.py --labels path\\to\\Labels_en_us.txt
 
 After it finishes it prints the exact `path` and `labels_path` to set on the
-station's `models.acoustic.options.birdnet` slot in `config/settings.json`.
+station's flat `models.acoustic` block in `config/settings.json`, or through
+Settings, Models, in the interface.
 """
 from __future__ import annotations
 
@@ -65,7 +67,7 @@ def _verify_tflite(path: Path) -> None:
     size = path.stat().st_size
     if size < EXPECTED_MIN_BYTES:
         raise SystemExit(
-            f"downloaded file is only {size} bytes — that is too small to be the "
+            f"downloaded file is only {size} bytes, which is too small to be the "
             f"model (expected ~25 MB). The URL may have returned an error page. "
             f"Delete {path} and try again, or pass --model-url."
         )
@@ -141,11 +143,12 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError:
             return str(p)
 
-    print("\nSet these on the station's models.acoustic.options.birdnet slot in config/settings.json:")
+    print("\nSet these on the station's models.acoustic block in config/settings.json,")
+    print("or through Settings, Models, on the station you will run:")
     print(f'  "path": "{_rel(model_path)}"')
     if labels_path is not None:
         print(f'  "labels_path": "{_rel(labels_path)}"')
-    print('  and set models.acoustic.active to "birdnet" on the station you will run.')
+    print('  and set "sample_rate" to the rate this model expects (for example 48000).')
     return 0
 
 

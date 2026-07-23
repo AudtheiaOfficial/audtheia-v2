@@ -195,10 +195,12 @@ def station_model_files(settings, station_id: str) -> list[tuple[Path, str]]:
         if p.exists():
             files.append((p, visual))
 
+    # One flat acoustic block per station now, so the model path is read
+    # directly rather than through a selected slot. A path may name a single
+    # file or a SavedModel directory; exists() is true for both, so either is
+    # staged for the Pi.
     acoustic = station.get("models", {}).get("acoustic", {})
-    active = acoustic.get("active")
-    option = acoustic.get("options", {}).get(active, {}) if active else {}
-    apath = option.get("path")
+    apath = acoustic.get("path")
     if apath:
         p = settings.resolve_path(apath)
         if p.exists():

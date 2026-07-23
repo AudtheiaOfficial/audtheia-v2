@@ -121,7 +121,7 @@ def main() -> int:
     # "s://" inside "https://", which flagged every citation and every video
     # capture source in the configuration and refused an otherwise valid save.
     check("an https URL is not mistaken for a machine path",
-          not _contains_machine_path("https://youtu.be/example"))
+          not _contains_machine_path("https://example.com/live/stream"))
     check("an http URL is not mistaken for a machine path",
           not _contains_machine_path("http://example.org/clip.mp4"))
     check("a URL inside a citation is not mistaken for a machine path",
@@ -205,11 +205,16 @@ def main() -> int:
               reloaded.stale_local_overrides == [], repr(reloaded.stale_local_overrides))
 
         # -- an override belongs to its station, not to a position -------
+        # The override is addressed by station id, so it must follow that station
+        # wherever it lands after a reorder, for any number of stations. The
+        # station that was modified is found by id rather than by assuming the
+        # list holds exactly two entries.
         reordered = load_settings(str(cfg))
         reordered.raw["stations"].reverse()
+        moved = next((s for s in reordered.raw["stations"] if s.get("station_id") == second_station), None)
         check("an override follows its station when the list is reordered",
-              reordered.raw["stations"][0]["models"]["visual_desktop"]["path"] == POSIX_LEAK,
-              repr(reordered.raw["stations"][0]["models"]["visual_desktop"]["path"]))
+              moved is not None and moved["models"]["visual_desktop"]["path"] == POSIX_LEAK,
+              repr(moved and moved["models"]["visual_desktop"]["path"]))
 
         # -- a pointer naming something gone is inert, not fatal ---------
         stale_doc = json.loads(local.read_text(encoding="utf-8"))

@@ -643,7 +643,7 @@
         return;
       }
       // Every station is listed; one that has no source of this kind simply has
-      // its Start disabled with a hint, rather than being hidden — so any station
+      // its Start disabled with a hint, rather than being hidden, so any station
       // can be seen and set up from here.
       stations.forEach(function (st) {
         var src = (st.capture && st.capture.source) || {};
@@ -660,7 +660,7 @@
             reload();
           }).catch(function (e) { toggle.disabled = false; window.alert("Could not " + (isRun ? "stop" : "start") + " capture: " + e.message); });
         });
-        var hint = isAudio ? "no audio source — use Set audio source" : "no video source — use Set capture source";
+        var hint = isAudio ? "no audio source, use Set audio source" : "no video source, use Set capture source";
         body.appendChild(el("div", { class: "capture-row" }, [
           el("span", { class: "capture-row-name", text: (st.station_name || st.station_id) + " . " + (sourceVal || hint) }),
           isRun ? badge(isAudio ? "listening" : "capturing", "source") : null,
@@ -668,7 +668,7 @@
         ]));
       });
       body.appendChild(el("p", { class: "form-hint", text: isAudio
-        ? "Start opens the audio source and runs the acoustic model; detections appear below as calls are recognized. The acoustic model (e.g. BirdNET) must be placed under models/acoustic/."
+        ? "Start opens the audio source and runs this station's acoustic model; detections appear below as sounds are recognized. The model must be placed under models/acoustic/ and set on the station, with its labels file."
         : "Start opens the source and runs detection; detections appear below as they are found. A desktop model must be set for anything to be detected." }));
     }).catch(function (e) { clear(body); body.appendChild(el("p", { class: "card-note", text: "Could not load capture: " + e.message })); });
   }
@@ -807,7 +807,7 @@
     cardEl.appendChild(cb);
   }
 
-  // A stable colour per species, derived from its name — no stored state, so the
+  // A stable colour per species, derived from its name, with no stored state, so the
   // same species is always the same colour on every machine and session, and
   // there is nothing to persist, migrate, or lose. The name is hashed (FNV-1a) to
   // a hue; saturation and lightness are nudged by the hash for extra separation
@@ -1192,7 +1192,7 @@
     var times = frames.map(function (f) { return f.captured_at; }).filter(Boolean);
     function row(label, value, ok) {
       var v = el("span", { class: "audit-v", text: value });
-      if (ok === true) { v.appendChild(el("span", { class: "audit-ok", text: "  ✓ matches" })); }
+      if (ok === true) { v.appendChild(el("span", { class: "audit-ok", text: "  matches" })); }
       return el("div", { class: "audit-row" }, [el("span", { class: "audit-k", text: label }), v]);
     }
     wrap.appendChild(el("div", { class: "card-title", text: "How these numbers were derived" }));
@@ -1252,20 +1252,20 @@
     pollTimer: null
   };
 
-  // Per-list-panel state. Detections and Audio share the same machinery — a
-  // species filter, a paged window, and a multi-select delete mode — but each
+  // Per-list-panel state. Detections and Audio share the same machinery (a
+  // species filter, a paged window, and a multi-select delete mode) but each
   // keeps its own slice so switching tabs never carries one panel's filter,
   // page, or selection into the other. Each context also names the endpoints it
   // reads and the loader that redraws it, so the shared helpers stay generic.
-  //   speciesFilter — the chosen species (server-side filter)
-  //   ids           — the ids currently shown, so Select all knows its scope
-  //   selecting     — whether the delete selection mode is on
-  //   selection     — the set of ids ticked for deletion
-  //   pageSize      — page size (PAGE_ALL = every match)
-  //   pageOffset    — current offset
-  //   sig           — a signature so changing filters resets to page one while a
+  //   speciesFilter : the chosen species (server-side filter)
+  //   ids           : the ids currently shown, so Select all knows its scope
+  //   selecting     : whether the delete selection mode is on
+  //   selection     : the set of ids ticked for deletion
+  //   pageSize      : page size (PAGE_ALL = every match)
+  //   pageOffset    : current offset
+  //   sig           : a signature so changing filters resets to page one while a
   //                   plain page turn does not
-  //   stationId     — this panel's own station choice, so Detections and Audio
+  //   stationId     : this panel's own station choice, so Detections and Audio
   //                   can sit on different stations at the same time. It starts
   //                   at every station and is remembered per panel.
   function makeListCtx(opts) {
@@ -1429,6 +1429,18 @@
     }
   }
 
+  // Brain is a reference panel and deliberately does not poll, so its sub-panels
+  // are re-read whenever their pill is selected. That way an expert correction
+  // made on Detections or Audio is reflected in the audit the moment the reader
+  // returns to it, without a separate refresh control that would be ambiguous
+  // among three pills. The reload is skipped unless Brain is the active panel, so
+  // restoring a stored pill at startup does not fetch a hidden panel's data.
+  var SUBPANEL_LOADERS = {
+    "brain-models": function () { loadBrainModels(); },
+    "brain-learning": function () { loadBrainLearning(); },
+    "brain-skills": function () { loadBrainSkills(); }
+  };
+
   function activateSubpanel(name) {
     $all(".subpanel").forEach(function (p) { p.hidden = p.getAttribute("data-subpanel") !== name; });
     $all(".subnav-item").forEach(function (b) {
@@ -1436,6 +1448,8 @@
       else { b.removeAttribute("aria-current"); }
     });
     store(STORE.subpanel, name);
+    var reload = SUBPANEL_LOADERS[name];
+    if (reload && state.activePanel === "brain") { reload(); }
   }
 
   function initRouter() {
@@ -1577,8 +1591,8 @@
   }
 
   // Audio: acoustic detections tied to events, with the true clip duration.
-  // Mirrors Detections — a station + species filter, a paged window, multi-select
-  // delete, and an audit view — over its own panel context so the two never mix.
+  // Mirrors Detections (a station + species filter, a paged window, multi-select
+  // delete, and an audit view) over its own panel context so the two never mix.
   loaders.audio = function () {
     var ctx = state.aud;
     var host = region("audio-list");
@@ -1631,7 +1645,7 @@
 
         if (ctx.selecting) { attachSelectCheckbox(ctx, a, card); }
 
-        // The head — meta, species, stats, badges — opens the audio audit; the
+        // The head (meta, species, stats, badges) opens the audio audit; the
         // player below stays outside it so pressing play never opens the modal.
         var head = el("div", { class: "audio-open", role: "button", tabindex: "0",
           "aria-label": "Open audit for this acoustic detection" });
@@ -1717,7 +1731,7 @@
     var maxConf = confs.length ? Math.max.apply(null, confs) : null;
     function row(label, value, ok) {
       var v = el("span", { class: "audit-v", text: value });
-      if (ok === true) { v.appendChild(el("span", { class: "audit-ok", text: "  ✓ matches" })); }
+      if (ok === true) { v.appendChild(el("span", { class: "audit-ok", text: "  matches" })); }
       return el("div", { class: "audit-row" }, [el("span", { class: "audit-k", text: label }), v]);
     }
     wrap.appendChild(el("div", { class: "card-title", text: "How these numbers were derived" }));
@@ -1731,7 +1745,7 @@
     var v = obs.verification;
     wrap.appendChild(row("Verification", (v && v.verified)
       ? "cleared for the dream pass by the acoustic-confidence gate (peak ≥ the acoustic floor)"
-      : "not cleared — peak below the acoustic floor, so it shapes baselines but not the generative phase"));
+      : "not cleared, peak below the acoustic floor, so it shapes baselines but not the generative phase"));
     wrap.appendChild(row("Salience", fmtNum(obs.salience_provisional, 2) +
       "  = D · (0.5·N + 0.5·R), Shannon-surprisal novelty & rarity (docs/salience.md)"));
     wrap.appendChild(el("p", { class: "form-hint", text:
@@ -1761,7 +1775,7 @@
         swatch,
         el("span", { class: "audio-det-name", text: taxonName(d) }),
         barWrap,
-        el("span", { class: "audio-det-conf", text: conf == null ? "—" : conf + "%" })
+        el("span", { class: "audio-det-conf", text: conf == null ? "n/a" : conf + "%" })
       ]));
     });
     wrap.appendChild(list);
@@ -2223,39 +2237,69 @@
       var audioEvents = (res[3] && res[3].items) || [];
       clear(host);
 
-      // Models are grouped by WHERE they run, because that is the distinction
-      // that matters: the field station decides what becomes an observation at
-      // all, and the desktop re-judges and interprets it afterwards.
-      host.appendChild(el("h3", { text: "Field station models" }));
+      // The desktop hub. Its own stations come first, because they are what is
+      // configured and what captures observations; the desktop's own models
+      // (verification, the language model) come after, because they act on what
+      // the stations produce. A station is placed by what it is configured to do,
+      // never assumed to be out in a field.
+      host.appendChild(el("h3", { text: "This computer" }));
       host.appendChild(el("p", { class: "settings-desc", text:
-        "These run out at the station itself. Between them they decide what becomes an observation in the first place." }));
+        "The desktop hub: the stations you run here, and the models that re-judge and interpret each observation after it has been captured. This computer keeps the authoritative record." }));
+
+      var deskModels = models.desktop_models || {};
       var stations = models.stations || [];
-      if (!stations.length) {
-        host.appendChild(el("p", { class: "card-note", text: "No stations are configured yet." }));
+      var desktopStations = stations.filter(function (st) {
+        var d = stationDeployment(st);
+        return d.desktop || !d.field;
+      });
+      var fieldStations = stations.filter(function (st) { return stationDeployment(st).field; });
+
+      host.appendChild(el("h4", { text: "Stations run from this computer" }));
+      host.appendChild(el("p", { class: "settings-desc", text:
+        "Each station you run on the desktop, with its own models: the ones that decide what becomes an observation in the first place. A station with no Pi device stays here." }));
+      if (!desktopStations.length) {
+        host.appendChild(el("p", { class: "card-note", text: "No station is set up to run on this computer yet." }));
       } else {
-        var stGrid = el("div", { class: "card-grid station-model-grid" });
-        stations.forEach(function (st) { stGrid.appendChild(stationModelCard(st, models.files)); });
-        host.appendChild(stGrid);
+        var deskGrid = el("div", { class: "card-grid station-model-grid" });
+        desktopStations.forEach(function (st) { deskGrid.appendChild(stationModelCard(st, models.files)); });
+        host.appendChild(deskGrid);
       }
 
-      host.appendChild(el("h3", { text: "Desktop models" }));
+      // The desktop's own models run after capture, on the observations the
+      // stations above (and any Pi field station below) produce: verification
+      // re-scores saved frames, and the language model interprets and drives the
+      // longitudinal pass. They belong here, below the stations they act on.
+      host.appendChild(el("h4", { text: "Vision verification" }));
       host.appendChild(el("p", { class: "settings-desc", text:
-        "These run here on your computer, after an observation has been captured and synced." }));
-      var deskModels = models.desktop_models || {};
+        "Runs on the desktop after capture. It re-scores the saved frames of each observation, for every station whether it runs here or on a Pi." }));
       host.appendChild(el("div", { class: "info-block" }, [modelEntry(
-        "Vision verification",
-        "RF-DETR, on this computer",
-        "Re-scores the saved frames of an event for publication-grade accuracy. It can overrule the field station's call, and it adds the interpretive points such as ecological role and rarity, which are always labelled as inference and never stored as measurement.",
+        "Verification model",
+        "on this computer",
+        "Re-scores the saved frames of an event for publication-grade accuracy. It can overrule a station's call, and it adds the interpretive points such as ecological role and rarity, which are always labelled as inference and never stored as measurement.",
         deskModels.visual_rfdetr, models.files)]));
 
-      host.appendChild(el("h3", { text: "Language model" }));
       var llmBlock = el("div", { class: "info-block" });
+      llmBlock.appendChild(el("h4", { text: "Language model" }));
       llmBlock.appendChild(el("p", { class: "settings-desc", text:
         "Runs here on your computer. It powers the longitudinal pass and the interpretation text. It does not write your reports: a report is assembled from the stored record, and anything this model produced is labelled in it as inference." }));
       var llmHost = el("div", { class: "llm-manager" });
       llmBlock.appendChild(llmHost);
       host.appendChild(llmBlock);
       renderLlmManager(llmHost);
+
+      // Pi field stations: only stations configured with a Raspberry Pi device,
+      // whose screening model is compiled for the Pi accelerator (a .hef). A
+      // station appears here only when it carries that model.
+      host.appendChild(el("h3", { text: "Pi Field Stations" }));
+      host.appendChild(el("p", { class: "settings-desc", text:
+        "Only stations configured with a Raspberry Pi field device appear here. Their screening model runs out on the Pi's accelerator, deciding what becomes an observation before anything reaches this computer." }));
+      if (!fieldStations.length) {
+        host.appendChild(el("p", { class: "card-note", text: "No station is configured with a Pi device yet." }));
+      } else {
+        var fieldGrid = el("div", { class: "card-grid station-model-grid" });
+        fieldStations.forEach(function (st) { fieldGrid.appendChild(stationModelCard(st, models.files)); });
+        host.appendChild(fieldGrid);
+      }
 
       host.appendChild(el("h3", { text: "Site memory" }));
       host.appendChild(el("div", { class: "info-block" }, [siteMemoryView(memory)]));
@@ -2265,35 +2309,56 @@
     }).catch(function (e) { setState(host, "empty-state", "Could not load models and memory: " + e.message); });
   }
 
+  // Where a station runs, read from how it is configured rather than assumed.
+  // Mirrors the backend classifier: a field deployment has a screening model
+  // compiled for its accelerator; a desktop station has a desktop screening
+  // model or a desktop capture source; a station may be both, or neither.
+  function stationDeployment(st) {
+    if (st && st.deployment) { return st.deployment; }
+    var m = (st && st.models) || {};
+    var src = (st && st.capture && st.capture.source) || {};
+    var field = !!((m.visual_pi || {}).path);
+    var desktop = !!((m.visual_desktop || {}).path) || !!src.video || !!src.audio;
+    return { field: field, desktop: desktop, configured: field || desktop };
+  }
+
+  function deploymentBadge(dep) {
+    dep = dep || {};
+    if (dep.field && dep.desktop) { return badge("Runs on this computer and a field station", "ok"); }
+    if (dep.desktop) { return badge("Runs on this computer", "ok"); }
+    if (dep.field) { return badge("Runs on a field station", "ok"); }
+    return badge("Not yet configured to run anywhere", "muted");
+  }
+
   // One station's own models, in the order they act on a moment: the camera's
   // screener first, then the microphone or hydrophone's listener.
   function stationModelCard(st, files) {
     var m = st.models || {};
     var card = el("article", { class: "card" }, [
-      el("div", { class: "card-title", text: st.station_name || st.station_id })
+      el("div", { class: "card-title", text: st.station_name || st.station_id }),
+      el("div", { class: "badge-row card-deployment-row" }, [deploymentBadge(stationDeployment(st))])
     ]);
     card.appendChild(modelEntry(
       "Vision screening",
-      "YOLO11, on the station's accelerator",
+      "on the station's accelerator",
       "Checks every frame the camera produces. A frame with nothing in it is discarded straight away, so only real detections ever reach storage.",
       m.visual_pi, files));
 
     var acoustic = m.acoustic || {};
-    var activeKey = acoustic.active;
-    var activeEntry = (acoustic.options || {})[activeKey] || null;
     card.appendChild(modelEntry(
-      "Acoustic recognition" + (activeKey ? " (" + humanize(activeKey) + ")" : ""),
+      "Acoustic recognition",
       "on the station's processor",
       "Listens to the audio stream and recognises sounds. A recognised sound opens an observation of its own, so the station hears as well as sees.",
-      activeEntry, files));
+      acoustic, files));
 
-    if (m.visual_desktop) {
-      card.appendChild(modelEntry(
-        "Desktop screening",
-        "stands in when there is no field hardware",
-        "Used only when you run this station's capture on your computer, from a video file or a webcam, instead of on a Raspberry Pi.",
-        m.visual_desktop, files));
-    }
+    // The desktop screening row is always shown, set or not: a station run on
+    // this computer screens with this model, so a missing one is a state to
+    // report plainly rather than a row to hide.
+    card.appendChild(modelEntry(
+      "Desktop screening",
+      "stands in when there is no field hardware",
+      "Used only when you run this station's capture on your computer, from a video file or a webcam, instead of on a Raspberry Pi.",
+      m.visual_desktop, files));
     return card;
   }
 
@@ -2302,10 +2367,13 @@
   // rest of the panel under it.
   function modelEntry(title, where, description, entry, files) {
     var wrap = el("div", { class: "model-entry" });
+    // The title sits on its own line, and the "where it runs" badge below it
+    // rather than pushed out to the right, so the layout stays clean and reads
+    // the same no matter how many stations are shown.
     wrap.appendChild(el("div", { class: "model-entry-head" }, [
-      el("span", { class: "form-label", text: title }),
-      where ? badge(where, "muted") : null
+      el("span", { class: "form-label", text: title })
     ]));
+    if (where) { wrap.appendChild(el("div", { class: "badge-row model-entry-where" }, [badge(where, "muted")])); }
     wrap.appendChild(el("p", { class: "card-note", text: description }));
 
     // A version without a path is not a model, so presence of a path is the only
@@ -2507,6 +2575,11 @@
       host.appendChild(dreamHost);
       paintDreamStatus(dreamHost, status);
 
+      host.appendChild(el("h3", { text: "Run now" }));
+      var runHost = el("div");
+      host.appendChild(runHost);
+      renderRunNowControls(runHost);
+
       host.appendChild(el("h3", { text: "Audit" }));
       host.appendChild(el("p", { class: "settings-desc", text:
         "Evidence of how the system behaved, counted from the stored record. Every figure here is a count or an average over rows already written, never a new measurement and never an interpretation." }));
@@ -2638,18 +2711,50 @@
     var confidence = audit.confidence || {};
     var byModality = confidence.by_modality || {};
 
+    // "Verified share" is the automated desktop verifier only. When it has not run
+    // the card says so rather than showing 0.0%, because an absence and a zero are
+    // different claims; expert identifications are counted on their own line below.
+    var expertSummary = audit.expert || {};
     wrap.appendChild(metricRow([
       metricCard("Events", fmtNum(audit.events)),
       metricCard("Species", fmtNum(analytics && analytics.species_richness)),
-      metricCard("Verified share", fmtPct(audit.events ? (verdicts.verified || 0) / audit.events : 0)),
-      metricCard("Mean confidence", fmtConfidence(meanAcrossModalities(byModality)))
+      metricCard("Auto-verified share", verdicts.with_verdict
+        ? fmtPct(audit.events ? (verdicts.verified || 0) / audit.events : 0)
+        : "none run"),
+      metricCard("Expert IDs", fmtNum(expertSummary.targets || 0))
     ]));
+
+    // Expert identifications are human verdicts. They are shown on their own line
+    // and never folded into the automated "Verified share" above, because a
+    // person's judgement and a model's re-score are different kinds of claim. This
+    // is what keeps a 0.0% automated share from reading as "nothing is trusted"
+    // when a reviewer has already confirmed detections by hand.
+    var expert = audit.expert || {};
+    var expBlock = el("div", { class: "info-block" });
+    expBlock.appendChild(el("div", { class: "card-title", text: "Expert identifications" }));
+    expBlock.appendChild(el("p", { class: "settings-desc", text:
+      "What a human reviewer has confirmed, relabelled, or rejected. These are counted here as their own producer and are never merged into the automated verifier's share above, because a person's identification and a model's re-score are different claims with different provenance." }));
+    if (expert.available === false) {
+      expBlock.appendChild(el("p", { class: "card-note", text:
+        "This record predates the corrections store, so no expert identification can be counted here yet." }));
+    } else if (!expert.targets) {
+      expBlock.appendChild(el("p", { class: "card-note", text:
+        "No expert identification has been recorded yet. Confirm, relabel, or reject a detection on Detections or Audio and it is counted here." }));
+    } else {
+      var ekv = el("div", { class: "kv-list" });
+      ekv.appendChild(modelKvRow("Events with an expert identification", fmtNum(expert.observations_with_correction)));
+      ekv.appendChild(modelKvRow("Confirmed", fmtNum(expert.confirm)));
+      ekv.appendChild(modelKvRow("Relabelled", fmtNum(expert.relabel)));
+      ekv.appendChild(modelKvRow("Rejected", fmtNum(expert.reject)));
+      expBlock.appendChild(ekv);
+    }
+    wrap.appendChild(expBlock);
 
     // How often the desktop verifier reached the same conclusion as the field.
     var verBlock = el("div", { class: "info-block" });
     verBlock.appendChild(el("div", { class: "card-title", text: "Desktop verification" }));
     verBlock.appendChild(el("p", { class: "settings-desc", text:
-      "How often the desktop verifier, re-scoring an event's saved frames, reached the same conclusion as the field station's screening model. A disagreement is not an error: it is the desktop correcting a fast field call, and it is recorded rather than hidden." }));
+      "How often the desktop verifier, re-scoring an event's saved frames, reached the same conclusion as the field station's screening model. This is the automated verifier only; a human reviewer's identifications are counted separately under Expert identifications above. A disagreement is not an error: it is the desktop correcting a fast field call, and it is recorded rather than hidden." }));
     if (!verdicts.with_verdict) {
       verBlock.appendChild(el("p", { class: "card-note", text:
         "No desktop verification has run yet, so there is nothing to compare. These figures fill in once verification runs over the synced record." }));
@@ -2759,6 +2864,71 @@
       if (s && s.n) { sum += s.mean * s.n; n += s.n; }
     });
     return n ? sum / n : null;
+  }
+
+  // On-demand controls for the stages the capture-time scheduler would otherwise
+  // run: the longitudinal pass, quality control, verification, and reports. The
+  // scheduler only advances while capture is running and counts elapsed
+  // capture-thread time, so a desktop that captures in short bursts never reaches
+  // a weekly cadence; these run each stage now and report what it did. The scope
+  // follows the station filter, so a control run while viewing one station acts on
+  // that station, and one run while viewing all stations acts on all of them.
+  function renderRunNowControls(host) {
+    clear(host);
+    var block = el("div", { class: "info-block" });
+    block.appendChild(el("p", { class: "settings-desc", text:
+      "Run a processing stage now instead of waiting for the capture-time schedule. Each reports what it did, or that nothing was eligible. The longitudinal pass reads the whole verified record; the others follow the station filter above." }));
+    var row = el("div", { class: "control-row" });
+    var result = el("p", { class: "card-note", text: "" });
+
+    function scopeQuery() {
+      return state.stationId ? query({ station_id: state.stationId }) : "";
+    }
+
+    function runControl(label, path, describe) {
+      var btn = el("button", { type: "button", class: "btn", text: label });
+      btn.addEventListener("click", function () {
+        var buttons = row.querySelectorAll("button");
+        Array.prototype.forEach.call(buttons, function (b) { b.disabled = true; });
+        result.textContent = label + ": working...";
+        apiSend(path + scopeQuery(), "POST", {}).then(function (r) {
+          result.textContent = describe(r) || (r && r.note) || (label + ": done.");
+          // Refresh the panel so the audit, the pass status, and any new patterns
+          // reflect what just ran, without a manual reload.
+          loadBrainLearning();
+        }).catch(function (e) {
+          Array.prototype.forEach.call(buttons, function (b) { b.disabled = false; });
+          result.textContent = label + " could not run: " + e.message;
+        });
+      });
+      return btn;
+    }
+
+    row.appendChild(runControl("Run longitudinal pass", "/dream/run", function (r) {
+      return "Longitudinal pass " + (r.status || "ran") + ": " +
+        fmtNum(r.observations_consolidated) + " consolidated, " +
+        fmtNum(r.salience_scored) + " scored, " +
+        fmtNum(r.patterns_emitted) + " candidate pattern(s). " +
+        (r.narration_available ? "" : "Language model unavailable, so no narration. ") +
+        "Candidate patterns are hypotheses, never findings.";
+    }));
+    row.appendChild(runControl("Finalize quality control", "/qc/run", function (r) {
+      return r.finalized ? "Finalized quality control on " + fmtNum(r.finalized) + " record(s)."
+        : "No record was awaiting quality control.";
+    }));
+    row.appendChild(runControl("Run verification", "/verify/run", function (r) {
+      return r.verified ? "Re-scored and gated " + fmtNum(r.verified) + " observation(s)."
+        : "No eligible observation, or none in the desktop verifier's target group.";
+    }));
+    row.appendChild(runControl("Generate report", "/reports/run", function (r) {
+      var made = (r.formats || []).join(", ");
+      return made ? "Wrote " + made + " to the reports folder (bundle " + (r.bundle || "") + "). See the Reports tab."
+        : "No report output was produced.";
+    }));
+
+    block.appendChild(row);
+    block.appendChild(result);
+    host.appendChild(block);
   }
 
   // Keep the longitudinal pass current without rebuilding the whole panel: only
@@ -3137,7 +3307,7 @@
   // A plain-language description shown at the top of each settings group, so a
   // reader who has never seen the configuration knows what the group is for.
   var GROUP_DESC = {
-    "settings-stations": "The field stations this hub manages, with their environment and sensors.",
+    "settings-stations": "The stations this computer manages, with their environment and sensors. A station may run on this computer, on field hardware, or both.",
     "settings-sensors": "Which inputs each station records.",
     "settings-capture": "How images and audio are captured and stored.",
     "settings-models": "The models this hub uses and where they are stored.",
@@ -3481,7 +3651,12 @@
     if (!stations.length) { host.appendChild(el("p", { class: "card-note", text: "No stations are configured yet." })); return; }
     var grid = el("div", { class: "config-grid" });
     stations.forEach(function (st) {
-      var card = el("details", { class: "config-card" }, [el("summary", { text: st.station_name || st.station_id })]);
+      var card = el("details", { class: "config-card" }, [
+        el("summary", { class: "station-summary" }, [
+          el("span", { class: "station-summary-name", text: st.station_name || st.station_id }),
+          el("span", { class: "badge-row station-summary-badges" }, [deploymentBadge(stationDeployment(st))])
+        ])
+      ]);
       var body = el("div", { class: "config-card-body" });
       card.appendChild(body);
       renderStationRead(body, st, card);
@@ -3807,7 +3982,7 @@
           box.appendChild(modelEntry(
             "Vision verification",
             "on this computer",
-            "Re-scores the saved frames of an event to a publication standard. It can overrule the field station's call.",
+            "Re-scores the saved frames of an event to a publication standard. It can overrule a station's call.",
             desktop.visual_rfdetr, files));
           box.appendChild(el("p", { class: "card-note", text:
             "The language model is chosen in Brain, under Models and Memory." }));
@@ -3821,21 +3996,37 @@
         }
       }));
 
-      host.appendChild(el("h4", { text: "Stations" }));
-      if (!stations.length) {
-        host.appendChild(el("p", { class: "card-note", text: "No stations are configured yet." }));
-        return;
-      }
-      // station-model-grid, as the Brain panel's identical grid already uses.
-      // Plain card-grid fills fixed tracks, so two stations sit in the first two
-      // of five and the row trails off into empty space; this variant divides
-      // the row between the cards that exist, so two stations read as two wide
-      // cards rather than a pair pushed into the corner.
-      var grid = el("div", { class: "card-grid station-model-grid" });
-      stations.forEach(function (st) {
-        grid.appendChild(stationModelBox(st, files, verifierPath));
+      // Stations run from this computer belong with the Desktop hub, under This
+      // computer: a station with a desktop model or source, and any not yet
+      // configured to run anywhere, is managed here. Only a station with a model
+      // compiled for a Pi accelerator is listed as a Pi field station below.
+      // station-model-grid divides each row between the cards that exist, so two
+      // stations read as two wide cards rather than a pair pushed into a corner.
+      var desktopStations = stations.filter(function (st) {
+        var d = stationDeployment(st);
+        return d.desktop || !d.field;
       });
-      host.appendChild(grid);
+      var fieldStations = stations.filter(function (st) { return stationDeployment(st).field; });
+
+      host.appendChild(el("h5", { class: "form-group-title", text: "Stations run from this computer" }));
+      if (!desktopStations.length) {
+        host.appendChild(el("p", { class: "card-note", text: "No station is set up to run on this computer yet." }));
+      } else {
+        var deskGrid = el("div", { class: "card-grid station-model-grid" });
+        desktopStations.forEach(function (st) { deskGrid.appendChild(stationModelBox(st, files, verifierPath)); });
+        host.appendChild(deskGrid);
+      }
+
+      host.appendChild(el("h4", { text: "Pi Field Stations" }));
+      host.appendChild(el("p", { class: "settings-desc", text:
+        "Only stations configured with a Raspberry Pi field device appear here, with the screening model compiled for the Pi accelerator." }));
+      if (!fieldStations.length) {
+        host.appendChild(el("p", { class: "card-note", text: "No station is configured with a Pi device yet." }));
+      } else {
+        var fieldGrid = el("div", { class: "card-grid station-model-grid" });
+        fieldStations.forEach(function (st) { fieldGrid.appendChild(stationModelBox(st, files, verifierPath)); });
+        host.appendChild(fieldGrid);
+      }
     }).catch(function (e) {
       if (loading.parentNode === host) { host.removeChild(loading); }
       host.appendChild(el("p", { class: "card-note", text: "Could not read the model files: " + e.message }));
@@ -3898,22 +4089,25 @@
     var sid = st.station_id;
     var m = st.models || {};
     var acoustic = m.acoustic || {};
-    var slots = acoustic.options || {};
 
     return modelBox({
       title: st.station_name || sid,
       subtitle: [st.environment_type, st.habitat].filter(Boolean).map(humanize).join(", "),
       build: function (box) {
+        // Placed by what it is configured to do, not assumed to be in a field.
+        // A station created and run on this computer reads as running here.
+        box.appendChild(el("div", { class: "badge-row card-deployment-row" }, [deploymentBadge(stationDeployment(st))]));
+
         box.appendChild(modelEntry(
-          "Field screening",
+          "Field screening (.hef)",
           "on the station's accelerator",
           "Checks every frame the camera produces. A frame with nothing in it is discarded straight away, so only real detections reach storage.",
           m.visual_pi, files));
 
         box.appendChild(modelEntry(
-          "Desktop screening",
+          "Desktop screening (.onnx)",
           "stands in when there is no field hardware",
-          "Used only when this station's capture is run on this computer, from a video file or a webcam, instead of on a field station.",
+          "Used only when this station's capture is run on this computer, from a video file or a webcam, instead of on a field station. This one watches video; a model that listens goes in the acoustic slot below.",
           m.visual_desktop, files));
 
         // Screening and verification by the same weights is not verification.
@@ -3926,12 +4120,19 @@
             "This is the same file as the desktop verification model. In desktop mode this station would be screened and then re-scored by identical weights, so its agreement figures are not independent evidence." }));
         }
 
-        var activeKey = acoustic.active;
         box.appendChild(modelEntry(
-          "Acoustic recognition" + (activeKey ? " (" + humanize(activeKey) + " slot)" : ""),
+          "Acoustic model",
           "on the station's processor",
-          "Listens to the audio stream. A recognised sound opens an observation of its own, so the station hears as well as sees.",
-          slots[activeKey], files));
+          "Listens to the audio stream. A recognised sound opens an observation of its own, so the station hears as well as sees. Whatever this station is deployed to hear, birds, bats, cetaceans or reef fish, its model goes here.",
+          acoustic, files));
+
+        // A classifier reports a class number and the labels file names it.
+        // Without one every detection reads as a bare index, which looks like
+        // an identifier and is not one, so the gap is stated on the card.
+        if (acoustic.path && !acoustic.labels_path) {
+          box.appendChild(el("p", { class: "model-status is-absent", text:
+            "No labels file is set for this model, so detections are recorded by class number rather than by name. Set the labels file in Edit." }));
+        }
       },
       edit: function (box, editors) {
         // Both screening models belong to the station, not to a machine: they
@@ -3951,38 +4152,7 @@
           "models/visual/desktop/my_screening_model.onnx");
 
         box.appendChild(el("h5", { class: "form-group-title", text: "What this station listens with" }));
-        var sel = el("select", { class: "form-input" });
-        ["birdnet", "marine", "custom"].forEach(function (key) {
-          var opt = el("option", { value: key, text: humanize(key) });
-          if (key === acoustic.active) { opt.selected = true; }
-          sel.appendChild(opt);
-        });
-        editors.push({ scope: "station", field: "acoustic_active", station_id: sid, original: acoustic.active, get: function () { return sel.value; }, kind: "text" });
-        box.appendChild(editField("Active acoustic slot", sel, "Which listener this station runs. A slot can be filled before it is selected."));
-
-        // All three slots are editable, not only the active one, so a station can
-        // be prepared for a change of listener before it is switched over.
-        ["birdnet", "marine", "custom"].forEach(function (key) {
-          var group = el("details", { class: "subgroup edit-advanced" }, [
-            el("summary", { text: humanize(key) + " acoustic slot" + (key === acoustic.active ? " (active)" : "") })
-          ]);
-          var entry = slots[key] || {};
-          var modelExample = key === "birdnet"
-            ? "models/acoustic/birdnet/BirdNET_GLOBAL_6K_V2.4_Model_FP16.tflite"
-            : "models/acoustic/" + key + "/my_model.tflite";
-          var labelsExample = key === "birdnet"
-            ? "models/acoustic/birdnet/BirdNET_GLOBAL_6K_V2.4_Labels_en_uk.txt"
-            : "models/acoustic/" + key + "/my_labels.txt";
-          modelPathFields(editors, group, "station", sid, "Model file",
-            "acoustic_" + key + "_path", "acoustic_" + key + "_version", "acoustic_" + key + "_citation", entry,
-            "Leave empty to set no model for this slot. Use the exact filename you downloaded; the example shown is the usual one, not a guarantee.",
-            modelExample);
-          var labelsIn = el("input", { type: "text", class: "form-input", value: entry.labels_path || "",
-            placeholder: labelsExample });
-          editors.push({ scope: "station", field: "acoustic_" + key + "_labels_path", station_id: sid, original: entry.labels_path || "", get: function () { return labelsIn.value; }, kind: "textOrNull" });
-          group.appendChild(editField("Labels file", labelsIn, "Optional. The class list that names what the model reports."));
-          box.appendChild(group);
-        });
+        acousticModelFields(editors, box, sid, acoustic);
       }
     });
   }
@@ -4005,6 +4175,27 @@
     push(pathField, pathIn, entry.path);
     host.appendChild(editField(label, pathIn, hint));
 
+    // Confirm the file at the moment the path is entered, without a trip to
+    // Brain: whether it is present, its size (so a zero-byte or partial download
+    // shows), and, for a visual slot whose type is fixed by its runtime, whether
+    // the file is the kind the slot loads.
+    var pathStatus = el("p", { class: "form-hint model-probe-status" });
+    host.appendChild(pathStatus);
+    function confirmPath() {
+      var p = String(pathIn.value || "").trim();
+      if (!p) { pathStatus.textContent = ""; pathStatus.className = "form-hint model-probe-status"; return; }
+      pathStatus.textContent = "Checking this path...";
+      pathStatus.className = "form-hint model-probe-status";
+      apiSend("/models/probe", "POST", { path: p, field: pathField })
+        .then(function (r) { renderVisualProbe(r, pathStatus); })
+        .catch(function () {
+          pathStatus.textContent = "Could not check this path.";
+          pathStatus.className = "form-hint model-probe-status is-absent";
+        });
+    }
+    pathIn.addEventListener("change", confirmPath);
+    if (String(pathIn.value || "").trim()) { confirmPath(); }
+
     var verIn = el("input", { type: "text", class: "form-input", value: entry.version || "" });
     push(versionField, verIn, entry.version);
     host.appendChild(editField(label + " version", verIn, "Optional. Record which version of the model this is, so an observation can name the model that actually ran."));
@@ -4012,6 +4203,133 @@
     var citeIn = el("input", { type: "text", class: "form-input", value: entry.citation || "" });
     push(citationField, citeIn, entry.citation);
     host.appendChild(editField(label + " citation", citeIn, "Optional. Credit the model's source."));
+  }
+
+  // The one acoustic model a station listens with, edited as one flat form:
+  // the model file, its labels file, and the audio shape the file expects. The
+  // shape is read from the file when it can be, and what is read is kept apart
+  // from what is proposed, so a guessed sample rate is never shown as measured.
+  // No model family is named, and no file type is required: a .tflite file or a
+  // TensorFlow SavedModel folder are both accepted.
+  function acousticModelFields(editors, host, sid, acoustic) {
+    acoustic = acoustic || {};
+
+    var pathIn = el("input", { type: "text", class: "form-input", value: acoustic.path || "",
+      placeholder: "models/acoustic/my_model_file (a .tflite file or a SavedModel folder)" });
+    editors.push({ scope: "station", field: "acoustic_path", station_id: sid, original: acoustic.path || "", get: function () { return pathIn.value; }, kind: "textOrNull" });
+    host.appendChild(editField("Acoustic model", pathIn,
+      "Any acoustic model this station can run, in whatever form you trained or downloaded it. No file type is required."));
+    var pathStatus = el("p", { class: "form-hint model-probe-status" });
+    host.appendChild(pathStatus);
+
+    var labelsIn = el("input", { type: "text", class: "form-input", value: acoustic.labels_path || "",
+      placeholder: "models/acoustic/my_labels.txt" });
+    editors.push({ scope: "station", field: "acoustic_labels_path", station_id: sid, original: acoustic.labels_path || "", get: function () { return labelsIn.value; }, kind: "textOrNull" });
+    host.appendChild(editField("Labels file", labelsIn,
+      "One label per line in class order, or a JSON list or map. Without it every detection is recorded as a class number instead of a name."));
+
+    var rateIn = el("input", { type: "number", step: "1", class: "form-input",
+      value: (acoustic.sample_rate === null || acoustic.sample_rate === undefined) ? "" : String(acoustic.sample_rate),
+      placeholder: "e.g. 48000" });
+    editors.push({ scope: "station", field: "acoustic_sample_rate", station_id: sid, original: (acoustic.sample_rate === null || acoustic.sample_rate === undefined) ? "" : acoustic.sample_rate, get: function () { return rateIn.value; }, kind: "numberOrNull" });
+    host.appendChild(editField("Sample rate (Hz)", rateIn,
+      "The rate the model expects. This is not stored in the model file and cannot be read from it, so it is entered or confirmed once, never guessed."));
+
+    var winIn = el("input", { type: "number", step: "any", class: "form-input",
+      value: (acoustic.window_seconds === null || acoustic.window_seconds === undefined) ? "" : String(acoustic.window_seconds),
+      placeholder: "e.g. 3.0" });
+    editors.push({ scope: "station", field: "acoustic_window_seconds", station_id: sid, original: (acoustic.window_seconds === null || acoustic.window_seconds === undefined) ? "" : acoustic.window_seconds, get: function () { return winIn.value; }, kind: "numberOrNull" });
+    host.appendChild(editField("Window length (seconds)", winIn,
+      "The length of audio the model scores at once. Derived from the file's sample count and the sample rate when both are known."));
+
+    var keyIn = el("input", { type: "text", class: "form-input", value: acoustic.output_key || "",
+      placeholder: "e.g. label" });
+    editors.push({ scope: "station", field: "acoustic_output_key", station_id: sid, original: acoustic.output_key || "", get: function () { return keyIn.value; }, kind: "textOrNull" });
+    host.appendChild(editField("Output key", keyIn,
+      "Only for a model with more than one output head: the name of the head to read. Leave empty for a single-output model."));
+
+    var verIn = el("input", { type: "text", class: "form-input", value: acoustic.version || "" });
+    editors.push({ scope: "station", field: "acoustic_version", station_id: sid, original: acoustic.version || "", get: function () { return verIn.value; }, kind: "textOrNull" });
+    host.appendChild(editField("Acoustic model version", verIn, "Optional. Record which version of the model this is, so an observation can name the model that ran."));
+
+    var citeIn = el("input", { type: "text", class: "form-input", value: acoustic.citation || "" });
+    editors.push({ scope: "station", field: "acoustic_citation", station_id: sid, original: acoustic.citation || "", get: function () { return citeIn.value; }, kind: "textOrNull" });
+    host.appendChild(editField("Acoustic model citation", citeIn, "Optional. Credit the model's source."));
+
+    function probeAcoustic() {
+      var p = String(pathIn.value || "").trim();
+      if (!p) { pathStatus.textContent = ""; pathStatus.className = "form-hint model-probe-status"; return; }
+      pathStatus.textContent = "Checking this path...";
+      pathStatus.className = "form-hint model-probe-status";
+      apiSend("/models/probe", "POST", { path: p, kind: "acoustic", labels_path: String(labelsIn.value || "").trim() })
+        .then(function (r) { renderAcousticProbe(r, pathStatus, rateIn, winIn); })
+        .catch(function () {
+          pathStatus.textContent = "Could not check this path.";
+          pathStatus.className = "form-hint model-probe-status is-absent";
+        });
+    }
+    pathIn.addEventListener("change", probeAcoustic);
+    labelsIn.addEventListener("change", probeAcoustic);
+    // Confirm whatever is already configured, so an existing model shows its
+    // status the moment the form opens rather than only after a trip to Brain.
+    if (String(pathIn.value || "").trim()) { probeAcoustic(); }
+  }
+
+  // A visual model path confirmation: present or not, its size, and whether the
+  // file is the type the slot's runtime loads. The type check applies only to
+  // visual slots, which are fixed by their runtime; it never runs for acoustic.
+  function renderVisualProbe(r, statusEl) {
+    if (!r || !r.present) {
+      statusEl.textContent = "No file is present yet at this path.";
+      statusEl.className = "form-hint model-probe-status is-absent";
+      return;
+    }
+    var parts = ["File present" + (r.size_bytes !== null && r.size_bytes !== undefined ? ", " + fmtBytes(r.size_bytes) : "")];
+    var wrong = false;
+    if (r.suffix_ok === false) {
+      wrong = true;
+      parts.push("but this is not one of " + (r.expected_suffixes || []).join(" or ") + ", which this slot loads. Check it is in the slot you meant");
+    }
+    statusEl.textContent = parts.join(". ");
+    statusEl.className = "form-hint model-probe-status" + (wrong ? " is-absent" : " is-present");
+  }
+
+  // Turn a probe result into a one-line confirmation, filling the shape fields
+  // from the file when they are still empty. What was read from the file and
+  // what is only proposed are said separately, so a proposed rate is never
+  // presented as measured.
+  function renderAcousticProbe(r, statusEl, rateIn, winIn) {
+    if (!r || !r.present) {
+      statusEl.textContent = "No file is present yet at this path.";
+      statusEl.className = "form-hint model-probe-status is-absent";
+      return;
+    }
+    var parts = ["File present" + (r.size_bytes !== null && r.size_bytes !== undefined ? ", " + fmtBytes(r.size_bytes) : "")];
+    var ac = r.acoustic || {};
+    var read = ac.read || {};
+    var proposed = ac.proposed || {};
+    var derived = ac.derived || {};
+    if (read.input_samples !== null && read.input_samples !== undefined) {
+      parts.push("window read from file: " + read.input_samples + " samples");
+    }
+    if (read.class_count !== null && read.class_count !== undefined) {
+      parts.push(read.class_count + " classes read from file");
+    }
+    if (proposed.sample_rate !== null && proposed.sample_rate !== undefined) {
+      parts.push("proposed sample rate " + proposed.sample_rate + " Hz (not read from the file; confirm or change)");
+      if (rateIn && !String(rateIn.value || "").trim()) { rateIn.value = String(proposed.sample_rate); }
+      if (winIn && !String(winIn.value || "").trim() && derived.window_seconds !== null && derived.window_seconds !== undefined) {
+        winIn.value = String(derived.window_seconds);
+      }
+    }
+    if (r.labels) {
+      if (!r.labels.present) { parts.push("labels file not found at the labels path"); }
+      else if (r.labels.matches_class_count === false) { parts.push("labels count " + r.labels.count + " does not match the model's class count"); }
+      else if (r.labels.count !== null && r.labels.count !== undefined) { parts.push(r.labels.count + " labels"); }
+    }
+    if (ac.error) { parts.push("could not read the audio shape from this file"); }
+    statusEl.textContent = parts.join(". ");
+    statusEl.className = "form-hint model-probe-status" + (ac.error ? " is-absent" : "");
   }
 
   // Shared builders for the global-scope editors below. Each records an editor in

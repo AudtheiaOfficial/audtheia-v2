@@ -80,19 +80,16 @@ __all__ = [
     "NullVisualContext",
     "AcousticTriggerSink",
     "AcousticMonitor",
-    "SurfPerchModel",
-    "BirdNetModel",
+    "TFLiteAcousticModel",
     "SavedModelAcousticModel",
     "build_acoustic_model",
+    "probe_acoustic_model",
     "write_wav_pcm16",
     "DEFAULT_AUDIO_FORMAT",
     "DEFAULT_AUDIO_SAMPLE_WIDTH_BYTES",
     "DEFAULT_ONSET_THRESHOLD",
     "DEFAULT_SILENCE_CLOSE_SECONDS",
     "DEFAULT_QUEUE_MAXSIZE",
-    "MARINE_MODEL_KEY",
-    "BIRDNET_MODEL_KEY",
-    "CUSTOM_MODEL_KEY",
 ]
 
 logger = logging.getLogger("audtheia.pipeline.acoustic")
@@ -121,12 +118,13 @@ DEFAULT_SILENCE_CLOSE_SECONDS = 3.0
 # rule while keeping memory bounded.
 DEFAULT_QUEUE_MAXSIZE = 128
 
-# The three configuration slots a station may select as its active acoustic
-# model. The slot name selects the adapter and its audio preprocessing; the
-# path, version, and citation for the selected slot come from configuration.
-MARINE_MODEL_KEY = "marine"
-BIRDNET_MODEL_KEY = "birdnet"
-CUSTOM_MODEL_KEY = "custom"
+# Fallback audio shape, used only when a configuration carries no sample rate or
+# window and none can be read from the model file. These are not tied to any
+# model family: they are a last resort so a misconfigured station fails at the
+# model with a clear message rather than dividing by a missing rate. A real
+# deployment sets the rate once, confirmed against its own file.
+DEFAULT_ACOUSTIC_SAMPLE_RATE = 48000
+DEFAULT_ACOUSTIC_WINDOW_SECONDS = 3.0
 
 
 # ===========================================================================
@@ -1074,39 +1072,6 @@ class SavedModelAcousticModel:
         self._model = None
 
 
-class SurfPerchModel(SavedModelAcousticModel):
-    """The coral-reef acoustic classifier, read through its reef-sound head.
-
-    SurfPerch is a domain-adapted reef model that accepts five-second windows at
-    thirty-two kilohertz and exposes a coral-reef classification head alongside
-    its embedding and its inherited bird heads. Audtheia reads the reef head for
-    marine deployments; the embedding and other heads are available to downstream
-    analysis but are not the field-station's detection signal.
-    """
-
-    REEF_OUTPUT_KEY = "reef_label"
-    SAMPLE_RATE = 32000
-    WINDOW_SECONDS = 5.0
-
-    def __init__(
-        self,
-        *,
-        model_path: Path,
-        version: Optional[str] = None,
-        citation: Optional[str] = None,
-        labels_path: Optional[Path] = None,
-    ) -> None:
-        super().__init__(
-            model_path=model_path,
-            output_key=self.REEF_OUTPUT_KEY,
-            sample_rate=self.SAMPLE_RATE,
-            window_seconds=self.WINDOW_SECONDS,
-            version=version,
-            citation=citation,
-            labels_path=labels_path,
-        )
-
-
 def _tflite_interpreter(model_path):
     """Return an allocated TFLite interpreter, trying the runtimes in order.
 
@@ -1137,21 +1102,23 @@ def _tflite_interpreter(model_path):
     )
 
 
-class BirdNetModel:
-    """The terrestrial bird and wildlife classifier, run through its TFLite build.
+class TFLiteAcousticModel:
+    """A TFLite acoustic classifier, run through the first available runtime.
 
-    BirdNET accepts three-second windows at forty-eight kilohertz and returns a
-    score per class. The interpreter library is imported only when a real model
-    is built, so importing this module never requires it.
+    The model takes one window of audio at a fixed sample rate and returns a
+    score per class. Its audio shape (sample rate and window length) comes from
+    configuration rather than being assumed, because the same TFLite form is used
+    by models that want different rates and windows, and nothing here is tied to
+    one model family or one taxon. The interpreter library is imported only when
+    a real model is built, so importing this module never requires it.
     """
-
-    SAMPLE_RATE = 48000
-    WINDOW_SECONDS = 3.0
 
     def __init__(
         self,
         *,
         model_path: Path,
+        sample_rate: int,
+        window_seconds: float,
         version: Optional[str] = None,
         citation: Optional[str] = None,
         labels_path: Optional[Path] = None,
@@ -1159,6 +1126,8 @@ class BirdNetModel:
         self._interpreter = _tflite_interpreter(model_path)
         self._input = self._interpreter.get_input_details()[0]
         self._output = self._interpreter.get_output_details()[0]
+        self._sample_rate = int(sample_rate)
+        self._window_seconds = float(window_seconds)
         self._version = version
         self._citation = citation
         self._class_names = _load_class_names(labels_path)
@@ -1173,11 +1142,11 @@ class BirdNetModel:
 
     @property
     def sample_rate(self) -> int:
-        return self.SAMPLE_RATE
+        return self._sample_rate
 
     @property
     def window_seconds(self) -> float:
-        return self.WINDOW_SECONDS
+        return self._window_seconds
 
     @property
     def class_names(self) -> dict[int, str]:
@@ -1188,8 +1157,9 @@ class BirdNetModel:
         self._interpreter.set_tensor(self._input["index"], audio)
         self._interpreter.invoke()
         logits = np.asarray(self._interpreter.get_tensor(self._output["index"])).reshape(-1)
-        # BirdNET emits per-class logits, not probabilities; a numerically stable
-        # sigmoid maps them to the [0, 1] confidences the onset threshold expects.
+        # A TFLite classifier emits per-class logits, not probabilities; a
+        # numerically stable sigmoid maps them to the [0, 1] confidences the
+        # onset threshold expects.
         scores = np.where(
             logits >= 0,
             1.0 / (1.0 + np.exp(-logits)),
@@ -1210,61 +1180,122 @@ class BirdNetModel:
         self._interpreter = None
 
 
-def build_acoustic_model(station: dict, settings) -> AcousticModel:
-    """Construct the acoustic model the station selected in configuration.
+def _is_saved_model_dir(path: Path) -> bool:
+    """Whether a path is a TensorFlow SavedModel directory."""
+    return path.is_dir() and (path / "saved_model.pb").exists()
 
-    The active slot name chooses the adapter and its audio preprocessing; the
-    path, version, and citation for that slot come from configuration. Changing
-    the active slot in configuration changes the model with no change to any
-    code here. A slot with no model file configured raises a clear error rather
-    than starting a station that cannot listen.
+
+def _probe_tflite_shape(model_path: Path) -> dict:
+    """Read what a TFLite acoustic model's own tensors state, no rate assumed.
+
+    Returns the input window length in samples and the class-head width, both
+    read from the file, plus the adapter name. The sample rate is deliberately
+    absent: it is not stored in the file and cannot be derived from the sample
+    count alone, so it is proposed or entered elsewhere, never guessed here.
     """
-    acoustic = station["models"]["acoustic"]
-    active = acoustic["active"]
-    options = acoustic.get("options", {})
-    if active not in options:
-        raise ValueError(
-            f"active acoustic model {active!r} has no entry under "
-            f"models.acoustic.options for station {station.get('station_name')!r}"
-        )
-    option = options[active]
-    path_value = option.get("path")
+    interpreter = _tflite_interpreter(model_path)
+    in_shape = list(interpreter.get_input_details()[0].get("shape", []))
+    out_shape = list(interpreter.get_output_details()[0].get("shape", []))
+    input_samples = int(in_shape[-1]) if in_shape else None
+    class_count = int(out_shape[-1]) if out_shape else None
+    return {"adapter": "tflite", "input_samples": input_samples, "class_count": class_count}
+
+
+def probe_acoustic_model(model_path, *, proposals: Optional[dict] = None) -> dict:
+    """Read an acoustic model file's audio shape, keeping read and proposed apart.
+
+    What can be read from the file is read; what cannot be read is proposed, and
+    the two are never conflated, so a configuration never presents a guessed
+    sample rate as a measured one. A `.tflite` file's input window length and
+    class-head width are read from its tensors. A SavedModel directory is
+    reported by form only, since its input shape is not reliably introspectable
+    here. The sample rate is never in the file: when a `proposals` table keyed by
+    the measured fingerprint `"<input_samples>x<class_count>"` carries an entry,
+    that rate is offered as proposed and the window is derived from it; otherwise
+    the rate is left for a person to enter.
+
+    Returns a dict with three parts kept separate:
+      read     - facts taken from the file (adapter, input_samples, class_count)
+      proposed - values offered but not read (sample_rate)
+      derived  - values computed from a proposed value (window_seconds)
+    """
+    path = Path(model_path)
+    read: dict = {"adapter": None, "input_samples": None, "class_count": None}
+    if _is_saved_model_dir(path):
+        read["adapter"] = "savedmodel"
+    elif path.suffix.lower() == ".tflite":
+        read = _probe_tflite_shape(path)
+
+    proposed: dict = {"sample_rate": None}
+    derived: dict = {"window_seconds": None}
+
+    input_samples = read.get("input_samples")
+    class_count = read.get("class_count")
+    if proposals and input_samples is not None and class_count is not None:
+        fingerprint = f"{input_samples}x{class_count}"
+        entry = proposals.get(fingerprint)
+        rate = entry.get("sample_rate") if isinstance(entry, dict) else entry
+        if isinstance(rate, (int, float)) and not isinstance(rate, bool) and rate > 0:
+            proposed["sample_rate"] = int(rate)
+            derived["window_seconds"] = round(input_samples / float(rate), 4)
+
+    return {"read": read, "proposed": proposed, "derived": derived}
+
+
+def build_acoustic_model(station: dict, settings) -> AcousticModel:
+    """Construct the station's single acoustic model from its flat configuration.
+
+    A station listens with one model, described by one flat block: models.acoustic
+    carries the path, the labels path, the audio shape (sample_rate,
+    window_seconds, output_key), and the version and citation. The adapter is
+    chosen from the file's own form, never from a configured name, so the platform
+    stays indifferent to what is being studied: a `.tflite` file is run through the
+    TFLite runtime, a SavedModel directory through TensorFlow. A block with no path
+    raises a clear error naming models.acoustic.path rather than starting a station
+    that cannot listen.
+    """
+    acoustic = station["models"].get("acoustic") or {}
+    path_value = acoustic.get("path")
     if not path_value:
         raise ValueError(
-            f"acoustic model slot {active!r} has no path configured for station "
-            f"{station.get('station_name')!r}; set models.acoustic.options.{active}.path"
+            f"station {station.get('station_name')!r} has no acoustic model set; "
+            f"set models.acoustic.path to a model file"
         )
     model_path = settings.resolve_path(path_value)
     if not model_path.exists():
-        raise FileNotFoundError(
-            f"acoustic model file for slot {active!r} was not found at {model_path}"
-        )
-    labels_value = option.get("labels_path")
+        raise FileNotFoundError(f"the acoustic model file was not found at {model_path}")
+    labels_value = acoustic.get("labels_path")
     labels_path = settings.resolve_path(labels_value) if labels_value else None
-    version = option.get("version")
-    citation = option.get("citation")
+    version = acoustic.get("version")
+    citation = acoustic.get("citation")
+    sample_rate = acoustic.get("sample_rate")
+    window_seconds = acoustic.get("window_seconds")
+    rate = int(sample_rate) if sample_rate else DEFAULT_ACOUSTIC_SAMPLE_RATE
+    window = float(window_seconds) if window_seconds else DEFAULT_ACOUSTIC_WINDOW_SECONDS
 
-    if active == MARINE_MODEL_KEY:
-        return SurfPerchModel(
-            model_path=model_path, version=version, citation=citation, labels_path=labels_path
-        )
-    if active == BIRDNET_MODEL_KEY:
-        return BirdNetModel(
-            model_path=model_path, version=version, citation=citation, labels_path=labels_path
-        )
-    if active == CUSTOM_MODEL_KEY:
-        # A user classifier in the SavedModel shape. The output head, rate, and
-        # window come from the slot so a custom model needs no code here.
+    if _is_saved_model_dir(model_path):
         return SavedModelAcousticModel(
             model_path=model_path,
-            output_key=option.get("output_key", "label"),
-            sample_rate=int(option.get("sample_rate", SurfPerchModel.SAMPLE_RATE)),
-            window_seconds=float(option.get("window_seconds", SurfPerchModel.WINDOW_SECONDS)),
+            output_key=acoustic.get("output_key") or "label",
+            sample_rate=rate,
+            window_seconds=window,
             version=version,
             citation=citation,
             labels_path=labels_path,
         )
-    raise ValueError(f"unrecognised acoustic model slot {active!r}")
+    if model_path.suffix.lower() == ".tflite":
+        return TFLiteAcousticModel(
+            model_path=model_path,
+            sample_rate=rate,
+            window_seconds=window,
+            version=version,
+            citation=citation,
+            labels_path=labels_path,
+        )
+    raise ValueError(
+        f"the acoustic model at {model_path} is not a form this runtime can load; "
+        f"a '.tflite' file or a TensorFlow SavedModel directory is expected"
+    )
 
 
 # ===========================================================================

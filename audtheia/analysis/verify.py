@@ -125,7 +125,7 @@ ELIGIBLE_QC_STATES = frozenset({QC_PASSED, QC_DEFERRED})
 # has no frame for the visual verifier to re-score, so it cannot be cross-checked
 # by a second model; it is cleared for the dream pass's generative phase when its
 # strongest acoustic detection meets this confidence floor. This is a weaker gate
-# than the visual two-model check — it rests on the model's own confidence — and
+# than the visual two-model check (it rests on the model's own confidence) and
 # is set higher than the visual floor so only a strong call earns generative use.
 # Overridable via analysis.thresholds.verification.acoustic_clear_confidence.
 DEFAULT_ACOUSTIC_CLEAR_CONFIDENCE = 0.7
@@ -437,7 +437,7 @@ class VerifyEngine:
 
         An audio event has no frame to re-score, so it cannot be cross-checked by
         a second model the way a visual event is. It is cleared when its strongest
-        acoustic detection meets the configured confidence floor — an honest,
+        acoustic detection meets the configured confidence floor, an honest,
         weaker gate than the visual two-model check, recorded as an acoustic
         clearance with every RF-DETR field left null because no RF-DETR ran. The
         peak confidence is not copied into the verdict's rfdetr_* columns, which
@@ -462,7 +462,7 @@ class VerifyEngine:
         `verified` is the only gate the dream pass reads, and it is set from the
         acoustic confidence gate. Every rfdetr_* field is null because no RF-DETR
         ran, and the authoritative salience is left unset so the field-provisional
-        salience stands until a baseline recompute exists — matching how a
+        salience stands until a baseline recompute exists, matching how a
         frameless event is handled elsewhere.
         """
         now = utc_now_iso()

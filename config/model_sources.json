@@ -62,5 +62,14 @@
       "citation": "Williams et al., SurfPerch, a reef-adapted bioacoustic model, Google Research, 2024",
       "note": "The default marine passive-acoustic model, a TensorFlow SavedModel directory read through its reef head at five-second windows and thirty-two kilohertz. Staged on the desktop only for the Pi to receive; the desktop does not run it. Fetched only in full mode. Because it ships as a SavedModel directory rather than one file, record its exact packaging and url before enabling automatic fetch; until then setup reports it as pending, and its settings.json marine path stays unset so a marine station wires it deliberately once the file is in place."
     }
+  },
+  "acoustic_shape_proposals": {
+    "description": "Proposed sample rates for an acoustic model whose window length in samples and class-head width are read from the file but whose sample rate is not stored in the file and cannot be derived from the sample count alone. This is data, not code, and names no model family: entries are keyed only by the measured fingerprint '<input_samples>x<class_count>' so a recognised shape can offer a starting sample rate that a person then confirms or changes. A fingerprint that is not listed simply gets no proposal, and the rate is entered by hand. Each entry may carry a note explaining why the rate is proposed; the note is informational and the rate is always presented as proposed, never as read from the file.",
+    "by_fingerprint": {
+      "144000x6522": {
+        "sample_rate": 48000,
+        "note": "144000 samples is 3.0 seconds at 48 kHz. The same sample count is also 4.5 seconds at 32 kHz, so this rate is a proposal to confirm, not a fact read from the file."
+      }
+    }
   }
 }
