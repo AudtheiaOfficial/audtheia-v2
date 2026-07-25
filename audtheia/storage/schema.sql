@@ -413,6 +413,50 @@ CREATE INDEX idx_observation_corrections_detection_id
     ON observation_corrections(detection_id);
 
 -- ============================================================================
+-- FRAME_REVIEW  (desktop-owned)
+-- A human expert's per-frame verdict on a visual event: is this one saved frame
+-- an accurate detection or not. The event's single taxon and every measured
+-- number (frame_count, duration, screening_confidence, salience_provisional)
+-- stay exactly as captured; this table is a separate, additive layer, so the
+-- measured record of what the model did is never altered by a review.
+--
+-- The separation is the same firewall observation_corrections uses: the row is
+-- data_source = 'human_expert', desktop-owned, and outside the append-only
+-- Pi -> desktop pull, so a later sync can never overwrite a reviewer's work.
+--
+-- Append-only. A change of mind is a new row; readers take the most recent row
+-- per (observation_id, frame_index). 'cleared' retracts an earlier verdict so a
+-- toggle can return a frame to unreviewed without deleting history.
+--
+-- A per-frame verdict carries no taxon and no confidence. Which species a frame
+-- shows is the model's own per-frame annotation, and the corrected species for
+-- the whole event is an observation_corrections relabel; a frame verdict only
+-- states accurate or not. Downstream, an 'inaccurate' frame is subtracted from
+-- the event's expert-curated view and from the frame count the analysis trusts,
+-- while the measured columns above are left untouched.
+-- ============================================================================
+CREATE TABLE frame_review (
+    id                  TEXT PRIMARY KEY,       -- UUID
+    observation_id      TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+    frame_index         INTEGER NOT NULL,       -- the per-frame annotation index this verdict is about
+
+    verdict             TEXT NOT NULL CHECK (verdict IN ('accurate', 'inaccurate', 'cleared')),
+
+    corrector           TEXT NOT NULL,          -- required: an anonymous review is not reviewable
+    reviewed_at         TEXT NOT NULL,          -- UTC ISO8601
+    reason              TEXT,
+
+    data_source         TEXT NOT NULL CHECK (data_source = 'human_expert'),
+    created_at          TEXT NOT NULL
+) STRICT;
+
+-- The dominant read is "the current verdict per frame of this event", served by
+-- the composite; by leftmost prefix it also serves every observation_id-only
+-- lookup (the review summary and the dream-pass exclusion gate).
+CREATE INDEX idx_frame_review_observation
+    ON frame_review(observation_id, frame_index, reviewed_at);
+
+-- ============================================================================
 -- INTERPRETATIONS  (desktop-owned)
 -- The interpretive points owned by the desktop verification step, plus
 -- interpretive-skill outputs. Always data_source = 'llm_inferred'; never

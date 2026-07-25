@@ -104,7 +104,7 @@ The reference configuration ships a station already set to `webcam:0` so you can
 
 ### Step 2: Provide a detection model
 
-Desktop detection uses an RF-DETR model exported to ONNX, placed at the path the station's desktop model setting names (`models/visual/porifera_rfdetr.onnx` in the reference configuration). See the [custom models guide](docs/custom-models.md) for how to obtain or train one. Until a model is present, the pipeline still runs; it simply records no detections.
+Desktop detection uses an RF-DETR model exported to ONNX, placed at the path the station's desktop model setting names (`models/visual/porifera_rfdetr.onnx` in the reference configuration). See the [custom models guide](docs/custom-models.md) for how to obtain or train one. If you have trained an RF-DETR checkpoint, `python scripts/export_rfdetr_onnx.py` converts it to the ONNX form Audtheia loads, a one-time offline build step that never runs during capture. Until a model is present, the pipeline still runs; it simply records no detections.
 
 ### Step 3: Give the model its species names
 
@@ -117,7 +117,7 @@ pip install roboflow
 python scripts/fetch_porifera_dataset.py --api-key YOUR_ROBOFLOW_KEY   # from roboflow.com -> Settings -> API keys
 ```
 
-That downloads the dataset version matching your model, reads its authoritative class list, and writes the names file beside the model (checking it against the model's own class head as it goes). If you already have a COCO export on disk, skip the download and run `python scripts/build_porifera_labels.py --coco path/to/_annotations.coco.json` instead. The [custom models guide](docs/custom-models.md) explains the details.
+That downloads the dataset version matching your model, reads its authoritative class list, and writes the names file beside the model (checking it against the model's own class head as it goes). If you already have a COCO export on disk, skip the download and run `python scripts/build_porifera_labels.py --coco path/to/_annotations.coco.json` instead. If your model came from a dataset with a `data.yaml` class list (a common YOLO or RF-DETR training layout), `python scripts/build_labels_from_yaml.py` writes the names file from that instead. The [custom models guide](docs/custom-models.md) explains the details.
 
 ### Step 4: Run it
 
@@ -146,19 +146,16 @@ Once the hardware is assembled:
 
 This sends the code, the station's configuration and models, and its network settings to the Pi, sets up its environment, initializes its local store, brings up its Wi-Fi hotspot, and installs the service that keeps it running across reboots. From then on the station operates independently. In the field with no internet, it broadcasts its own network named after the station; connect a phone or laptop to that network and open the station's local address to see live detections, sensor readings, storage status, and settings. Back within range of your computer, the desktop connects and pulls new records automatically.
 
-## Fetching species reference data
+## Setting up species names and conservation status
 
-Audtheia ships the GBIF taxonomic backbone so it can resolve names with no internet at runtime. Global occurrence counts and conservation status are fetched once per target species, under your own credentials, and cached locally.
+Two one-time steps prepare the species data Audtheia uses offline at run time. Both are guided actions in the interface, under **Brain, Species data**, so neither needs a command line; each runs in the background and shows its progress, and you can leave the page while one runs.
 
-1. Put your GBIF and IUCN credentials in `config/secrets.json` (setup created it from a template).
-2. Run the fetch:
+- **Build the taxonomic index.** Relabelling a detection to a corrected species searches a prebuilt index of the shipped GBIF backbone. Building it reads the backbone once and takes several minutes. Confirming a detection, rejecting it, and marking individual frames accurate or inaccurate need no index and work without it; only relabelling to a searched species depends on it.
+- **Fetch reference data.** For each of your stations' target species, Audtheia fetches the GBIF taxonomic match, the GBIF global occurrence count, and, when a token is present, the IUCN Red List category, and caches them locally with the fetch date stamped on every dependent record. New captures then carry a snapshot date, so the "Model and data versions" panel discloses how current its taxonomy and status data is.
 
-   ```
-   ./scripts/fetch-species-data.sh
-   scripts\fetch-species-data.bat
-   ```
+Only one credential matters, and only for one field. GBIF naming and the occurrence count are public and need no account, so the IUCN token is the only credential that changes anything: it adds the Red List conservation status. Put an IUCN token in `config/secrets.json` (setup created it from a template) to fill that field; without it, everything else still fetches and the status is left blank and reported as such.
 
-Each species' reference data is fetched once and cached, with the fetch date stamped on every dependent record, so a report can always disclose how current its taxonomy and status information is.
+Both steps are also available from the command line for an unattended setup: `python scripts/build_gbif_index.py` builds the index, and `./scripts/fetch-species-data.sh` (or `scripts\fetch-species-data.bat`) fetches the reference data.
 
 ## Using the interface
 

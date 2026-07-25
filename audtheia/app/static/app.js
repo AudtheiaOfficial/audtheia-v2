@@ -373,12 +373,75 @@
 
     // Markers, clipped so nothing spills past the frame. Detections first, then
     // stations on top, so a station marker is never lost behind a cluster of dots.
+    // Names are shown in an on-demand callout (hover, keyboard focus, or click to
+    // pin) instead of a permanently drawn label, so labels never overlap when two
+    // sites sit close together.
     var pts = svgEl("g", { "clip-path": "url(#" + clipId + ")" });
+
+    // One shared, styled callout drawn on top and OUTSIDE the clip, so it renders
+    // in full even next to an edge. It carries the same name and position the old
+    // always-drawn label and the browser's default tooltip showed, in the panel's
+    // own styling rather than the browser's box.
+    var callout = svgEl("g", { class: "map-callout", "aria-hidden": "true" });
+    callout.setAttribute("display", "none");
+    var calloutBox = svgEl("rect", { class: "map-callout-box", rx: 4, x: 0, y: 0, width: 10, height: 10 });
+    var calloutName = svgEl("text", { class: "map-callout-name", x: 0, y: 0 });
+    var calloutMeta = svgEl("text", { class: "map-callout-meta", x: 0, y: 0 });
+    callout.appendChild(calloutBox);
+    callout.appendChild(calloutName);
+    callout.appendChild(calloutMeta);
+
+    var pinned = null;  // the marker element whose callout a click has pinned
+
+    function placeCallout(p, ax, ay) {
+      calloutName.textContent = p.label || "(unnamed)";
+      calloutMeta.textContent = pointKind(p) + "  " + p.lat.toFixed(5) + ", " + p.lon.toFixed(5);
+      callout.removeAttribute("display");  // make visible before measuring text
+      var padX = 8, padY = 6, gap = 4, nameH = 13, metaH = 11;
+      var boxW = Math.max(calloutName.getComputedTextLength(), calloutMeta.getComputedTextLength()) + padX * 2;
+      var boxH = padY * 2 + nameH + gap + metaH;
+      // Prefer above-and-right of the marker; flip or drop below to stay in frame.
+      var bx = ax + 10, by = ay - boxH - 8;
+      if (bx + boxW > ox + plotW) { bx = ax - boxW - 10; }
+      if (bx < ox) { bx = ox + 2; }
+      if (bx + boxW > ox + plotW) { bx = ox + plotW - boxW - 2; }
+      if (by < oy) { by = ay + 12; }
+      if (by + boxH > oy + plotH) { by = oy + plotH - boxH - 2; }
+      calloutBox.setAttribute("x", bx.toFixed(1));
+      calloutBox.setAttribute("y", by.toFixed(1));
+      calloutBox.setAttribute("width", boxW.toFixed(1));
+      calloutBox.setAttribute("height", boxH.toFixed(1));
+      calloutName.setAttribute("x", (bx + padX).toFixed(1));
+      calloutName.setAttribute("y", (by + padY + nameH - 2).toFixed(1));
+      calloutMeta.setAttribute("x", (bx + padX).toFixed(1));
+      calloutMeta.setAttribute("y", (by + padY + nameH + gap + metaH - 2).toFixed(1));
+    }
+
+    function hideCallout() { callout.setAttribute("display", "none"); }
+
+    function wireMarker(mk, p, ax, ay) {
+      mk.setAttribute("tabindex", "0");
+      mk.setAttribute("role", "button");
+      mk.setAttribute("aria-label",
+        (p.label || "unnamed") + ", " + pointKind(p) + ", " + p.lat.toFixed(5) + ", " + p.lon.toFixed(5));
+      mk.style.cursor = "pointer";
+      mk.addEventListener("mouseenter", function () { if (!pinned) { placeCallout(p, ax, ay); } });
+      mk.addEventListener("mouseleave", function () { if (!pinned) { hideCallout(); } });
+      mk.addEventListener("focus", function () { if (!pinned) { placeCallout(p, ax, ay); } });
+      mk.addEventListener("blur", function () { if (!pinned) { hideCallout(); } });
+      mk.addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (pinned === mk) { pinned = null; hideCallout(); }
+        else { pinned = mk; placeCallout(p, ax, ay); }
+      });
+    }
+
     points.forEach(function (p) {
       if (p.kind === "station") { return; }
       var cls = "map-point" + (p.status === "station_configured" ? " is-configured" : "");
-      var c = svgEl("circle", { cx: px(p.lon).toFixed(1), cy: py(p.lat).toFixed(1), r: 5, class: cls });
-      c.appendChild(pointTitle(p));
+      var ax = px(p.lon), ay = py(p.lat);
+      var c = svgEl("circle", { cx: ax.toFixed(1), cy: ay.toFixed(1), r: 5, class: cls });
+      wireMarker(c, p, ax, ay);
       pts.appendChild(c);
     });
     points.forEach(function (p) {
@@ -386,13 +449,13 @@
       var x = px(p.lon), y = py(p.lat), s = 7;
       var d = "M " + x + " " + (y - s) + " L " + (x + s) + " " + y + " L " + x + " " + (y + s) + " L " + (x - s) + " " + y + " Z";
       var mk = svgEl("path", { d: d, class: "map-station" });
-      mk.appendChild(pointTitle(p));
+      wireMarker(mk, p, x, y);
       pts.appendChild(mk);
-      var lbl = svgEl("text", { x: x, y: y - 11, class: "map-station-label", "text-anchor": "middle" });
-      lbl.appendChild(document.createTextNode(p.label || ""));
-      pts.appendChild(lbl);
     });
     svg.appendChild(pts);
+    svg.appendChild(callout);
+    // A click on empty map space dismisses a pinned callout.
+    svg.addEventListener("click", function () { pinned = null; hideCallout(); });
 
     return el("div", { class: "map-wrap" }, [svg, coordinateLegend(points)]);
   }
@@ -463,13 +526,15 @@
     return g;
   }
 
-  function pointTitle(p) {
-    var t = svgEl("title", {});
-    var kind = p.kind === "station"
-      ? "station position"
-      : (p.status === "station_configured" ? "entered position" : "measured fix");
-    t.appendChild(document.createTextNode((p.label || "") + ", " + kind + " (" + p.lat.toFixed(5) + ", " + p.lon.toFixed(5) + ")"));
-    return t;
+  // The human-readable kind of a plotted point, shared by the map callout text
+  // and each marker's accessible label. "station position" is a station's own
+  // configured coordinates; "entered position" is a detection whose location came
+  // from those configured coordinates rather than a live fix; "measured fix" is a
+  // live satellite reading.
+  function pointKind(p) {
+    return p.kind === "station"
+      ? "Station position"
+      : (p.status === "station_configured" ? "Entered position" : "Measured fix");
   }
 
   // A legend that names only the point kinds actually on the plot, so a reader
@@ -1176,12 +1241,95 @@
       if (!frames.length) {
         framesHost.appendChild(el("p", { class: "empty-state", text: "No stored frames were found for this event on disk." }));
       } else {
-        framesHost.appendChild(auditFrameStrip(frames, species));
+        // A curation summary that repaints as frames are reviewed, above the
+        // strip, so the effect of a verdict is visible without scrolling.
+        var summaryHost = el("div", { class: "audit-curation" });
+        function paintCuration(sum) {
+          clear(summaryHost);
+          summaryHost.appendChild(curationView(data.distribution || [], sum || data.review_summary));
+        }
+        paintCuration(data.review_summary);
+        framesHost.appendChild(summaryHost);
+        framesHost.appendChild(auditFrameStrip(frames, species, obs.id, paintCuration));
       }
     }).catch(function (e) {
       clear(framesHost);
       framesHost.appendChild(el("p", { class: "empty-state", text: "Could not load frames: " + e.message }));
     });
+  }
+
+  // The expert-curation view: the per-frame species distribution, and what an
+  // expert's frame verdicts have done to the trusted set. It never restates a
+  // measured number as changed; the measured stats live in auditDerivation above
+  // and stay as captured. An 'inaccurate' frame is subtracted here and nowhere
+  // else.
+  function curationView(distribution, summary) {
+    var wrap = el("div", { class: "audit-derivation" });
+    wrap.appendChild(el("div", { class: "card-title", text: "Per-frame review" }));
+
+    if (distribution.length) {
+      var parts = distribution.map(function (d) { return d.count + " " + d.class_name; });
+      wrap.appendChild(el("div", { class: "audit-row" }, [
+        el("span", { class: "audit-k", text: "Frames by species" }),
+        el("span", { class: "audit-v", text: parts.join(", ") })
+      ]));
+    }
+    if (summary && summary.multiple_candidates) {
+      wrap.appendChild(el("p", { class: "form-hint", text:
+        "This track was read as more than one species across its frames. If it is one organism the model second-guessed, relabel the whole event above and mark the wrong frames Inaccurate; if two organisms really were present, mark each frame accordingly." }));
+    }
+    if (summary) {
+      var total = summary.total_frames || 0;
+      var kept = summary.curated_frame_count != null ? summary.curated_frame_count : total;
+      var trust = summary.trust != null ? Math.round(summary.trust * 100) + "%" : "not reviewed";
+      wrap.appendChild(el("div", { class: "audit-row" }, [
+        el("span", { class: "audit-k", text: "Expert-curated" }),
+        el("span", { class: "audit-v", text: kept + " of " + total + " frames kept  (" +
+          (summary.inaccurate || 0) + " marked inaccurate, " + (summary.accurate || 0) + " confirmed accurate)" })
+      ]));
+      wrap.appendChild(el("div", { class: "audit-row" }, [
+        el("span", { class: "audit-k", text: "Event trust" }),
+        el("span", { class: "audit-v", text: trust })
+      ]));
+    }
+    wrap.appendChild(el("p", { class: "form-hint", text:
+      "Marking a frame Inaccurate subtracts it from this curated view and from the frame count the longitudinal pass and analytics trust; an event whose every frame is Inaccurate, or one you reject above, is left out of the pass entirely. The measured numbers above never change, so what the model did stays on the record." }));
+    return wrap;
+  }
+
+  // The two per-frame verdict buttons. A second click on the active verdict
+  // clears it, so a frame can return to unreviewed without leaving a false
+  // record. The measured frame is never altered; this only appends a verdict.
+  function frameReviewButtons(f, obsId, cell, onReviewed) {
+    var rowEl = el("div", { class: "frame-review" });
+    var accBtn = el("button", { type: "button", class: "frame-review-btn acc", text: "Accurate" });
+    var badBtn = el("button", { type: "button", class: "frame-review-btn bad", text: "Inaccurate" });
+    function paint() {
+      accBtn.classList.toggle("is-on", f.review === "accurate");
+      badBtn.classList.toggle("is-on", f.review === "inaccurate");
+      accBtn.setAttribute("aria-pressed", f.review === "accurate" ? "true" : "false");
+      badBtn.setAttribute("aria-pressed", f.review === "inaccurate" ? "true" : "false");
+      cell.classList.toggle("frame-inaccurate", f.review === "inaccurate");
+      cell.classList.toggle("frame-accurate", f.review === "accurate");
+    }
+    function send(target) {
+      var verdict = (f.review === target) ? "cleared" : target;
+      accBtn.disabled = badBtn.disabled = true;
+      apiSend("/detections/" + encodeURIComponent(obsId) + "/frames/" + f.index + "/review", "POST",
+        { verdict: verdict }).then(function (res) {
+          f.review = (verdict === "cleared") ? null : verdict;
+          paint();
+          if (onReviewed) { onReviewed(res.review_summary); }
+        }).catch(function (e) {
+          cell.appendChild(el("div", { class: "frame-review-err", text: e.message }));
+        }).then(function () { accBtn.disabled = badBtn.disabled = false; });
+    }
+    accBtn.addEventListener("click", function () { send("accurate"); });
+    badBtn.addEventListener("click", function () { send("inaccurate"); });
+    paint();
+    rowEl.appendChild(accBtn);
+    rowEl.appendChild(badBtn);
+    return rowEl;
   }
 
   function auditDerivation(obs, frames) {
@@ -1214,9 +1362,10 @@
     return wrap;
   }
 
-  function auditFrameStrip(frames, caption) {
+  function auditFrameStrip(frames, caption, obsId, onReviewed) {
     var wrap = el("div", { class: "audit-strip-wrap" });
-    wrap.appendChild(el("div", { class: "card-note", text: frames.length + " frames · scroll to review · click any frame to enlarge" }));
+    wrap.appendChild(el("div", { class: "card-note", text: frames.length +
+      " frames · scroll to review · click a frame to enlarge · mark each Accurate or Inaccurate" }));
     var strip = el("div", { class: "audit-strip" });
     frames.forEach(function (f) {
       var src = API + "/media" + query({ path: f.path });
@@ -1233,7 +1382,11 @@
       withBoxes(fw, img, boxes);
       cell.appendChild(fw);
       cell.appendChild(el("div", { class: "audit-cell-meta", text: "#" + f.index +
-        (f.confidence != null ? "  ·  " + Math.round(Number(f.confidence) * 100) + "%" : "") }));
+        (f.confidence != null ? "  ·  " + Math.round(Number(f.confidence) * 100) + "%" : "") +
+        (f.class_name ? "  ·  " + f.class_name : "") }));
+      if (obsId != null && f.index != null) {
+        cell.appendChild(frameReviewButtons(f, obsId, cell, onReviewed));
+      }
       strip.appendChild(cell);
     });
     wrap.appendChild(strip);
@@ -2580,6 +2733,11 @@
       host.appendChild(runHost);
       renderRunNowControls(runHost);
 
+      host.appendChild(el("h3", { text: "Species data" }));
+      var speciesHost = el("div");
+      host.appendChild(speciesHost);
+      renderSpeciesData(speciesHost);
+
       host.appendChild(el("h3", { text: "Audit" }));
       host.appendChild(el("p", { class: "settings-desc", text:
         "Evidence of how the system behaved, counted from the stored record. Every figure here is a count or an average over rows already written, never a new measurement and never an interpretation." }));
@@ -2747,6 +2905,8 @@
       ekv.appendChild(modelKvRow("Relabelled", fmtNum(expert.relabel)));
       ekv.appendChild(modelKvRow("Rejected", fmtNum(expert.reject)));
       expBlock.appendChild(ekv);
+      expBlock.appendChild(el("p", { class: "card-note", text:
+        "The first line counts events; Confirmed, Relabelled, and Rejected count individual corrected targets, so they can differ when one event carries more than one verdict." }));
     }
     wrap.appendChild(expBlock);
 
@@ -2779,6 +2939,8 @@
     qcBlock.appendChild(el("div", { class: "card-title", text: "Quality control" }));
     qcBlock.appendChild(el("p", { class: "settings-desc", text:
       "What the field station's deterministic checks did with each record. A deferred record is one the station could not classify on its own and passed to the desktop, with its reason recorded." }));
+    qcBlock.appendChild(el("p", { class: "card-note", text:
+      "\"Passed\" means the checks finalized the record; \"pending\" means capture saved it but quality control has not run on it yet. Use \"Finalize quality control\" in the Run now controls above to clear pending records now." }));
     var states = countsToBars(qc.by_state);
     if (states.length) { qcBlock.appendChild(barChart(states, { title: "events by quality state" })); }
     var reasons = countsToBars(qc.by_reason);
@@ -2929,6 +3091,117 @@
     block.appendChild(row);
     block.appendChild(result);
     host.appendChild(block);
+  }
+
+  // The two guided species-data setup steps: building the taxonomic index that
+  // relabelling searches, and fetching per-species GBIF and IUCN reference data.
+  // Each runs in the background on the desktop; this reads its status and, while a
+  // job runs, repolls so progress updates without a manual reload. The steps
+  // replace the command-line scripts so a non-programmer never needs a terminal.
+  function renderSpeciesData(host) {
+    clear(host);
+    var block = el("div", { class: "info-block" });
+    block.appendChild(el("p", { class: "settings-desc", text:
+      "Prepare the species data Audtheia uses offline at run time. Each step runs in the background and reports progress here; you can leave this page while one runs." }));
+    var indexHost = el("div");
+    var refHost = el("div", { class: "species-step" });
+    block.appendChild(indexHost);
+    block.appendChild(refHost);
+    host.appendChild(block);
+
+    function stillHere(node) { return state.activePanel === "brain" && document.body.contains(node); }
+
+    function paintIndex() {
+      apiGet("/species/index/status").then(function (s) {
+        clear(indexHost);
+        var job = s.job || {};
+        indexHost.appendChild(el("div", { class: "card-title", text: "Taxonomic index (species search for relabelling)" }));
+        var line;
+        if (s.index_present) {
+          line = "Built: " + (s.index_names != null ? fmtNum(s.index_names) + " names" : "present") +
+            ". Relabelling a detection can search species.";
+        } else if (!s.backbone_present) {
+          line = "Not built, and the backbone file is missing. Fetch the backbone during setup, then build the index.";
+        } else {
+          line = "Not built. Relabelling to a corrected species needs this; confirm, reject and per-frame review already work without it.";
+        }
+        indexHost.appendChild(el("p", { class: "card-note", text: line }));
+        if (job.status === "running") {
+          var pct = job.progress != null ? Math.round(job.progress * 100) + "%  " : "";
+          indexHost.appendChild(el("p", { class: "card-note", text: "Building: " + pct + (job.message || "working") }));
+        } else {
+          if (job.status === "done" && job.result) {
+            indexHost.appendChild(el("p", { class: "card-note", text: "Last build indexed " + fmtNum(job.result.names) + " names." }));
+          } else if (job.status === "error") {
+            indexHost.appendChild(el("p", { class: "card-note", text: "Last build did not finish: " + job.error }));
+          }
+          if (s.backbone_present) {
+            var label = s.index_present ? "Rebuild index" : "Build index";
+            var btn = el("button", { type: "button", class: "btn", text: label });
+            btn.addEventListener("click", function () {
+              btn.disabled = true;
+              apiSend("/species/index/build" + (s.index_present ? query({ force: true }) : ""), "POST", {})
+                .then(function () { paintIndex(); })
+                .catch(function (e) { btn.disabled = false; indexHost.appendChild(el("p", { class: "card-note", text: e.message })); });
+            });
+            indexHost.appendChild(btn);
+            indexHost.appendChild(el("p", { class: "form-hint", text:
+              "Building reads the whole backbone once and takes several minutes." }));
+          }
+        }
+        if (job.status === "running" && stillHere(indexHost)) { window.setTimeout(paintIndex, 3000); }
+      }).catch(function (e) {
+        clear(indexHost);
+        indexHost.appendChild(el("p", { class: "card-note", text: "Could not read index status: " + e.message }));
+      });
+    }
+
+    function paintRef() {
+      apiGet("/species/reference/status").then(function (s) {
+        clear(refHost);
+        var job = s.job || {};
+        var targets = s.target_species || [];
+        refHost.appendChild(el("div", { class: "card-title", text: "Reference data (names, occurrence, conservation status)" }));
+        refHost.appendChild(el("p", { class: "card-note", text:
+          fmtNum(s.references_stored) + " species on file. " + targets.length + " target species configured across your stations." }));
+        refHost.appendChild(el("p", { class: "form-hint", text:
+          "GBIF naming and the global occurrence count need no account. The IUCN token only adds the Red List conservation status: " +
+          (s.iucn_token_present
+            ? "a token is set, so status will be fetched."
+            : "no token is set, so status stays blank until you add one in Settings.") }));
+        if (job.status === "running") {
+          refHost.appendChild(el("p", { class: "card-note", text: "Fetching: " + (job.message || "working") }));
+        } else {
+          if (job.status === "done" && job.result) {
+            var r = job.result;
+            refHost.appendChild(el("p", { class: "card-note", text:
+              "Last fetch: " + fmtNum(r.fetched) + " stored, " + fmtNum(r.cached) + " already on file, " +
+              fmtNum(r.unmatched) + " not matched by GBIF, " + fmtNum(r.failed) + " failed." }));
+          } else if (job.status === "error") {
+            refHost.appendChild(el("p", { class: "card-note", text: "Last fetch did not finish: " + job.error }));
+          }
+          var btn = el("button", { type: "button", class: "btn", text: "Fetch reference data" });
+          if (!targets.length) { btn.disabled = true; }
+          btn.addEventListener("click", function () {
+            btn.disabled = true;
+            apiSend("/species/reference/fetch", "POST", {})
+              .then(function () { paintRef(); })
+              .catch(function (e) { btn.disabled = false; refHost.appendChild(el("p", { class: "card-note", text: e.message })); });
+          });
+          refHost.appendChild(btn);
+          refHost.appendChild(el("p", { class: "form-hint", text: targets.length
+            ? "This reaches out to GBIF and IUCN once per species and needs an internet connection; it is the one online step. New captures then carry a snapshot date."
+            : "Add target species to a station in Settings first; the fetch covers your stations' target species." }));
+        }
+        if (job.status === "running" && stillHere(refHost)) { window.setTimeout(paintRef, 3000); }
+      }).catch(function (e) {
+        clear(refHost);
+        refHost.appendChild(el("p", { class: "card-note", text: "Could not read reference status: " + e.message }));
+      });
+    }
+
+    paintIndex();
+    paintRef();
   }
 
   // Keep the longitudinal pass current without rebuilding the whole panel: only

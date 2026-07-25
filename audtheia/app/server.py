@@ -37,12 +37,14 @@ and tooling that do not need a live server.
 """
 
 import copy
+import importlib.util
 import json
 import os
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -79,6 +81,11 @@ _SKILL_TEXT_MAX = 4000
 # message before it reaches the database rather than as a constraint failure.
 _CORRECTION_VERDICTS = ("confirm", "relabel", "reject")
 
+# The per-frame review vocabulary, mirrored here so a request is refused with a
+# clear message before it reaches the frame_review CHECK constraint. 'cleared'
+# retracts an earlier verdict, returning a frame to unreviewed.
+_FRAME_REVIEW_VERDICTS = ("accurate", "inaccurate", "cleared")
+
 # Until the application has user accounts, every correction is attributed to a
 # single generic expert. The column is NOT NULL because an anonymous
 # identification is not reviewable, and this is the honest placeholder rather
@@ -92,6 +99,109 @@ _GBIF_INDEX_FILENAME = "index.db"
 # A correction search box is read at a glance, so more rows than this would be
 # scrolled past rather than considered.
 _SPECIES_SEARCH_LIMIT = 20
+
+# The species-data setup steps (building the taxonomic index, fetching per-species
+# reference data) run for minutes, so a request cannot wait for them. Each runs in
+# a background worker whose progress is held in this in-process registry and read
+# back by a status endpoint the interface polls. The registry is process-local and
+# the app is a single local process, so a plain lock is all the coordination
+# needed. Nothing here is persisted: a job's state lives only for the run.
+_jobs: dict = {}
+_jobs_lock = threading.Lock()
+
+# A test seam for the reference fetch, so the online GBIF and IUCN calls can be
+# replaced by a stand-in client in a check. None in normal use, where the fetch
+# script makes real calls under the user's own credentials.
+_species_fetch_client_factory = None
+
+
+def _job_snapshot(name: str) -> dict:
+    """The current state of one background job, or an idle marker."""
+    with _jobs_lock:
+        job = _jobs.get(name)
+        return dict(job) if job else {"status": "idle"}
+
+
+def _start_background_job(name: str, target) -> bool:
+    """Start one named background job unless it is already running.
+
+    `target` is called in a worker thread with a single `update(**fields)`
+    callback it uses to report progress into the job's state. A clean return
+    marks the job done and stores its result; a raised exception marks it failed
+    and stores the message, so the interface can show either without the request
+    that started it having waited.
+    """
+    with _jobs_lock:
+        existing = _jobs.get(name)
+        if existing and existing.get("status") == "running":
+            return False
+        _jobs[name] = {
+            "status": "running",
+            "started_at": _utc_now_iso(),
+            "finished_at": None,
+            "message": "starting",
+            "progress": None,
+            "result": None,
+            "error": None,
+        }
+
+    def _update(**fields) -> None:
+        with _jobs_lock:
+            if name in _jobs:
+                _jobs[name].update(fields)
+
+    def _run() -> None:
+        try:
+            result = target(_update)
+            _update(status="done", finished_at=_utc_now_iso(), progress=1.0,
+                    message="finished", result=result)
+        except Exception as exc:  # noqa: BLE001 - reported to the interface as a failed job
+            _update(status="error", finished_at=_utc_now_iso(), error=str(exc))
+
+    threading.Thread(target=_run, name="audtheia-job-" + name, daemon=True).start()
+    return True
+
+
+def _load_script_module(settings, module_name: str):
+    """Import one script from the repository's scripts directory by file path.
+
+    The setup scripts are plain modules rather than an installed package, so this
+    loads one by its path. The scripts directory ships alongside the audtheia
+    package, so it is found relative to this module first (audtheia/app -> the
+    repository root -> scripts), which holds whether the app runs from the source
+    tree or a copy and does not depend on the scripts directory being on
+    sys.path. The configured repository root is a fallback.
+    """
+    candidates = [
+        Path(__file__).resolve().parents[2] / "scripts" / (module_name + ".py"),
+        Path(settings.repo_root) / "scripts" / (module_name + ".py"),
+    ]
+    path = next((p for p in candidates if p.is_file()), None)
+    if path is None:
+        raise FileNotFoundError(f"the setup script {module_name}.py was not found (looked in {candidates[0].parent})")
+    spec = importlib.util.spec_from_file_location("audtheia_script_" + module_name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _backbone_file(settings) -> Path:
+    """The shipped GBIF backbone export the taxonomic index is built from."""
+    return Path(settings.path("gbif_backbone_path")) / "simple.txt"
+
+
+def _index_name_count(index_path: Path) -> Optional[int]:
+    """How many names a built index holds, or None if it cannot be read."""
+    if not index_path.is_file():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{index_path}?mode=ro", uri=True)
+        try:
+            return conn.execute("SELECT COUNT(*) FROM taxon_index").fetchone()[0]
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
 
 
 class BackendError(RuntimeError):
@@ -1575,6 +1685,11 @@ def create_app(settings, database):
         labels_path: Optional[str] = None
         field: Optional[str] = None
 
+    class FrameReviewRequest(BaseModel):
+        verdict: Optional[str] = None  # accurate / inaccurate / cleared
+        corrector: Optional[str] = None
+        reason: Optional[str] = None
+
     # -- meta ------------------------------------------------------------
 
     @app.get(f"{API_PREFIX}/health")
@@ -1747,7 +1862,88 @@ def create_app(settings, database):
                     frame["bbox_h"] = y2 - y1
                 frames.append(frame)
 
-        return {"observation": obs, "manifest": manifest, "frames": frames}
+        # The per-frame species distribution, computed from the model's own
+        # per-frame class names. This turns a strip that flickers between similar
+        # species into a summary an expert can read at a glance ("172 frames X,
+        # 26 frames Y"), and it is what surfaces a genuinely mixed track.
+        dist_counts: dict = {}
+        for f in frames:
+            name = f.get("class_name")
+            if name:
+                dist_counts[name] = dist_counts.get(name, 0) + 1
+        distribution = [
+            {"class_name": name, "count": n}
+            for name, n in sorted(dist_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        ]
+
+        # Attach the current expert verdict to each frame, and summarise. The
+        # measured numbers on the observation are never changed by a review; the
+        # curated count subtracts only the frames explicitly marked inaccurate,
+        # leaving accurate and not-yet-reviewed frames in the trusted set.
+        reviews = {
+            r["frame_index"]: r["verdict"]
+            for r in db.frame_reviews_for_observation(observation_id)
+        }
+        for f in frames:
+            verdict = reviews.get(f.get("index"))
+            f["review"] = verdict if verdict in ("accurate", "inaccurate") else None
+
+        summary = db.frame_review_summary(observation_id)
+        total = len(frames)
+        inaccurate = summary.get("inaccurate", 0)
+        curated = max(0, total - inaccurate)
+        review_summary = {
+            "total_frames": total,
+            "accurate": summary.get("accurate", 0),
+            "inaccurate": inaccurate,
+            "reviewed": summary.get("reviewed", 0),
+            "curated_frame_count": curated,
+            # Share of frames not marked inaccurate. 1.0 when nothing is flagged,
+            # 0.0 when every frame is. The pass and analytics read this as the
+            # event's trust weight; it never overwrites a measured value.
+            "trust": (curated / total) if total else None,
+            # A derived display hint only: the track carried more than one species
+            # across its frames. Not a stored verdict and not a taxonomic claim.
+            "multiple_candidates": len(distribution) > 1,
+        }
+
+        return {
+            "observation": obs,
+            "manifest": manifest,
+            "frames": frames,
+            "distribution": distribution,
+            "review_summary": review_summary,
+        }
+
+    @app.post(f"{API_PREFIX}/detections/{{observation_id}}/frames/{{frame_index}}/review", status_code=201)
+    def review_frame(observation_id, frame_index: int, request: FrameReviewRequest):
+        """Record one expert verdict on one saved frame of an event.
+
+        Nothing measured is modified. The event's frame_count, duration,
+        confidence and salience stay exactly as captured; this appends a separate
+        human claim about one frame, with its own provenance. A change of mind is
+        another append, so the review history stays legible. 'cleared' retracts
+        an earlier verdict, returning the frame to unreviewed.
+        """
+        obs = db.get_observation(observation_id)
+        if obs is None:
+            raise HTTPException(status_code=404, detail=f"no observation with id {observation_id}")
+        if frame_index < 0:
+            raise HTTPException(status_code=400, detail="frame_index must be zero or greater")
+        verdict = (request.verdict or "").strip()
+        if verdict not in _FRAME_REVIEW_VERDICTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"verdict must be one of {', '.join(_FRAME_REVIEW_VERDICTS)}",
+            )
+        stored = db.add_frame_review(
+            observation_id,
+            frame_index,
+            verdict=verdict,
+            corrector=(request.corrector or "").strip() or _DEFAULT_CORRECTOR,
+            reason=(request.reason or "").strip() or None,
+        )
+        return {"review": stored, "review_summary": db.frame_review_summary(observation_id)}
 
     # -- expert corrections ----------------------------------------------
 
@@ -1807,6 +2003,108 @@ def create_app(settings, database):
             ],
             "index_available": True,
         }
+
+    # -- species data setup (the taxonomic index and the reference fetch) -
+    # These two guided actions replace the command-line setup scripts, so a
+    # non-programmer can prepare species naming and conservation data from the
+    # interface. Each runs in the background because it takes minutes, and the
+    # interface polls its status endpoint. The reference fetch is the single
+    # user-initiated online step in the desktop app; the detection and report
+    # paths remain fully offline.
+
+    @app.get(f"{API_PREFIX}/species/index/status")
+    def species_index_status():
+        """Whether the taxonomic index exists, and any build in progress."""
+        index_path = _gbif_index_path(settings)
+        backbone = _backbone_file(settings)
+        return {
+            "job": _job_snapshot("species_index"),
+            "index_present": index_path.is_file(),
+            "index_names": _index_name_count(index_path),
+            "backbone_present": backbone.is_file(),
+            "backbone_path": str(backbone),
+        }
+
+    @app.post(f"{API_PREFIX}/species/index/build", status_code=202)
+    def species_index_build(force: bool = Query(default=False)):
+        """Build the taxonomic index from the shipped backbone, in the background.
+
+        Relabelling a detection to a corrected species searches this index, so
+        this is what turns relabelling on for a fresh install. Confirm, reject,
+        and per-frame review need no index and work without it.
+        """
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="the species index is built on the desktop; this node is not the desktop.")
+        backbone = _backbone_file(settings)
+        if not backbone.is_file():
+            raise HTTPException(
+                status_code=422,
+                detail=(f"the GBIF backbone file was not found at {backbone}. "
+                        "Fetch it with the setup step first, then build the index."),
+            )
+        index_path = _gbif_index_path(settings)
+        if index_path.is_file() and not force:
+            raise HTTPException(
+                status_code=409,
+                detail="a taxonomic index already exists; pass force to rebuild it from the backbone.",
+            )
+
+        def _target(update):
+            module = _load_script_module(settings, "build_gbif_index")
+
+            def _progress(pct, scanned, kept):
+                update(progress=round(pct / 100.0, 4),
+                       message=f"scanned {scanned:,} rows, kept {kept:,}")
+
+            names = module.build(backbone, index_path, on_progress=_progress)
+            return {"names": names}
+
+        if not _start_background_job("species_index", _target):
+            raise HTTPException(status_code=409, detail="an index build is already running.")
+        return {"started": True, "job": _job_snapshot("species_index")}
+
+    @app.get(f"{API_PREFIX}/species/reference/status")
+    def species_reference_status():
+        """How much reference data is on file, and what a fetch would cover."""
+        target = sorted({
+            name.strip()
+            for station in settings.stations()
+            for name in (station.get("target_species") or [])
+            if isinstance(name, str) and name.strip()
+        })
+        return {
+            "job": _job_snapshot("species_reference"),
+            "references_stored": len(db.list_species_reference()),
+            "target_species": target,
+            "iucn_token_present": bool(settings.secrets.get("iucn_api_key")),
+        }
+
+    @app.post(f"{API_PREFIX}/species/reference/fetch", status_code=202)
+    def species_reference_fetch(refresh: bool = Query(default=False)):
+        """Fetch GBIF and IUCN reference data for the stations' target species.
+
+        GBIF naming and the global occurrence count need no account. The IUCN
+        token, when present, only adds the Red List conservation status; without
+        it that one field is left blank and reported, and everything else still
+        fetches. New captures then carry a GBIF snapshot date, so the versions
+        panel stops reading "not stated" for them. This is a user-initiated
+        online setup step, distinct from the offline detection and report paths.
+        """
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="reference data is fetched on the desktop; this node is not the desktop.")
+
+        def _target(update):
+            import types
+            module = _load_script_module(settings, "bootstrap_fetch_species")
+            args = types.SimpleNamespace(station_id=None, species=None, from_file=None, refresh=refresh)
+            client = _species_fetch_client_factory() if _species_fetch_client_factory else None
+            update(message="contacting GBIF"
+                   + (" and IUCN" if settings.secrets.get("iucn_api_key") else " (no IUCN token, conservation status will be blank)"))
+            return module.run(settings, client=client, args=args)
+
+        if not _start_background_job("species_reference", _target):
+            raise HTTPException(status_code=409, detail="a reference fetch is already running.")
+        return {"started": True, "job": _job_snapshot("species_reference")}
 
     @app.get(f"{API_PREFIX}/observations/{{observation_id}}/corrections")
     def observation_corrections(observation_id):

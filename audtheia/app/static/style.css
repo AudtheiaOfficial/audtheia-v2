@@ -1313,8 +1313,24 @@ textarea:hover {
 
 /* A station's own configured coordinates, drawn as a diamond so it never reads
    as a detection dot. */
-.map-station { fill: none; stroke: var(--focus-ring); stroke-width: 2; }
-.map-station-label { fill: var(--text-2); font-size: 11px; font-family: var(--font-sans); }
+/* fill:none keeps the diamond hollow, but pointer-events:all makes its whole
+   interior a hit target so hover and click-to-pin work anywhere on the shape,
+   not only on the thin stroke. */
+.map-station { fill: none; stroke: var(--focus-ring); stroke-width: 2; pointer-events: all; }
+.map-station:hover { stroke: var(--accent); }
+
+/* On-demand station/detection callout, shown on hover, keyboard focus, or a
+   click that pins it. Replaces the old always-drawn label (which overlapped when
+   two sites sat close together) and the browser's default tooltip box. */
+.map-callout { pointer-events: none; }
+.map-callout-box {
+  fill: var(--surface);
+  stroke: var(--border);
+  stroke-width: 1;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.28));
+}
+.map-callout-name { fill: var(--text); font-size: 12px; font-weight: 600; font-family: var(--font-sans); }
+.map-callout-meta { fill: var(--text-2); font-size: 11px; font-family: var(--font-mono); }
 
 .map-wrap { display: flex; flex-direction: column; gap: 8px; }
 .map-legend { display: flex; flex-wrap: wrap; gap: 16px; padding-top: 4px; }
@@ -2102,9 +2118,44 @@ textarea:hover {
   padding: var(--space-1);
 }
 
-.audit-cell { font-size: var(--text-xs, 11px); }
+.audit-cell { font-size: var(--text-xs, 11px); border-radius: var(--radius-sm, 4px); padding: 3px; }
 .audit-thumb-wrap { margin-bottom: 4px; cursor: zoom-in; }
 .audit-cell-meta { font-family: var(--font-mono); color: var(--text-muted); }
+
+/* A frame the expert marked inaccurate is dimmed and outlined so a mixed track
+   reads at a glance; an accurate one gets a quiet confirming outline. The image
+   is never removed, because the measured frame stays on the record either way. */
+.audit-cell.frame-inaccurate { background: var(--surface-2); box-shadow: inset 0 0 0 2px var(--warn, #b5522f); }
+.audit-cell.frame-inaccurate .audit-thumb-wrap { opacity: 0.5; }
+.audit-cell.frame-accurate { box-shadow: inset 0 0 0 2px var(--ok, #2f7a55); }
+
+/* The two per-frame verdict buttons: neutral until chosen, then the chosen one
+   fills to make the current verdict obvious across a long strip. */
+.frame-review { display: flex; gap: 4px; margin-top: 4px; }
+.frame-review-btn {
+  flex: 1 1 0;
+  padding: 2px 4px;
+  font-size: var(--text-xs, 11px);
+  font-family: var(--font-sans);
+  color: var(--text-2);
+  background: var(--surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-sm, 4px);
+  cursor: pointer;
+}
+.frame-review-btn:hover { border-color: var(--text-muted); }
+.frame-review-btn[disabled] { opacity: 0.5; cursor: default; }
+.frame-review-btn.acc.is-on { background: var(--ok, #2f7a55); border-color: var(--ok, #2f7a55); color: #fff; }
+.frame-review-btn.bad.is-on { background: var(--warn, #b5522f); border-color: var(--warn, #b5522f); color: #fff; }
+.frame-review-err { color: var(--warn, #b5522f); font-size: var(--text-xs, 11px); margin-top: 2px; }
+
+/* The second species-data step, set off from the first with a quiet divider so
+   the index build and the reference fetch read as two distinct actions. */
+.species-step {
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: var(--border-width) solid var(--border-subtle);
+}
 
 /* The expert review controls inside an audit modal. They sit at the top of the
    modal because the question the modal exists to answer is whether the call was

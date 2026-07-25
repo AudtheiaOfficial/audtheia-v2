@@ -644,6 +644,35 @@ class DreamEngine:
                 self._db.update_dream_pass(dream_pass_id, status=STATUS_PAUSED)
                 return self._result(dream_pass_id, STATUS_PAUSED, cycles, cursor_token)
 
+    # -- expert review gate ----------------------------------------------
+
+    def _event_excluded(self, observation_id: str, frame_count: Optional[int]) -> bool:
+        """Whether an expert verdict removes this event from the longitudinal record.
+
+        Two human verdicts keep a clearly-bad event out of the gist and the
+        candidate generation, so a pass never consolidates a record the expert
+        has already discredited:
+
+          - An event-level 'reject' asserts no organism was present, so it is a
+            false positive and must not shape the baseline or a pattern.
+          - Every saved frame marked 'inaccurate' leaves no trustworthy frame, so
+            the event has nothing to contribute.
+
+        A partly-inaccurate event is not excluded here; it stays in under its
+        resolved taxon, and its frame-review trust weight is carried on the
+        record for analytics and reports to read. This reads the current review
+        state at pass time, which is why review comes before the pass. Both
+        lookups degrade to "not excluded" on a database that predates the review
+        and correction tables.
+        """
+        latest = self._db.latest_correction(observation_id)
+        if latest is not None and latest.get("verdict") == "reject":
+            return True
+        summary = self._db.frame_review_summary(observation_id)
+        if frame_count and summary.get("inaccurate", 0) >= frame_count:
+            return True
+        return False
+
     # -- NREM-A: consolidation and salience ------------------------------
 
     def _consolidate_and_score(self, batch: list[dict], station_scope: Optional[str]) -> None:
@@ -662,6 +691,11 @@ class DreamEngine:
         single event out of a mature cell barely moves the robust center, but the
         exclusion is exact rather than assumed.
         """
+        # Drop events an expert has discredited (an event-level rejection or a
+        # fully-inaccurate frame review) before anything is folded into the gist,
+        # so a pass never consolidates a record the reviewer already threw out.
+        batch = [obs for obs in batch if not self._event_excluded(obs["id"], obs.get("frame_count"))]
+
         touched: set[tuple[str, str, str]] = set()
         for obs in batch:
             self.observations_consolidated += 1
@@ -929,6 +963,10 @@ class DreamEngine:
         for oid in verified_ids:
             obs = self._db.get_observation(oid)
             if obs is None:
+                continue
+            # An expert-discredited event is kept out of the generative phase for
+            # the same reason it is kept out of consolidation.
+            if self._event_excluded(oid, obs.get("frame_count")):
                 continue
             v = self._db.get_observation_verification(oid)
             salience = None

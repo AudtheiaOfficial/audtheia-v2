@@ -320,6 +320,34 @@ class ObservationCorrection:
 
 
 @dataclass
+class FrameReview:
+    """One expert verdict on one saved frame of a visual event, appended.
+
+    A frame verdict states only whether that saved frame is an accurate
+    detection ('accurate'), is not ('inaccurate'), or retracts an earlier
+    verdict ('cleared'). It carries no taxon and no confidence: which species a
+    frame shows is the model's own per-frame annotation, and the corrected
+    species for the whole event is an observation_corrections relabel.
+
+    The measured event is never touched. Its frame_count, duration,
+    screening_confidence and salience stay exactly as captured; an 'inaccurate'
+    verdict is subtracted only from the expert-curated view and from the frame
+    count the analysis trusts. A change of mind is a new row; the newest row per
+    (observation_id, frame_index) wins on read.
+    """
+
+    id: str
+    observation_id: str
+    frame_index: int
+    verdict: str  # accurate / inaccurate / cleared
+    corrector: str
+    reviewed_at: str
+    created_at: str
+    data_source: str = "human_expert"
+    reason: Optional[str] = None
+
+
+@dataclass
 class Interpretation:
     id: str
     observation_id: str
@@ -442,6 +470,7 @@ _TABLE_FOR_TYPE = {
     Skill: "skills",
     ObservationVerification: "observation_verification",
     ObservationCorrection: "observation_corrections",
+    FrameReview: "frame_review",
     Interpretation: "interpretations",
     StationTelemetry: "station_telemetry",
     TelemetryError: "station_telemetry_errors",
@@ -1321,6 +1350,90 @@ class Database:
         for row in rows:
             counts[row["verdict"]] = row["n"]
         counts["total"] = sum(counts[v] for v in ("confirm", "relabel", "reject"))
+        return counts
+
+    # -- per-frame review (desktop-owned) --------------------------------
+
+    def add_frame_review(
+        self,
+        observation_id: str,
+        frame_index: int,
+        *,
+        verdict: str,
+        corrector: str,
+        reason: Optional[str] = None,
+    ) -> dict:
+        """Append one per-frame verdict and return the row as stored.
+
+        Nothing measured is modified. The event's frame_count, duration,
+        confidence and salience are left exactly as captured; this appends a
+        separate human claim about one frame. The table's CHECK constraint is
+        the authority on the verdict vocabulary, so this does not duplicate that
+        validation in Python where the two could drift apart.
+        """
+        row = FrameReview(
+            id=new_id(),
+            observation_id=observation_id,
+            frame_index=frame_index,
+            verdict=verdict,
+            corrector=corrector,
+            reviewed_at=utc_now_iso(),
+            created_at=utc_now_iso(),
+            reason=reason,
+        )
+        with self.connect() as conn:
+            self._insert_row(conn, row)
+            return self._one(conn, "SELECT * FROM frame_review WHERE id = ?", (row.id,))
+
+    def frame_reviews_for_observation(self, observation_id: str) -> list[dict]:
+        """The current verdict per reviewed frame of one event.
+
+        One row per frame_index, the most recent verdict for that frame, in
+        frame order. A frame whose latest verdict is 'cleared' is returned as
+        such so a reader can tell a retracted frame from an unreviewed one; the
+        summary below folds 'cleared' back into unreviewed. Degrades to an empty
+        list on a database that predates this migration, so an unmigrated record
+        reads as "no review yet" rather than costing the reader their frames.
+        """
+        with self.connect() as conn:
+            try:
+                return self._all(
+                    conn,
+                    "SELECT observation_id, frame_index, verdict, corrector, reviewed_at, reason FROM ("
+                    "  SELECT *, ROW_NUMBER() OVER ("
+                    "    PARTITION BY frame_index ORDER BY reviewed_at DESC, rowid DESC) AS rn"
+                    "  FROM frame_review WHERE observation_id = ?"
+                    ") WHERE rn = 1 ORDER BY frame_index",
+                    (observation_id,),
+                )
+            except sqlite3.OperationalError:
+                return []
+
+    def frame_review_summary(self, observation_id: str) -> dict:
+        """How many of an event's frames an expert has marked accurate or not.
+
+        Counts distinct frames by their current verdict, so a reviewer who
+        changed their mind about one frame is counted once. 'cleared' folds back
+        into unreviewed. Returns zeros on an unmigrated database rather than
+        raising, matching the graceful degradation the corrections reader uses.
+        """
+        counts = {"accurate": 0, "inaccurate": 0}
+        with self.connect() as conn:
+            try:
+                rows = self._all(
+                    conn,
+                    "SELECT verdict, COUNT(*) AS n FROM ("
+                    "  SELECT frame_index, verdict, ROW_NUMBER() OVER ("
+                    "    PARTITION BY frame_index ORDER BY reviewed_at DESC, rowid DESC) AS rn"
+                    "  FROM frame_review WHERE observation_id = ?"
+                    ") WHERE rn = 1 AND verdict IN ('accurate', 'inaccurate') GROUP BY verdict",
+                    (observation_id,),
+                )
+            except sqlite3.OperationalError:
+                rows = []
+        for row in rows:
+            counts[row["verdict"]] = row["n"]
+        counts["reviewed"] = counts["accurate"] + counts["inaccurate"]
         return counts
 
     # -- interpretations (desktop-owned) ---------------------------------

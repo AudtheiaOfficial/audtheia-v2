@@ -115,8 +115,14 @@ def _human(n: int) -> str:
     return f"{n:,}"
 
 
-def build(backbone: Path, out_path: Path, *, progress_every: int = 2_000_000) -> int:
-    """Stream the backbone once and write the index. Returns the row count."""
+def build(backbone: Path, out_path: Path, *, progress_every: int = 2_000_000, on_progress=None) -> int:
+    """Stream the backbone once and write the index. Returns the row count.
+
+    on_progress, when given, is called periodically as
+    on_progress(percent, scanned_rows, kept_rows) so a caller driving the build
+    from the interface can show live progress. It is additive: the command-line
+    path passes nothing and prints its own progress as before.
+    """
     tmp_path = out_path.with_name(out_path.name + ".partial")
     if tmp_path.exists():
         tmp_path.unlink()
@@ -198,6 +204,8 @@ def build(backbone: Path, out_path: Path, *, progress_every: int = 2_000_000) ->
                         f"  {pct:5.1f}%  scanned {_human(scanned)} rows, kept {_human(kept)}",
                         flush=True,
                     )
+                    if on_progress is not None:
+                        on_progress(pct, scanned, kept)
 
         if batch:
             conn.executemany(
