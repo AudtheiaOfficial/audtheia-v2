@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import base64
 import dataclasses
+import re
 import sqlite3
 import uuid
 from contextlib import contextmanager
@@ -544,6 +545,36 @@ class Database:
         schema script manages its own transactions.
         """
         sql = Path(schema_path).read_text(encoding="utf-8")
+        conn = sqlite3.connect(self.db_path, timeout=self.busy_timeout_ms / 1000.0)
+        try:
+            conn.executescript(sql)
+            conn.commit()
+        finally:
+            conn.close()
+
+    def ensure_schema(self, schema_path: str | Path) -> None:
+        """Apply the schema additively: create any table or index a database made
+        by an earlier version is missing, and leave every existing table and all
+        its data untouched.
+
+        Unlike initialize_schema, which expects a fresh file and fails on a
+        database that already has these tables, this is safe to run on every
+        launch. It reads the shipped schema and runs an idempotent copy of it,
+        with CREATE TABLE and CREATE INDEX rewritten to CREATE ... IF NOT EXISTS
+        in memory only, so re-applying it is a no-op for what already exists
+        while it adds whatever is new. This is what lets a pulled update work
+        with no manual migration step.
+
+        The schema file on disk is never modified, so it keeps its bare CREATE
+        statements for a fresh install and for the migration scripts that read
+        it verbatim; only this in-memory copy is made idempotent. Only missing
+        tables are added, never altered or dropped, so no existing column,
+        constraint, or row is touched; a change to an existing table still needs
+        its own migration.
+        """
+        sql = Path(schema_path).read_text(encoding="utf-8")
+        sql = re.sub(r"(?i)\bCREATE\s+TABLE\s+(?!IF\s+NOT\s+EXISTS)", "CREATE TABLE IF NOT EXISTS ", sql)
+        sql = re.sub(r"(?i)\bCREATE\s+INDEX\s+(?!IF\s+NOT\s+EXISTS)", "CREATE INDEX IF NOT EXISTS ", sql)
         conn = sqlite3.connect(self.db_path, timeout=self.busy_timeout_ms / 1000.0)
         try:
             conn.executescript(sql)

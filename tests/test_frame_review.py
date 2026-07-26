@@ -166,6 +166,34 @@ def test_migration(db_path: Path) -> None:
     check("the migrated table stores a verdict", stored["verdict"] == "accurate")
 
 
+def test_ensure_schema_self_heal(db_path: Path) -> None:
+    print("\nensure_schema re-adds a missing table on an existing database, data intact")
+    db, obs = _db_with_event(db_path)
+    # Simulate a database created by a version that predates frame_review.
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("DROP TABLE frame_review")
+        conn.commit()
+
+    db.ensure_schema(SCHEMA)
+    check("the observation survived the self-heal", db.get_observation(obs.id) is not None)
+    stored = db.add_frame_review(obs.id, 0, verdict="accurate", corrector="expert")
+    check("a verdict can be stored after the self-heal", stored["verdict"] == "accurate")
+
+    # Running it again changes nothing and does not raise.
+    db.ensure_schema(SCHEMA)
+    check("the self-heal is idempotent", db.frame_review_summary(obs.id)["accurate"] == 1)
+
+
+def test_ensure_schema_fresh(db_path: Path) -> None:
+    print("\nensure_schema also initializes a brand-new empty database")
+    db = Database(db_path)
+    db.ensure_schema(SCHEMA)
+    from audtheia.storage.database import Station, new_id, utc_now_iso
+    now = utc_now_iso()
+    db.create_station(Station(id=new_id(), station_name="Fresh", environment_type="marine", created_at=now))
+    check("a fresh database initialized by ensure_schema is usable", len(db.list_stations()) == 1)
+
+
 def _make_settings(tmp: Path):
     from audtheia.config import load_settings
     base = json.loads((REPO / "config" / "settings.json").read_text(encoding="utf-8"))
@@ -289,6 +317,8 @@ def main() -> int:
         test_append_only_and_clear(root / "clear.db")
         test_constraint_refuses(root / "constraint.db")
         test_migration(root / "migrate.db")
+        test_ensure_schema_self_heal(root / "heal.db")
+        test_ensure_schema_fresh(root / "fresh.db")
         test_endpoints(root / "endpoints")
         test_dream_gate(root / "gate")
     print("\n" + "=" * 72)

@@ -3374,6 +3374,20 @@ def run(settings=None, database=None) -> None:
         from audtheia.storage.database import Database
         database = Database(settings.db_path(), **settings.database_kwargs())
 
+    # Self-heal the schema on every launch, so a database created by an earlier
+    # version gains any table added since (for example the per-frame review
+    # table) with no manual migration step. This only ever creates a missing
+    # table; it never alters or drops an existing one, so data is untouched. It
+    # is best-effort: a schema that cannot be read must not stop the server from
+    # starting on a database that is already complete.
+    try:
+        schema = settings.schema_path()
+        if schema and Path(schema).is_file():
+            database.ensure_schema(schema)
+    except Exception as exc:  # noqa: BLE001 - startup must not hinge on a self-heal
+        print(f"Note: could not auto-apply the schema ({exc}); "
+              "an existing database still runs, but a newly added table may be missing.", file=sys.stderr)
+
     app = create_app(settings, database)
     server = settings.raw.get("server", {})
     host = server.get("host", "127.0.0.1")
