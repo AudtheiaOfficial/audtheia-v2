@@ -1789,24 +1789,18 @@ def create_app(settings, database):
             "interpretations": db.list_interpretations(observation_id),
         }
 
-    @app.get(f"{API_PREFIX}/detections/{{observation_id}}/frames")
-    def detection_frames(observation_id):
-        """Return every stored frame of an event with its per-frame annotation.
+    def _event_frames_on_disk(obs):
+        """Read an event's saved frames and per-frame species distribution.
 
-        The capture pipeline writes each detected frame to the event directory and
-        appends one line per frame to `annotations.jsonl` (index, timestamp,
-        confidence, box), alongside an `annotations.json` manifest. This read-only
-        endpoint surfaces both so the interface can audit an observation's stats
-        (the frame count, the true duration, and the per-frame confidences) rather
-        than asking the scientist to trust them. Boxes are converted to the same
-        x/y/w/h form the card overlay uses. Nothing is written or deleted.
+        Returns (manifest, frames, distribution). Empty frames and distribution
+        when the event has no representative frame or its files are absent.
+        Raises 400 if the stored frame path escapes the data directory. This is
+        shared by the frames read and the review write so both agree on the exact
+        frame set, and therefore on the curated count and trust computed from it.
         """
-        obs = db.get_observation(observation_id)
-        if obs is None:
-            raise HTTPException(status_code=404, detail=f"no observation with id {observation_id}")
         rep = obs.get("representative_frame")
         if not rep:
-            return {"observation": obs, "manifest": None, "frames": []}
+            return None, [], []
 
         data_dir = Path(settings.path("data_dir")).resolve()
         rep_path = Path(rep)
@@ -1862,10 +1856,9 @@ def create_app(settings, database):
                     frame["bbox_h"] = y2 - y1
                 frames.append(frame)
 
-        # The per-frame species distribution, computed from the model's own
-        # per-frame class names. This turns a strip that flickers between similar
-        # species into a summary an expert can read at a glance ("172 frames X,
-        # 26 frames Y"), and it is what surfaces a genuinely mixed track.
+        # The per-frame species distribution, from the model's own per-frame class
+        # names, turns a strip that flickers between similar species into a summary
+        # an expert reads at a glance and is what surfaces a genuinely mixed track.
         dist_counts: dict = {}
         for f in frames:
             name = f.get("class_name")
@@ -1875,24 +1868,22 @@ def create_app(settings, database):
             {"class_name": name, "count": n}
             for name, n in sorted(dist_counts.items(), key=lambda kv: (-kv[1], kv[0]))
         ]
+        return manifest, frames, distribution
 
-        # Attach the current expert verdict to each frame, and summarise. The
-        # measured numbers on the observation are never changed by a review; the
-        # curated count subtracts only the frames explicitly marked inaccurate,
-        # leaving accurate and not-yet-reviewed frames in the trusted set.
-        reviews = {
-            r["frame_index"]: r["verdict"]
-            for r in db.frame_reviews_for_observation(observation_id)
-        }
-        for f in frames:
-            verdict = reviews.get(f.get("index"))
-            f["review"] = verdict if verdict in ("accurate", "inaccurate") else None
+    def _frame_review_summary(observation_id, frames, distribution):
+        """The curated review summary the interface shows above the frame strip.
 
+        The measured numbers on the observation are never changed by a review; the
+        curated count subtracts only the frames explicitly marked inaccurate,
+        leaving accurate and not-yet-reviewed frames in the trusted set. Built the
+        same way for both the frames read and the review write, so the summary a
+        toggle returns is identical to the one a reload would show.
+        """
         summary = db.frame_review_summary(observation_id)
         total = len(frames)
         inaccurate = summary.get("inaccurate", 0)
         curated = max(0, total - inaccurate)
-        review_summary = {
+        return {
             "total_frames": total,
             "accurate": summary.get("accurate", 0),
             "inaccurate": inaccurate,
@@ -1907,12 +1898,41 @@ def create_app(settings, database):
             "multiple_candidates": len(distribution) > 1,
         }
 
+    @app.get(f"{API_PREFIX}/detections/{{observation_id}}/frames")
+    def detection_frames(observation_id):
+        """Return every stored frame of an event with its per-frame annotation.
+
+        The capture pipeline writes each detected frame to the event directory and
+        appends one line per frame to `annotations.jsonl` (index, timestamp,
+        confidence, box), alongside an `annotations.json` manifest. This read-only
+        endpoint surfaces both so the interface can audit an observation's stats
+        (the frame count, the true duration, and the per-frame confidences) rather
+        than asking the scientist to trust them. Boxes are converted to the same
+        x/y/w/h form the card overlay uses. Nothing is written or deleted.
+        """
+        obs = db.get_observation(observation_id)
+        if obs is None:
+            raise HTTPException(status_code=404, detail=f"no observation with id {observation_id}")
+        manifest, frames, distribution = _event_frames_on_disk(obs)
+        if not frames:
+            return {"observation": obs, "manifest": manifest, "frames": [],
+                    "distribution": [], "review_summary": _frame_review_summary(observation_id, [], [])}
+
+        # Attach the current expert verdict to each frame for the strip display.
+        reviews = {
+            r["frame_index"]: r["verdict"]
+            for r in db.frame_reviews_for_observation(observation_id)
+        }
+        for f in frames:
+            verdict = reviews.get(f.get("index"))
+            f["review"] = verdict if verdict in ("accurate", "inaccurate") else None
+
         return {
             "observation": obs,
             "manifest": manifest,
             "frames": frames,
             "distribution": distribution,
-            "review_summary": review_summary,
+            "review_summary": _frame_review_summary(observation_id, frames, distribution),
         }
 
     @app.post(f"{API_PREFIX}/detections/{{observation_id}}/frames/{{frame_index}}/review", status_code=201)
@@ -1923,7 +1943,9 @@ def create_app(settings, database):
         confidence and salience stay exactly as captured; this appends a separate
         human claim about one frame, with its own provenance. A change of mind is
         another append, so the review history stays legible. 'cleared' retracts
-        an earlier verdict, returning the frame to unreviewed.
+        an earlier verdict, returning the frame to unreviewed. The response
+        carries the same full curated summary the frames read returns, so the
+        interface updates the kept count and the trust weight live on each toggle.
         """
         obs = db.get_observation(observation_id)
         if obs is None:
@@ -1943,7 +1965,8 @@ def create_app(settings, database):
             corrector=(request.corrector or "").strip() or _DEFAULT_CORRECTOR,
             reason=(request.reason or "").strip() or None,
         )
-        return {"review": stored, "review_summary": db.frame_review_summary(observation_id)}
+        _, frames, distribution = _event_frames_on_disk(obs)
+        return {"review": stored, "review_summary": _frame_review_summary(observation_id, frames, distribution)}
 
     # -- expert corrections ----------------------------------------------
 
@@ -2079,6 +2102,33 @@ def create_app(settings, database):
             "iucn_token_present": bool(settings.secrets.get("iucn_api_key")),
         }
 
+    def _stamp_existing_observations() -> int:
+        """Fill the reference snapshot dates on already-captured records.
+
+        New captures stamp their taxonomy snapshot at capture, but records taken
+        before their species reference was fetched carry none. This completes them
+        from the reference cache after a fetch: for each record still missing the
+        dates, it matches its dominant taxon's label to a fetched reference and,
+        only when the date is still unset, stamps it. It never overwrites a value
+        and never touches a measured field, and a taxon with no matching reference
+        is left unchanged. Returns how many records it completed.
+        """
+        stamped = 0
+        for obs in db.list_observations():
+            if obs.get("gbif_snapshot_date") or obs.get("iucn_fetch_date"):
+                continue
+            children = db.list_child_detections(obs["id"])
+            if not children:
+                continue
+            dominant = max(children, key=lambda c: c.get("confidence") or 0.0)
+            name = dominant.get("scientific_name") or dominant.get("common_name")
+            ref = db.find_species_reference_by_name(name)
+            if not ref or not (ref.get("gbif_snapshot_date") or ref.get("iucn_fetch_date")):
+                continue
+            if db.stamp_observation_snapshot(obs["id"], ref.get("gbif_snapshot_date"), ref.get("iucn_fetch_date")):
+                stamped += 1
+        return stamped
+
     @app.post(f"{API_PREFIX}/species/reference/fetch", status_code=202)
     def species_reference_fetch(refresh: bool = Query(default=False)):
         """Fetch GBIF and IUCN reference data for the stations' target species.
@@ -2086,9 +2136,11 @@ def create_app(settings, database):
         GBIF naming and the global occurrence count need no account. The IUCN
         token, when present, only adds the Red List conservation status; without
         it that one field is left blank and reported, and everything else still
-        fetches. New captures then carry a GBIF snapshot date, so the versions
-        panel stops reading "not stated" for them. This is a user-initiated
-        online setup step, distinct from the offline detection and report paths.
+        fetches. After the fetch, this also stamps the taxonomy snapshot onto
+        already-captured records whose taxon now has a reference, so the versions
+        panel fills for both new and existing detections whose label matches a
+        fetched name. This is a user-initiated online setup step, distinct from
+        the offline detection and report paths.
         """
         if settings.node_role != "desktop":
             raise HTTPException(status_code=403, detail="reference data is fetched on the desktop; this node is not the desktop.")
@@ -2100,7 +2152,10 @@ def create_app(settings, database):
             client = _species_fetch_client_factory() if _species_fetch_client_factory else None
             update(message="contacting GBIF"
                    + (" and IUCN" if settings.secrets.get("iucn_api_key") else " (no IUCN token, conservation status will be blank)"))
-            return module.run(settings, client=client, args=args)
+            outcome = dict(module.run(settings, client=client, args=args) or {})
+            update(message="stamping snapshot dates on existing records")
+            outcome["stamped_existing"] = _stamp_existing_observations()
+            return outcome
 
         if not _start_background_job("species_reference", _target):
             raise HTTPException(status_code=409, detail="a reference fetch is already running.")

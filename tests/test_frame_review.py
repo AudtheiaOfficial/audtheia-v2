@@ -194,6 +194,35 @@ def test_ensure_schema_fresh(db_path: Path) -> None:
     check("a fresh database initialized by ensure_schema is usable", len(db.list_stations()) == 1)
 
 
+def test_snapshot_matching_and_stamping(db_path: Path) -> None:
+    print("\nReference snapshot dates match a taxon by name and stamp only unset records")
+    from audtheia.storage.database import SpeciesReference
+    db, obs = _db_with_event(db_path)  # its child carries scientific_name "Aplysina fistularis"
+    db.upsert_species_reference(SpeciesReference(
+        gbif_usage_key="9999", scientific_name="Aplysina fistularis", common_name="Yellow tube sponge",
+        fetched_at=utc_now_iso(), gbif_snapshot_date="2026-01-01", iucn_fetch_date="2026-01-02"))
+
+    check("a scientific name matches its reference",
+          (db.find_species_reference_by_name("Aplysina fistularis") or {}).get("gbif_usage_key") == "9999")
+    check("matching ignores case and spacing",
+          (db.find_species_reference_by_name("aplysina   fistularis") or {}).get("gbif_usage_key") == "9999")
+    check("a common name matches its reference",
+          (db.find_species_reference_by_name("Yellow tube sponge") or {}).get("gbif_usage_key") == "9999")
+    check("a misspelled or unknown name does not match",
+          db.find_species_reference_by_name("Rofous Crowned Sparrow") is None)
+
+    filled = db.stamp_observation_snapshot(obs.id, "2026-01-01", "2026-01-02")
+    check("an unset record is stamped", filled is True)
+    after = db.get_observation(obs.id)
+    check("the snapshot date is stored", after["gbif_snapshot_date"] == "2026-01-01")
+    check("the iucn date is stored", after["iucn_fetch_date"] == "2026-01-02")
+
+    # A second stamp with different values must not overwrite the already-set one.
+    again = db.stamp_observation_snapshot(obs.id, "1999-09-09", "1999-09-09")
+    check("an already-stamped record is not overwritten", again is False)
+    check("the original snapshot date survives", db.get_observation(obs.id)["gbif_snapshot_date"] == "2026-01-01")
+
+
 def _make_settings(tmp: Path):
     from audtheia.config import load_settings
     base = json.loads((REPO / "config" / "settings.json").read_text(encoding="utf-8"))
@@ -265,6 +294,13 @@ def test_endpoints(tmp: Path) -> None:
     check("a valid verdict is a 201", ok.status_code == 201)
     summ = ok.json()["review_summary"]
     check("the returned summary counts the inaccurate frame", summ["inaccurate"] == 1)
+    # The review response must carry the SAME full summary the frames read does,
+    # so the kept count and trust update live on a toggle rather than blanking.
+    check("the POST summary carries the total frame count", summ.get("total_frames") == 4)
+    check("the POST summary carries the curated count", summ.get("curated_frame_count") == 3)
+    check("the POST summary carries the trust weight",
+          summ.get("trust") is not None and abs(summ["trust"] - 0.75) < 1e-9)
+    check("the POST summary carries the multiple_candidates flag", summ.get("multiple_candidates") is True)
 
     again = client.get(f"/api/detections/{obs.id}/frames").json()
     curated = again["review_summary"]["curated_frame_count"]
@@ -319,6 +355,7 @@ def main() -> int:
         test_migration(root / "migrate.db")
         test_ensure_schema_self_heal(root / "heal.db")
         test_ensure_schema_fresh(root / "fresh.db")
+        test_snapshot_matching_and_stamping(root / "snapshot.db")
         test_endpoints(root / "endpoints")
         test_dream_gate(root / "gate")
     print("\n" + "=" * 72)

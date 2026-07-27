@@ -1161,6 +1161,55 @@ class Database:
                 conn, "SELECT * FROM species_reference ORDER BY scientific_name"
             )
 
+    @staticmethod
+    def _normalize_taxon_name(name: Optional[str]) -> str:
+        """Lowercase a name and reduce every run of non-alphanumeric characters to
+        a single space, so a scientific name and a common name match regardless of
+        hyphens, extra spaces, or case. It does not repair a misspelling: a name
+        the fetch never resolved will simply not match, which is correct."""
+        if not name:
+            return ""
+        return re.sub(r"[^a-z0-9]+", " ", name.lower()).strip()
+
+    def find_species_reference_by_name(self, name: Optional[str]) -> Optional[dict]:
+        """The cached reference for a detection's label, matched by name.
+
+        A capture labels a detection with the model's own class name, which may be
+        a scientific name or a common name, so this matches a reference whose
+        scientific_name OR common_name equals it after normalization. Returns None
+        when nothing matches (an unfetched or differently-named taxon), so the
+        caller leaves the snapshot unset rather than guessing. The reference cache
+        is small (one row per target species), so a linear scan is ample and keeps
+        the match logic in one readable place.
+        """
+        target = self._normalize_taxon_name(name)
+        if not target:
+            return None
+        for ref in self.list_species_reference():
+            if target in (self._normalize_taxon_name(ref.get("scientific_name")),
+                          self._normalize_taxon_name(ref.get("common_name"))):
+                return ref
+        return None
+
+    def stamp_observation_snapshot(
+        self, observation_id: str, gbif_snapshot_date: Optional[str], iucn_fetch_date: Optional[str]
+    ) -> bool:
+        """Fill an observation's reference snapshot dates, only when they are unset.
+
+        The observation's taxonomic snapshot is meant to be written once, at
+        capture. This completes it for a record captured before its species
+        reference existed, and it is guarded to touch only a row whose date is
+        still NULL, so a value already stamped is never overwritten and no
+        measured field is affected. Returns True when a row was filled.
+        """
+        with self.connect() as conn:
+            cur = conn.execute(
+                "UPDATE observations SET gbif_snapshot_date = ?, iucn_fetch_date = ? "
+                "WHERE id = ? AND gbif_snapshot_date IS NULL AND iucn_fetch_date IS NULL",
+                (gbif_snapshot_date, iucn_fetch_date, observation_id),
+            )
+            return cur.rowcount > 0
+
     # -- skills (desktop-authored; pushed to a station) ------------------
 
     def upsert_skill(self, skill: Skill) -> None:

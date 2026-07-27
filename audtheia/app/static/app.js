@@ -3176,7 +3176,8 @@
             var r = job.result;
             refHost.appendChild(el("p", { class: "card-note", text:
               "Last fetch: " + fmtNum(r.fetched) + " stored, " + fmtNum(r.cached) + " already on file, " +
-              fmtNum(r.unmatched) + " not matched by GBIF, " + fmtNum(r.failed) + " failed." }));
+              fmtNum(r.unmatched) + " not matched by GBIF, " + fmtNum(r.failed) + " failed." +
+              (r.stamped_existing ? "  " + fmtNum(r.stamped_existing) + " existing record(s) stamped with snapshot dates." : "") }));
           } else if (job.status === "error") {
             refHost.appendChild(el("p", { class: "card-note", text: "Last fetch did not finish: " + job.error }));
           }

@@ -143,6 +143,26 @@ def test_reference_fetch(tmp: Path) -> None:
     settings = _make_settings(tmp)
     db = Database(settings.db_path())
     db.initialize_schema(SCHEMA)
+
+    # Seed a reference and a matching, unstamped observation, so the fetch's
+    # backfill has an existing record to complete.
+    from audtheia.storage.database import (
+        Station, Observation, ChildDetection, SpeciesReference, new_id, utc_now_iso,
+    )
+    now = utc_now_iso()
+    st = Station(id=new_id(), station_name="Ref", environment_type="marine", created_at=now)
+    db.create_station(st)
+    obs = Observation(
+        id=new_id(), event_name="ref-" + new_id()[:8], station_id=st.id, trigger_source="vision",
+        first_seen=now, last_seen=now, duration=1.0, data_source="model", created_at=now,
+        frame_count=1, screening_confidence=0.9)
+    db.insert_observation(obs, children=[ChildDetection(
+        id=new_id(), observation_id=obs.id, modality="vision", created_at=now,
+        scientific_name="Aplysina fistularis", confidence=0.9)])
+    db.upsert_species_reference(SpeciesReference(
+        gbif_usage_key="9999", scientific_name="Aplysina fistularis", fetched_at=now,
+        gbif_snapshot_date="2026-01-01", iucn_fetch_date="2026-01-02"))
+
     client, srv = _client(settings, db)
 
     status = client.get("/api/species/reference/status").json()
@@ -166,6 +186,11 @@ def test_reference_fetch(tmp: Path) -> None:
         result = job.get("result") or {}
         check("the fetch reports the four outcome counts",
               all(k in result for k in ("fetched", "cached", "unmatched", "failed")))
+        # The backfill runs after the fetch and completes the seeded record.
+        check("the fetch reports how many existing records it stamped",
+              result.get("stamped_existing") == 1)
+        check("the seeded observation is now stamped with the snapshot date",
+              db.get_observation(obs.id)["gbif_snapshot_date"] == "2026-01-01")
     finally:
         srv._species_fetch_client_factory = None
 

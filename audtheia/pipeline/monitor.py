@@ -894,6 +894,14 @@ class Monitor:
         # later and this value is never treated as final.
         dominant = max(event.children, key=lambda c: c.get("confidence") or 0.0)
         species_key = dominant.get("class_name")
+        # Stamp the reference snapshot behind this taxon, when its reference has
+        # been fetched, so the record can disclose how current its taxonomy and
+        # conservation status are. A taxon whose reference was never fetched, or
+        # whose label does not match a fetched name, leaves these unset rather
+        # than guessing, which reads honestly as "not stated" downstream.
+        reference = self._db.find_species_reference_by_name(species_key)
+        gbif_snapshot_date = reference.get("gbif_snapshot_date") if reference else capture.gbif_snapshot_date
+        iucn_fetch_date = reference.get("iucn_fetch_date") if reference else capture.iucn_fetch_date
         counts = self._db.salience_counts(event.station_id, species_key)
         species_universe = len(self._detector.class_names)
         provisional_salience = compute_salience(
@@ -917,8 +925,8 @@ class Monitor:
             screening_confidence=event.best_confidence,
             screening_model_version=event.screening_model_version,
             acoustic_model_version=capture.acoustic_model_version,
-            gbif_snapshot_date=capture.gbif_snapshot_date,
-            iucn_fetch_date=capture.iucn_fetch_date,
+            gbif_snapshot_date=gbif_snapshot_date,
+            iucn_fetch_date=iucn_fetch_date,
             salience_provisional=provisional_salience,
             anomaly_magnitude_provisional=None,
             audio_clip_path=capture.audio_clip_path,
