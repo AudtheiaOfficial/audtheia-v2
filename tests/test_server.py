@@ -321,6 +321,13 @@ def run() -> None:
         check(client.get("/api/reports/file", params={"path": "../../etc/passwd"}).status_code == 400,
               "a path escaping the reports directory was not refused")
 
+        # -- report deletion -------------------------------------------
+        check(client.delete("/api/reports/no-such-bundle").status_code == 404,
+              "deleting an unknown report bundle was not a 404")
+        gone = client.delete(f"/api/reports/{bundle['name']}")
+        check(gone.status_code == 200 and gone.json()["status"] == "deleted", "deleting a report did not take")
+        check(client.get("/api/reports").json()["bundles"] == [], "the deleted report bundle still appears")
+
         # -- settings: read-only, secrets redacted ----------------------
         s = client.get("/api/settings").json()
         check(s["config"]["node"]["role"] == "desktop", "settings view did not return the config")

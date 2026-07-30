@@ -3096,14 +3096,14 @@
       return state.stationId ? query({ station_id: state.stationId }) : "";
     }
 
-    function runControl(label, path, describe) {
+    function runControl(label, path, describe, body) {
       var btn = el("button", { type: "button", class: "btn", text: label });
       btn.addEventListener("click", function () {
         var buttons = row.querySelectorAll("button");
         Array.prototype.forEach.call(buttons, function (b) { b.disabled = true; });
         result.textContent = label + ": working...";
         function reenable() { Array.prototype.forEach.call(buttons, function (b) { b.disabled = false; }); }
-        apiSend(path + scopeQuery(), "POST", {}).then(function (r) {
+        apiSend(path + scopeQuery(), "POST", body || {}).then(function (r) {
           // Write the outcome first, then refresh only the data regions. The
           // refresh no longer rebuilds this control block, so the message stays
           // on screen instead of being wiped by a full panel rebuild.
@@ -3144,11 +3144,11 @@
       return r.verified ? "Re-scored and gated " + fmtNum(r.verified) + " observation(s)."
         : "No eligible observation, or none in the desktop verifier's target group.";
     }));
-    row.appendChild(runControl("Generate report", "/reports/run", function (r) {
+    row.appendChild(runControl("Generate report (PDF)", "/reports/run", function (r) {
       var made = (r.formats || []).join(", ");
-      return made ? "Wrote " + made + " to the reports folder (bundle " + (r.bundle || "") + "). See the Reports tab."
+      return made ? "Wrote a " + made + " report to the reports folder (bundle " + (r.bundle || "") + "). See the Reports tab."
         : "No report output was produced.";
-    }));
+    }, { formats: ["pdf"] }));
 
     block.appendChild(row);
     block.appendChild(result);
@@ -3795,10 +3795,19 @@
         (b.files || []).forEach(function (f) {
           files.appendChild(el("a", { class: "file-link", href: API + "/reports/file" + query({ path: b.name + "/" + f }), text: f, target: "_blank", rel: "noopener" }));
         });
+        var del = el("button", { type: "button", class: "btn btn-small", text: "Delete report" });
+        del.addEventListener("click", function () {
+          if (!window.confirm('Delete the report "' + b.name + '"? This removes only this report bundle, not any captured data.')) { return; }
+          del.disabled = true;
+          apiSend("/reports/" + encodeURIComponent(b.name), "DELETE")
+            .then(function () { loaders.reports(); })
+            .catch(function (e) { del.disabled = false; window.alert("Could not delete the report: " + e.message); });
+        });
         host.appendChild(el("article", { class: "card" }, [
           el("div", { class: "card-title", text: b.name }),
           el("div", { class: "card-meta", text: "generated: " + fmtTime(b.modified_utc) }),
-          files
+          files,
+          el("div", { class: "card-actions" }, [del])
         ]));
       });
     }).catch(function (e) { setState(host, "empty-state", "Could not load reports: " + e.message); });
@@ -3808,21 +3817,33 @@
     var form = el("form", { class: "report-form" });
     var start = el("input", { type: "date", "aria-label": "Start date" });
     var end = el("input", { type: "date", "aria-label": "End date" });
+    // Format choice: pick the polished PDF, the raw CSV data bundle, or both.
+    // PDF is on by default because it is the report a person reads and shares.
+    var pdfBox = el("input", { type: "checkbox", checked: true, "aria-label": "PDF report" });
+    pdfBox.checked = true;
+    var csvBox = el("input", { type: "checkbox", "aria-label": "CSV data bundle" });
     var submit = el("button", { type: "submit", class: "btn btn-primary", text: "Generate report" });
     var note = el("span", { class: "form-note" });
     form.appendChild(el("label", { class: "filter-field" }, [el("span", { text: "From" }), start]));
     form.appendChild(el("label", { class: "filter-field" }, [el("span", { text: "To" }), end]));
+    form.appendChild(el("label", { class: "filter-field" }, [pdfBox, el("span", { text: "PDF report" })]));
+    form.appendChild(el("label", { class: "filter-field" }, [csvBox, el("span", { text: "CSV data" })]));
     form.appendChild(submit);
     form.appendChild(note);
-    form.appendChild(deferredNote("Targeting a report at one species or an environmental focus arrives with the report write path."));
+    form.appendChild(el("span", { class: "form-hint", text: "The PDF is the readable report, with a summary and charts. CSV is the raw data for your own analysis. Choose either or both." }));
     form.addEventListener("submit", function (ev) {
       ev.preventDefault();
+      var formats = [];
+      if (pdfBox.checked) { formats.push("pdf"); }
+      if (csvBox.checked) { formats.push("csv"); }
+      if (!formats.length) { note.textContent = "Choose at least one format: PDF, CSV, or both."; return; }
       submit.disabled = true;
       note.textContent = "Requesting generation.";
       apiSend("/reports", "POST", {
         station_id: state.stationId || null,
         start: start.value || null,
-        end: end.value || null
+        end: end.value || null,
+        formats: formats
       }).then(function (r) {
         note.textContent = r.note || "Generation started.";
         submit.disabled = false;

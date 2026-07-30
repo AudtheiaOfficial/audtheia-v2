@@ -419,7 +419,12 @@ class ReportGenerator:
             result.formats.append("csv")
 
         if "pdf" in chosen_formats:
-            pdf_path = write_pdf(model, bundle_dir / "report.pdf")
+            # Render the executive-summary figures alongside the PDF, into an
+            # assets folder in the same bundle. When matplotlib is absent this
+            # returns nothing and the PDF simply omits its figures.
+            from audtheia.reports.charts import render_charts
+            charts = render_charts(model, bundle_dir / "assets")
+            pdf_path = write_pdf(model, bundle_dir / "report.pdf", charts=charts)
             result.pdf_path = pdf_path
             result.formats.append("pdf")
 
@@ -1048,13 +1053,18 @@ _COLOR_RULE = (209, 213, 219)       # light gray: separators
 _COLOR_BANNER = (180, 83, 9)        # amber: the candidate-hypothesis banner
 
 
-def write_pdf(model: ReportModel, pdf_path: str | Path) -> Path:
-    """Render the report model to a PDF at the given path."""
+def write_pdf(model: ReportModel, pdf_path: str | Path, *, charts: Optional[dict] = None) -> Path:
+    """Render the report model to a PDF at the given path.
+
+    charts maps a figure name to a PNG path (from audtheia.reports.charts). It is
+    optional: with no figures the report still renders, omitting the summary
+    figures rather than failing.
+    """
     FPDF, XPos, YPos = _load_pdf_backend()
     out_path = Path(pdf_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    doc = _ReportPdf(model, FPDF, XPos, YPos)
+    doc = _ReportPdf(model, FPDF, XPos, YPos, charts=charts or {})
     doc.build()
     doc.output(str(out_path))
     return out_path
@@ -1067,13 +1077,18 @@ class _ReportPdf:
     is only ever constructed after the seam has confirmed the library is present.
     """
 
-    def __init__(self, model: ReportModel, FPDF, XPos, YPos) -> None:
+    def __init__(self, model: ReportModel, FPDF, XPos, YPos, *, charts: Optional[dict] = None) -> None:
         self.model = model
         self.XPos = XPos
         self.YPos = YPos
+        self.charts = charts or {}
 
         class _Doc(FPDF):
             def header(inner) -> None:  # noqa: N805 - fpdf2 calls this
+                # The cover page carries its own banner, so the running header is
+                # suppressed there and drawn on every content page after it.
+                if getattr(inner, "_no_header", False):
+                    return
                 inner.set_font("Helvetica", "I", 8)
                 inner.set_text_color(*_COLOR_MUTED)
                 inner.cell(0, 6, _pdf_safe("Audtheia environmental report"),
@@ -1163,8 +1178,10 @@ class _ReportPdf:
     # -- document assembly ----------------------------------------------
 
     def build(self) -> None:
+        self._cover_page()
         self.pdf.add_page()
-        self._cover()
+        self._executive_summary()
+        self._reading_guide()
         self._detections_section()
         self._audio_section()
         self._environment_section()
@@ -1175,24 +1192,101 @@ class _ReportPdf:
     def output(self, path: str) -> None:
         self.pdf.output(path)
 
-    def _cover(self) -> None:
-        m = self.model
-        self._title("Environmental monitoring report")
-        self._para(f"Scope: {m.scope_label}", style="B", size=11)
-        window = _describe_window(m)
-        self._para(window, color=_COLOR_MUTED)
-        gen_local = _format_local(m.generated_at_utc, _display_tz(m))
-        self._para(f"Generated: {gen_local}", color=_COLOR_MUTED)
-        self._para(f"Times shown in: {m.display_timezone} (stored data is UTC)", color=_COLOR_MUTED)
-        self._gap(3)
+    # -- figures ---------------------------------------------------------
 
-        self._subhead("How to read the labels")
+    def _figure(self, name: str, caption: str = "") -> None:
+        """Embed one rendered figure at column width, with an optional caption.
+
+        A figure that was not produced (no data, or matplotlib absent) is simply
+        skipped, so the summary shows only figures that carry meaning.
+        """
+        path = self.charts.get(name)
+        if not path:
+            return
+        try:
+            self.pdf.image(str(path), w=self.epw)
+        except Exception:  # noqa: BLE001 - a bad image never breaks the report
+            return
+        if caption:
+            self._set("I", 8, _COLOR_MUTED)
+            self.pdf.multi_cell(self.epw, 4.5, _pdf_safe(caption),
+                                new_x=self.XPos.LMARGIN, new_y=self.YPos.NEXT)
+        self._gap(2)
+
+    # -- cover page ------------------------------------------------------
+
+    def _cover_page(self) -> None:
+        """A dedicated title page: wordmark, title, scope, window, timestamp."""
+        m = self.model
+        self.pdf._no_header = True
+        self.pdf.add_page()
+        self.pdf._no_header = False
+
+        # A full-width banner band at the top, in the product's amber.
+        band_h = 46
+        self.pdf.set_fill_color(*_COLOR_BANNER)
+        self.pdf.rect(0, 0, self.pdf.w, band_h, style="F")
+        self.pdf.set_xy(self.pdf.l_margin, 16)
+        self._set("B", 12, (255, 255, 255))
+        self.pdf.cell(0, 7, _pdf_safe("AUDTHEIA"),
+                      new_x=self.XPos.LMARGIN, new_y=self.YPos.NEXT)
+        self.pdf.set_x(self.pdf.l_margin)
+        self._set("", 10, (255, 255, 255))
+        self.pdf.cell(0, 6, _pdf_safe("Offline environmental intelligence"),
+                      new_x=self.XPos.LMARGIN, new_y=self.YPos.NEXT)
+
+        # The title and scope, below the band.
+        self.pdf.set_xy(self.pdf.l_margin, band_h + 22)
+        self._set("B", 26, _COLOR_TEXT)
+        self.pdf.multi_cell(self.epw, 11, _pdf_safe("Environmental monitoring report"),
+                            new_x=self.XPos.LMARGIN, new_y=self.YPos.NEXT)
+        self._gap(4)
+        self._set("B", 13, _COLOR_TEXT)
+        self.pdf.multi_cell(self.epw, 7, _pdf_safe(m.scope_label),
+                            new_x=self.XPos.LMARGIN, new_y=self.YPos.NEXT)
+        self._gap(2)
+        self._set("", 10.5, _COLOR_MUTED)
+        self.pdf.multi_cell(self.epw, 6, _pdf_safe(_describe_window(m)),
+                            new_x=self.XPos.LMARGIN, new_y=self.YPos.NEXT)
+
+        # A footer block near the bottom of the cover with the generation stamp.
+        self.pdf.set_xy(self.pdf.l_margin, self.pdf.h - 40)
+        self.pdf.set_draw_color(*_COLOR_RULE)
+        self.pdf.line(self.pdf.l_margin, self.pdf.get_y(), self.pdf.w - self.pdf.r_margin, self.pdf.get_y())
+        self._gap(3)
+        gen_local = _format_local(m.generated_at_utc, _display_tz(m))
+        self._set("", 9, _COLOR_MUTED)
+        self.pdf.multi_cell(self.epw, 5, _pdf_safe(f"Generated {gen_local}"),
+                            new_x=self.XPos.LMARGIN, new_y=self.YPos.NEXT)
+        self.pdf.multi_cell(self.epw, 5,
+                            _pdf_safe(f"Times shown in {m.display_timezone}; stored data is UTC. "
+                                      "Generated offline on the desktop from the local record."),
+                            new_x=self.XPos.LMARGIN, new_y=self.YPos.NEXT)
+
+    # -- executive summary ----------------------------------------------
+
+    def _executive_summary(self) -> None:
+        """A plain-language overview and the key figures, for any reader."""
+        self._section("Executive summary")
+        self._para(_summary_narrative(self.model))
+        self._gap(2)
+        self._figure("detection_timeline", "Events recorded across the reporting window.")
+        self._figure("species_composition", "The taxa recorded, ranked by how many events each appeared in.")
+        self._figure("confidence_distribution",
+                     "How confident the detection models were, across every detection in scope.")
+        self._figure("verification_summary",
+                     "How many events cleared the desktop verification gate. A field call and the "
+                     "desktop verdict are kept as separate records; verification never rewrites a measurement.")
+
+    def _reading_guide(self) -> None:
+        m = self.model
+        self._section("How to read the labels")
         self._para(
-            "Every value below carries a bracketed tag naming where it came from "
-            "and its quality-control or missing-data status. Measured values are "
-            "set in plain text; inferred values from a language model and "
-            "candidate results from the longitudinal pass are set in violet "
-            "italics; derived summaries are set in gray italics.")
+            "Every value in the detailed sections carries a bracketed tag naming "
+            "where it came from and its quality-control or missing-data status. "
+            "Measured values are set in plain text; inferred values from a language "
+            "model and candidate results from the longitudinal pass are set in "
+            "violet italics; derived summaries are set in gray italics.")
         self._gap(1)
         self._bullet("measured (sensor): a direct sensor reading.")
         self._bullet("measured (detection model): a call from a detection model on captured media.")
@@ -1522,6 +1616,58 @@ def _yes_no(value) -> str:
     if value is None:
         return "not recorded"
     return "yes" if value else "no"
+
+
+def _summary_narrative(model: ReportModel) -> str:
+    """A plain-language overview of the record, built only from counted facts.
+
+    Every figure comes straight from the analytics already computed over the
+    stored rows, so the paragraph never states anything the tables do not. An
+    empty record is described plainly rather than dressed up.
+    """
+    a = model.analytics or {}
+    total = int(a.get("total_events") or 0)
+    if total == 0:
+        return ("No events fall within this report's scope and window, so there is "
+                "nothing to summarize yet. Once detections are captured and "
+                "quality-controlled, this summary fills in automatically.")
+
+    modality = a.get("detections_by_modality") or {}
+    vision = int(modality.get("vision") or 0)
+    audio = int(modality.get("audio") or 0)
+    richness = int(a.get("species_richness") or 0)
+    verified = int(a.get("verified_count") or 0)
+    pct = int(round(100 * (a.get("verified_fraction") or 0)))
+
+    names = a.get("taxon_display_names") or {}
+    counts = a.get("taxon_event_counts") or {}
+    top = sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:3]
+    top_names = [str(names.get(k, k)) for k, _ in top]
+
+    event_word = "event" if total == 1 else "events"
+    taxa_word = "taxon" if richness == 1 else "taxa"
+    parts = [
+        f"Across this window, Audtheia recorded {total} {event_word} at {model.scope_label}, "
+        f"comprising {vision} visual and {audio} acoustic detections spanning {richness} {taxa_word}."
+    ]
+    if verified:
+        parts.append(f"{verified} of {total} {event_word} ({pct}%) cleared desktop verification.")
+    else:
+        parts.append("No event has cleared desktop verification yet, so the record so far rests on "
+                     "the field station's own calls.")
+    if top_names:
+        joined = ", ".join(top_names[:-1]) + (", and " + top_names[-1] if len(top_names) > 1 else top_names[0])
+        parts.append(f"The most frequently recorded were {joined}.")
+
+    n_patterns = len(model.patterns or [])
+    if n_patterns:
+        p_word = "pattern" if n_patterns == 1 else "patterns"
+        parts.append(f"The longitudinal pass proposed {n_patterns} candidate {p_word}, each a hypothesis "
+                     "for further study rather than an established finding.")
+    else:
+        parts.append("The longitudinal pass proposed no candidate patterns in this window; with more "
+                     "accumulated events it surfaces trends, correlations, and co-occurrences.")
+    return " ".join(parts)
 
 
 # ===========================================================================

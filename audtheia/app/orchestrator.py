@@ -323,7 +323,16 @@ class DesktopStation:
         return engine.sweep(station_id=self._station_id)
 
     def dream_once(self):
-        """Run one longitudinal dream pass over the verified record."""
+        """Run one longitudinal dream pass over the verified record.
+
+        Events captured directly on a desktop station never pass through the sync
+        that stamps a field station's events as arrived, so they are marked as
+        arrived here first; otherwise the pass, which reads the arrival stream,
+        would have nothing to consolidate on a desktop-only deployment.
+        """
+        stamped = self._db.self_sync_local_observations()
+        if stamped:
+            logger.info("marked %d desktop-native event(s) as arrived for the longitudinal pass", stamped)
         engine = DreamEngine(
             settings=self._settings,
             db=self._db,

@@ -962,6 +962,30 @@ class Database:
         with self.connect() as conn:
             return self._all(conn, f"SELECT * FROM observations{where}{tail}", tuple(params))
 
+    def self_sync_local_observations(self) -> int:
+        """Mark desktop-native events as arrived, so the longitudinal pass sees them.
+
+        The longitudinal pass consumes the arrival stream (`list_synced_since`),
+        which only includes events whose `synced_at` is set. A field station's
+        events get that stamp when the desktop imports them. But an event captured
+        directly on a desktop station is authoritative the moment it is written and
+        was never imported, so it has no `synced_at` and the pass never reaches it.
+
+        This stamps every still-unstamped event with its own capture time, so an
+        event that is already in this authoritative store is treated as arrived,
+        in capture order, and the pass consolidates it. It is safe and idempotent:
+        an event present in the desktop database has, by definition, arrived here;
+        an event only stamped once (the guard on NULL) so a re-run never disturbs
+        an already-recorded arrival time; and no field station is affected, since a
+        field station's own events are stamped by the import, not here. Returns the
+        number of events newly stamped.
+        """
+        with self.connect() as conn:
+            cur = conn.execute(
+                "UPDATE observations SET synced_at = created_at WHERE synced_at IS NULL"
+            )
+            return cur.rowcount
+
     def set_observation_qc(
         self, observation_id: str, qc_state: str, qc_reason: Optional[str] = None
     ) -> None:

@@ -361,6 +361,30 @@ def run() -> None:
             check(len(data) > 3000, "PDF is implausibly small")
             check(set(result2.formats) == {"pdf", "csv"},
                   "default formats did not come from the settings schedule")
+
+            # -- Format selection: each choice produces only what was asked.
+            pdf_only = gen.generate_report(settings, db, formats=["pdf"],
+                                           output_dir=out_root, generated_at="2026-07-02T00:00:00Z")
+            check(pdf_only.pdf_path is not None and pdf_only.csv_paths == [],
+                  "a PDF-only request still produced CSV files")
+            csv_only = gen.generate_report(settings, db, formats=["csv"],
+                                           output_dir=out_root, generated_at="2026-07-03T00:00:00Z")
+            check(csv_only.pdf_path is None and csv_only.csv_paths,
+                  "a CSV-only request still produced a PDF")
+
+            # -- The executive summary narrative is real and counted.
+            model = gen.ReportGenerator(settings, db)._gather(
+                station_id=None, start=None, end=None,
+                generated_at="2026-07-01T00:00:00Z", tz=settings.resolve_timezone())
+            narrative = gen._summary_narrative(model)
+            check(isinstance(narrative, str) and "event" in narrative and len(narrative) > 40,
+                  "the executive summary narrative was empty or malformed")
+
+            # -- Charts render (when matplotlib is present) and are embedded; a
+            #    missing library degrades to no figures rather than an error.
+            charts = __import__("audtheia.reports.charts", fromlist=["render_charts"]).render_charts(
+                model, pdf_only.pdf_path.parent / "assets")
+            check(isinstance(charts, dict), "chart rendering did not return a mapping")
         else:
             # Confirm the seam fails loudly rather than silently when asked for a
             # PDF without the library.

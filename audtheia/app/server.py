@@ -2881,6 +2881,34 @@ def create_app(settings, database):
             raise HTTPException(status_code=404, detail="no such report file")
         return FileResponse(str(target))
 
+    @app.delete(f"{API_PREFIX}/reports/{{bundle}}")
+    def delete_report(bundle: str):
+        """Delete one generated report bundle and everything inside it.
+
+        Only a single bundle directly under the reports directory can be removed:
+        the name is resolved and confirmed to be an immediate child of the reports
+        directory, so a crafted name cannot escape it or reach any other part of
+        the disk. Nothing outside the reports directory is ever touched, and the
+        record, the database, and the captured media are never involved.
+        """
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="reports are managed on the desktop; this node is not the desktop.")
+        reports_dir = Path(settings.path("reports_dir")).resolve()
+        target = (reports_dir / bundle).resolve()
+        # The target must be an immediate child of the reports directory: its
+        # parent is exactly the reports directory, and it is not the directory
+        # itself. This refuses '..', nested paths, and the reports root.
+        if target.parent != reports_dir or target == reports_dir:
+            raise HTTPException(status_code=400, detail="a report name must name one bundle in the reports folder")
+        if not target.is_dir():
+            raise HTTPException(status_code=404, detail=f"no report bundle named {bundle}")
+        import shutil
+        try:
+            shutil.rmtree(target)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"could not delete the report: {exc}") from exc
+        return {"status": "deleted", "bundle": bundle}
+
     # -- on-demand processing: run the longitudinal pass, quality control,
     # verification, and reports now, rather than waiting for the capture-time
     # scheduler. The scheduler only advances while capture is running and counts
