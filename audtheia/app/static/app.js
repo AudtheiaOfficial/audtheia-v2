@@ -3166,12 +3166,62 @@
     block.appendChild(el("p", { class: "settings-desc", text:
       "Prepare the species data Audtheia uses offline at run time. Each step runs in the background and reports progress here; you can leave this page while one runs." }));
     var indexHost = el("div");
+    var targetHost = el("div", { class: "species-step" });
     var refHost = el("div", { class: "species-step" });
     block.appendChild(indexHost);
+    block.appendChild(targetHost);
     block.appendChild(refHost);
     host.appendChild(block);
 
     function stillHere(node) { return state.activePanel === "brain" && document.body.contains(node); }
+
+    // The target-species editor: add or remove the species each station is
+    // looking for. The reference fetch covers these and the field model is
+    // trained on them, so this is where a person declares them without editing a
+    // configuration file by hand.
+    function paintTargets() {
+      apiGet("/settings").then(function (r) {
+        clear(targetHost);
+        var stations = ((r.config || {}).stations) || [];
+        targetHost.appendChild(el("div", { class: "card-title", text: "Target species (what each station is looking for)" }));
+        targetHost.appendChild(el("p", { class: "form-hint", text:
+          "The species a station targets. The reference fetch covers these, and a field model is trained on them. Use the correct scientific name so it matches GBIF." }));
+        if (!stations.length) { targetHost.appendChild(el("p", { class: "card-note", text: "No stations configured yet." })); return; }
+        stations.forEach(function (st) {
+          var sid = st.station_id;
+          var targets = st.target_species || [];
+          var card = el("div", { class: "species-step" });
+          card.appendChild(el("div", { class: "card-meta", text: st.station_name || sid }));
+          var chips = el("div", { class: "badge-row" });
+          if (!targets.length) { chips.appendChild(el("span", { class: "card-note", text: "none yet" })); }
+          targets.forEach(function (name) {
+            var chip = el("button", { type: "button", class: "btn btn-small", text: name + "  ×", title: "Remove " + name });
+            chip.addEventListener("click", function () {
+              chip.disabled = true;
+              apiSend("/settings/stations/" + encodeURIComponent(sid) + "/target-species/" + encodeURIComponent(name), "DELETE")
+                .then(function () { paintTargets(); paintRef(); })
+                .catch(function (e) { chip.disabled = false; window.alert("Could not remove: " + e.message); });
+            });
+            chips.appendChild(chip);
+          });
+          card.appendChild(chips);
+          var input = el("input", { type: "text", class: "form-input", placeholder: "scientific name, for example Aplysina fistularis" });
+          var add = el("button", { type: "button", class: "btn btn-small", text: "Add species" });
+          function doAdd() {
+            var name = input.value.trim();
+            if (!name) { return; }
+            add.disabled = true;
+            apiSend("/settings/stations/" + encodeURIComponent(sid) + "/target-species", "POST", { name: name })
+              .then(function () { input.value = ""; add.disabled = false; paintTargets(); paintRef(); })
+              .catch(function (e) { add.disabled = false; window.alert("Could not add: " + e.message); });
+          }
+          add.addEventListener("click", doAdd);
+          input.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); doAdd(); } });
+          card.appendChild(el("div", { class: "control-row" }, [input, add]));
+          targetHost.appendChild(card);
+        });
+      }).catch(function (e) { clear(targetHost); targetHost.appendChild(el("p", { class: "card-note", text: "Could not read target species: " + e.message })); });
+    }
 
     function paintIndex() {
       apiGet("/species/index/status").then(function (s) {
@@ -3223,9 +3273,12 @@
         clear(refHost);
         var job = s.job || {};
         var targets = s.target_species || [];
+        var detected = s.detected_species || [];
+        var toFetch = targets.length + detected.length;
         refHost.appendChild(el("div", { class: "card-title", text: "Reference data (names, occurrence, conservation status)" }));
         refHost.appendChild(el("p", { class: "card-note", text:
-          fmtNum(s.references_stored) + " species on file. " + targets.length + " target species configured across your stations." }));
+          fmtNum(s.references_stored) + " species on file. " + targets.length + " target species configured, and " +
+          detected.length + " species already detected in your record. The fetch covers both." }));
         refHost.appendChild(el("p", { class: "form-hint", text:
           "GBIF naming and the global occurrence count need no account. The IUCN token only adds the Red List conservation status: " +
           (s.iucn_token_present
@@ -3244,7 +3297,7 @@
             refHost.appendChild(el("p", { class: "card-note", text: "Last fetch did not finish: " + job.error }));
           }
           var btn = el("button", { type: "button", class: "btn", text: "Fetch reference data" });
-          if (!targets.length) { btn.disabled = true; }
+          if (!toFetch) { btn.disabled = true; }
           btn.addEventListener("click", function () {
             btn.disabled = true;
             apiSend("/species/reference/fetch", "POST", {})
@@ -3252,9 +3305,9 @@
               .catch(function (e) { btn.disabled = false; refHost.appendChild(el("p", { class: "card-note", text: e.message })); });
           });
           refHost.appendChild(btn);
-          refHost.appendChild(el("p", { class: "form-hint", text: targets.length
-            ? "This reaches out to GBIF and IUCN once per species and needs an internet connection; it is the one online step. New captures then carry a snapshot date."
-            : "Add target species to a station in Settings first; the fetch covers your stations' target species." }));
+          refHost.appendChild(el("p", { class: "form-hint", text: toFetch
+            ? "This reaches out to GBIF and IUCN once per species and needs an internet connection; it is the one online step. It covers your configured target species and the species already in your record, and stamps snapshot dates on matching records. A misspelled name will not match GBIF, so correct labels first for those to fill."
+            : "Nothing to fetch yet: add target species to a station in Settings, or capture some detections, then the fetch covers them." }));
         }
         if (job.status === "running" && stillHere(refHost)) { window.setTimeout(paintRef, 3000); }
       }).catch(function (e) {
@@ -3264,6 +3317,7 @@
     }
 
     paintIndex();
+    paintTargets();
     paintRef();
   }
 

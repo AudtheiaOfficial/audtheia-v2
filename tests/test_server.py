@@ -329,6 +329,26 @@ def run() -> None:
         check(gone.status_code == 200 and gone.json()["status"] == "deleted", "deleting a report did not take")
         check(client.get("/api/reports").json()["bundles"] == [], "the deleted report bundle still appears")
 
+        # -- target-species editor and detected-species fetch scope -----
+        reef = tr.REEF_ID
+        added = client.post(f"/api/settings/stations/{reef}/target-species", json={"name": "Aplysina fistularis"})
+        check(added.status_code == 201, "adding a target species failed")
+        rstatus = client.get("/api/species/reference/status").json()
+        check("Aplysina fistularis" in rstatus.get("target_species", []),
+              "the added target species did not reach the fetch scope")
+        check(isinstance(rstatus.get("detected_species"), list) and rstatus["detected_species"],
+              "reference status did not report the species detected in the record")
+        check(client.post(f"/api/settings/stations/{reef}/target-species", json={"name": "Aplysina fistularis"}).status_code == 201,
+              "re-adding an existing target species was rejected")
+        check(client.post(f"/api/settings/stations/{reef}/target-species", json={"name": "   "}).status_code == 422,
+              "an empty target species was accepted")
+        rem = client.delete(f"/api/settings/stations/{reef}/target-species/Aplysina%20fistularis")
+        check(rem.status_code == 200, "removing a target species failed")
+        check("Aplysina fistularis" not in client.get("/api/species/reference/status").json().get("target_species", []),
+              "the removed target species is still in scope")
+        check(client.delete(f"/api/settings/stations/{reef}/target-species/Nope").status_code == 404,
+              "removing an unknown target species was not a 404")
+
         # -- settings: read-only, secrets redacted ----------------------
         s = client.get("/api/settings").json()
         check(s["config"]["node"]["role"] == "desktop", "settings view did not return the config")

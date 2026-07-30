@@ -829,6 +829,34 @@ class Database:
             )
             return [r["name"] for r in rows]
 
+    def list_detected_taxa(self) -> list[str]:
+        """Distinct taxon names present in the record, for the reference fetch.
+
+        Returns each detected taxon's scientific name where it has one, and its
+        common name otherwise, deduplicated case-insensitively. This lets the
+        reference fetch cover the species actually detected, not only the species
+        a station was configured to look for, so the GBIF and IUCN data fills for
+        a record even when no target species were declared in advance. A scientific
+        name is preferred because it resolves against GBIF far more reliably than a
+        vernacular one.
+        """
+        with self.connect() as conn:
+            rows = self._all(
+                conn,
+                "SELECT DISTINCT scientific_name AS s, common_name AS c "
+                "FROM child_detections "
+                "WHERE scientific_name IS NOT NULL OR common_name IS NOT NULL",
+            )
+        seen: set = set()
+        names: list[str] = []
+        for r in rows:
+            chosen = (r.get("s") or r.get("c") or "").strip()
+            key = chosen.lower()
+            if chosen and key not in seen:
+                seen.add(key)
+                names.append(chosen)
+        return names
+
     def delete_observations(self, observation_ids: list[str]) -> dict:
         """Delete observations and everything that hangs off them.
 

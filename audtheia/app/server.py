@@ -1738,6 +1738,9 @@ def create_app(settings, database):
         driver: Optional[dict] = None
         qc: Optional[dict] = None
 
+    class TargetSpeciesRequest(BaseModel):
+        name: Optional[str] = None
+
     class SecretsRequest(BaseModel):
         values: Optional[dict] = None
 
@@ -2182,10 +2185,14 @@ def create_app(settings, database):
             for name in (station.get("target_species") or [])
             if isinstance(name, str) and name.strip()
         })
+        # The fetch also covers the taxa already detected in the record, so it
+        # works for a deployment that captured before declaring target species.
+        detected = db.list_detected_taxa()
         return {
             "job": _job_snapshot("species_reference"),
             "references_stored": len(db.list_species_reference()),
             "target_species": target,
+            "detected_species": sorted(detected),
             "iucn_token_present": bool(settings.secrets.get("iucn_api_key")),
         }
 
@@ -2235,7 +2242,12 @@ def create_app(settings, database):
         def _target(update):
             import types
             module = _load_script_module(settings, "bootstrap_fetch_species")
-            args = types.SimpleNamespace(station_id=None, species=None, from_file=None, refresh=refresh)
+            # Cover the taxa actually detected in the record in addition to the
+            # configured target species, so the fetch fills reference data for a
+            # deployment that captured before declaring any targets. The script
+            # unions these with each station's target_species and deduplicates.
+            detected = db.list_detected_taxa()
+            args = types.SimpleNamespace(station_id=None, species=detected or None, from_file=None, refresh=refresh)
             client = _species_fetch_client_factory() if _species_fetch_client_factory else None
             update(message="contacting GBIF"
                    + (" and IUCN" if settings.secrets.get("iucn_api_key") else " (no IUCN token, conservation status will be blank)"))
@@ -3248,6 +3260,50 @@ def create_app(settings, database):
         except BackendError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"config": _redact(settings.raw), "note": "channel removed."}
+
+    @app.post(f"{API_PREFIX}/settings/stations/{{station_id}}/target-species", status_code=201)
+    def add_target_species(station_id, request: TargetSpeciesRequest):
+        """Add a target species to a station.
+
+        A target species is a name the station is looking for; the reference fetch
+        covers it, and the field model is trained on it. The name is appended to a
+        working copy and the whole configuration is validated before it is written,
+        so a malformed configuration is refused with the file left untouched. A
+        name already present is accepted without duplicating it.
+        """
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="stations are configured on the desktop; this node is not the desktop.")
+        name = (request.name or "").strip()
+        if not name:
+            raise HTTPException(status_code=422, detail="a species name is required")
+        draft, station = _draft_station(station_id)
+        existing = station.setdefault("target_species", [])
+        if any(isinstance(n, str) and n.strip().lower() == name.lower() for n in existing):
+            return {"config": _redact(settings.raw), "note": f"{name} is already a target species."}
+        existing.append(name)
+        try:
+            _commit_draft(settings, draft)
+        except BackendError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"config": _redact(settings.raw), "note": f"added {name}; the reference fetch will cover it."}
+
+    @app.delete(f"{API_PREFIX}/settings/stations/{{station_id}}/target-species/{{name}}")
+    def remove_target_species(station_id, name: str):
+        """Remove a target species from a station."""
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="stations are configured on the desktop; this node is not the desktop.")
+        draft, station = _draft_station(station_id)
+        targets = station.get("target_species", []) or []
+        wanted = name.strip().lower()
+        kept = [n for n in targets if not (isinstance(n, str) and n.strip().lower() == wanted)]
+        if len(kept) == len(targets):
+            raise HTTPException(status_code=404, detail=f"no target species named {name}")
+        station["target_species"] = kept
+        try:
+            _commit_draft(settings, draft)
+        except BackendError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"config": _redact(settings.raw), "note": f"removed {name}."}
 
     @app.get(f"{API_PREFIX}/sensors")
     def sensors_overview(station_id: str | None = Query(default=None)):
