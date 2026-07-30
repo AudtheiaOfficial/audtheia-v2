@@ -314,8 +314,9 @@ def run() -> None:
         check(csv_files, "the report bundle held no CSV files")
 
         # -- report file download, with a traversal guard ---------------
-        # The listing paths are already relative to the reports directory.
-        one = csv_files[0]
+        # Listing paths are relative to the bundle, so a link is the bundle name
+        # plus the file path, exactly as the interface builds it.
+        one = bundle["name"] + "/" + csv_files[0]
         direct = client.get("/api/reports/file", params={"path": one})
         check(direct.status_code == 200, "a real report file could not be fetched")
         check(client.get("/api/reports/file", params={"path": "../../etc/passwd"}).status_code == 400,

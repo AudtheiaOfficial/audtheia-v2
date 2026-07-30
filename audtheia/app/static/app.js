@@ -3289,7 +3289,21 @@
     var wrap = el("div", { class: "dream-status" });
     if (!active) {
       var passes = status.passes || [];
-      wrap.appendChild(el("p", { class: "card-note", text: passes.length ? "No pass is running. Most recent phase reached: " + (passes[0].phase_reached || "unknown") + "." : "No longitudinal pass has run yet." }));
+      if (!passes.length) {
+        wrap.appendChild(el("p", { class: "card-note", text: "No longitudinal pass has run yet." }));
+        return wrap;
+      }
+      // Summarize the most recent pass with its real figures, so the box reports
+      // what the last run did rather than only a phase word.
+      var p = passes[0];
+      wrap.appendChild(el("div", { class: "card-stats", text:
+        "Last pass: " + (p.status || "unknown") +
+        "   phase " + (p.phase_reached || "unknown") +
+        "   " + fmtNum(p.cycles_completed) + " cycle(s)" +
+        "   " + fmtNum(p.work_budget_consumed) + " record(s) consolidated" }));
+      wrap.appendChild(el("p", { class: "card-meta", text: "ran " + fmtTime(p.ended_at || p.started_at) }));
+      wrap.appendChild(el("p", { class: "form-hint", text:
+        "This box reports the run itself. Any hypotheses the pass proposed appear below under Candidate patterns, and the site baselines it builds appear under Models and Memory, Site memory. With few events a pass consolidates the record and scores salience but proposes no statistical patterns yet; those need enough events to clear the evidence thresholds." }));
       return wrap;
     }
     wrap.appendChild(el("div", { class: "card-stats", text:
@@ -3789,12 +3803,26 @@
     apiGet("/reports").then(function (r) {
       clear(host);
       var bundles = r.bundles || [];
-      if (!bundles.length) { setState(host, "empty-state", "No reports generated yet."); return; }
+      var dir = r.reports_dir || "";
+      // The separator the machine uses, taken from its own path, so the on-disk
+      // location reads naturally on Windows or on the Pi.
+      var sep = dir.indexOf("\\") !== -1 ? "\\" : "/";
+      if (dir) {
+        host.appendChild(el("p", { class: "form-hint", text:
+          "Reports are saved on this computer at: " + dir + ". You can open a file below, or open that folder directly." }));
+      }
+      if (!bundles.length) { host.appendChild(el("p", { class: "empty-state", text: "No reports generated yet." })); return; }
       bundles.forEach(function (b) {
         var files = el("div", { class: "file-row" });
         (b.files || []).forEach(function (f) {
-          files.appendChild(el("a", { class: "file-link", href: API + "/reports/file" + query({ path: b.name + "/" + f }), text: f, target: "_blank", rel: "noopener" }));
+          // Show a readable file name, but link through the full path so it opens.
+          files.appendChild(el("a", { class: "file-link", href: API + "/reports/file" + query({ path: b.name + "/" + f }),
+            text: (f === "report.pdf" ? "Open PDF report" : f), target: "_blank", rel: "noopener" }));
         });
+        if (!(b.files || []).length) {
+          files.appendChild(el("p", { class: "card-note", text:
+            "This report has no downloadable files. If you asked for a PDF and it is missing, the model runtime or fpdf2 may have failed; check the language model status, or regenerate." }));
+        }
         var del = el("button", { type: "button", class: "btn btn-small", text: "Delete report" });
         del.addEventListener("click", function () {
           if (!window.confirm('Delete the report "' + b.name + '"? This removes only this report bundle, not any captured data.')) { return; }
@@ -3806,6 +3834,7 @@
         host.appendChild(el("article", { class: "card" }, [
           el("div", { class: "card-title", text: b.name }),
           el("div", { class: "card-meta", text: "generated: " + fmtTime(b.modified_utc) }),
+          el("div", { class: "card-meta", text: "saved at: " + (dir ? dir + sep + b.name : b.name) }),
           files,
           el("div", { class: "card-actions" }, [del])
         ]));

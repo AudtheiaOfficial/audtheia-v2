@@ -1648,8 +1648,19 @@ def _list_report_bundles(reports_dir: Path) -> list:
     for entry in sorted(reports_dir.iterdir(), reverse=True):
         if not entry.is_dir():
             continue
-        files = [str(p.relative_to(reports_dir)).replace("\\", "/")
-                 for p in sorted(entry.rglob("*")) if p.is_file()]
+        # Paths are listed relative to the bundle, not the reports directory, so
+        # a link is built as bundle + "/" + file without doubling the bundle name.
+        # The chart images under assets/ are embedded in the PDF, so they are not
+        # offered as separate downloads; the PDF and the CSV data are the
+        # deliverables a person opens.
+        files = []
+        for p in sorted(entry.rglob("*")):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(entry)
+            if rel.parts and rel.parts[0] == "assets":
+                continue
+            files.append(str(rel).replace("\\", "/"))
         bundles.append({
             "name": entry.name,
             "modified_utc": datetime.fromtimestamp(entry.stat().st_mtime, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
