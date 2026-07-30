@@ -590,6 +590,78 @@ def _llm_runtime_available() -> bool:
     return importlib.util.find_spec("llama_cpp") is not None
 
 
+# The exact remedy for the illegal-instruction crash a wrong prebuilt wheel
+# causes. The default llama-cpp-python wheel targets CPU instructions (AVX2, FMA)
+# that an older or basic CPU does not have; loading then fails with Windows error
+# 0xc000001d. The fix is a wheel that matches the CPU, or a rebuild with those
+# instructions off. Kept in one place so the interface, the logs, and the docs
+# agree.
+_LLM_CPU_REMEDY = (
+    "If the model does not load and the log shows Windows error 0xc000001d (an "
+    "illegal instruction), the installed llama-cpp-python was built for CPU "
+    "instructions this computer does not have (commonly AVX2 or FMA). Reinstall a "
+    "build that matches this CPU (a 'basic' or 'AVX' wheel), or rebuild with those "
+    "instructions off using CMAKE_ARGS=\"-DGGML_NATIVE=OFF -DGGML_AVX2=OFF "
+    "-DGGML_FMA=OFF\". See docs/language-model.md."
+)
+
+
+def _llm_status(settings) -> dict:
+    """An honest, actionable readiness status for the desktop language model.
+
+    Reports which of three states holds without loading the model (loading can be
+    slow and is where a CPU-mismatched wheel fails): the runtime is not installed,
+    no model file is present, or both are present. When both are present it also
+    carries the exact remedy for the one failure a person is otherwise left to
+    decode from a raw Windows error code, so the interface can state the fix
+    rather than only that the model is unavailable.
+    """
+    if not _llm_runtime_available():
+        return {
+            "status": "runtime_missing",
+            "message": "The model runtime (llama-cpp-python) is not installed, so no model can run yet.",
+            "remedy": ("Install the runtime with: pip install llama-cpp-python. On an older CPU, install a "
+                       "build that matches it (a 'basic' or 'AVX' wheel) rather than the default. " + _LLM_CPU_REMEDY),
+        }
+    if not _active_llm_name(settings):
+        return {
+            "status": "no_model",
+            "message": "The runtime is installed, but no GGUF model file is present.",
+            "remedy": "Add a .gguf model file to the language model folder shown below, then reload.",
+        }
+
+    # If a load has already been attempted and failed, report the real cause. An
+    # illegal-instruction failure means the wheel does not match this CPU, which
+    # is the one case a person cannot decode from the raw error on their own.
+    try:
+        from audtheia.app.orchestrator import last_llm_error
+        recorded = last_llm_error()
+    except Exception:  # noqa: BLE001 - status must never fail because of an import
+        recorded = None
+    if recorded:
+        low = recorded.lower()
+        if "0xc000001d" in low or "illegal" in low or "1073741795" in low:
+            return {
+                "status": "cpu_incompatible",
+                "message": ("A model load failed because the installed runtime uses CPU instructions this "
+                            "computer does not have: " + recorded),
+                "remedy": _LLM_CPU_REMEDY,
+            }
+        return {
+            "status": "load_failed",
+            "message": "The last attempt to load the model failed: " + recorded,
+            "remedy": _LLM_CPU_REMEDY,
+        }
+
+    return {
+        "status": "model_present",
+        "message": ("The runtime is installed and a model is present. The model loads when the desktop "
+                    "next starts a run (verification or the longitudinal pass); if it cannot load, the "
+                    "status here and the log will say why."),
+        "remedy": _LLM_CPU_REMEDY,
+    }
+
+
 # The header written into the local override file, so a person who opens it
 # knows what it is and why their paths are in it rather than in the main file.
 _LOCAL_OVERRIDES_COMMENT = (
@@ -1787,6 +1859,7 @@ def create_app(settings, database):
             "environment": db.list_environmental_readings(observation_id),
             "verification": db.get_observation_verification(observation_id),
             "interpretations": db.list_interpretations(observation_id),
+            "skill_flags": db.list_skill_flags(observation_id),
         }
 
     def _event_frames_on_disk(obs):
@@ -1914,9 +1987,11 @@ def create_app(settings, database):
         if obs is None:
             raise HTTPException(status_code=404, detail=f"no observation with id {observation_id}")
         manifest, frames, distribution = _event_frames_on_disk(obs)
+        skill_flags = db.list_skill_flags(observation_id)
         if not frames:
             return {"observation": obs, "manifest": manifest, "frames": [],
-                    "distribution": [], "review_summary": _frame_review_summary(observation_id, [], [])}
+                    "distribution": [], "review_summary": _frame_review_summary(observation_id, [], []),
+                    "skill_flags": skill_flags}
 
         # Attach the current expert verdict to each frame for the strip display.
         reviews = {
@@ -1933,6 +2008,7 @@ def create_app(settings, database):
             "frames": frames,
             "distribution": distribution,
             "review_summary": _frame_review_summary(observation_id, frames, distribution),
+            "skill_flags": skill_flags,
         }
 
     @app.post(f"{API_PREFIX}/detections/{{observation_id}}/frames/{{frame_index}}/review", status_code=201)
@@ -2440,12 +2516,16 @@ def create_app(settings, database):
         model. Selecting a different one takes effect the next time the station
         starts, since a model is loaded once when the desktop process begins.
         """
+        status = _llm_status(settings)
         return {
             "configured": _redact(dict(settings.raw.get("desktop_models", {}).get("llm", {}))),
             "directory": str(_llm_directory(settings)),
             "available": _list_gguf_models(settings),
             "active": _active_llm_name(settings),
             "runtime_available": _llm_runtime_available(),
+            "status": status["status"],
+            "status_message": status["message"],
+            "remedy": status["remedy"],
             "note": "the desktop dream pass and interpretation use this model; a change applies the next time the station starts.",
         }
 
@@ -2550,7 +2630,14 @@ def create_app(settings, database):
 
     @app.get(f"{API_PREFIX}/brain/skills")
     def brain_skills(tier=Query(default=None)):
-        return db.list_skills(tier=tier)
+        # Attach how many events each field skill has flagged, counted from the
+        # stored flags, so the panel can show a saved skill's real effect rather
+        # than only its definition.
+        skills = db.list_skills(tier=tier)
+        counts = db.count_skill_flags_by_skill()
+        for skill in skills:
+            skill["flagged_events"] = int(counts.get(skill.get("id"), 0))
+        return skills
 
     def _require_desktop_author():
         """Refuse a skill write anywhere but the desktop.
@@ -2690,6 +2777,34 @@ def create_app(settings, database):
             raise HTTPException(status_code=404, detail=f"no skill with id {skill_id}")
         db.delete_skill(skill_id)
         return {"status": "deleted", "id": skill_id}
+
+    @app.post(f"{API_PREFIX}/brain/skills/apply")
+    def apply_skills(station_id: Optional[str] = Query(default=None)):
+        """Apply the current field skills to existing records, now.
+
+        New captures run field skills during quality control, but a record
+        finalized before a skill existed is never revisited by it. This walks
+        the record and re-evaluates every deterministic-flag skill over each
+        event, recording any flag that now fires and clearing any that no longer
+        does. It never alters a measured record or its quality-control decision.
+        """
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="processing runs on the desktop; this node is not the desktop.")
+        from audtheia.app.orchestrator import DesktopStation
+
+        scanned = 0
+        flags = 0
+        stations = _station_ids_for(station_id)
+        try:
+            for sid in stations:
+                result = DesktopStation.build(settings, station_id=sid).apply_skills()
+                scanned += result["scanned"]
+                flags += result["flags"]
+        except Exception as exc:  # noqa: BLE001 - reported as a clear client error
+            raise HTTPException(status_code=422, detail=f"could not apply skills: {exc}") from exc
+        note = (f"scanned {scanned} record(s); {flags} skill flag(s) now stand on the record"
+                if scanned else "no records to scan yet")
+        return {"ran": True, "scanned": scanned, "flags": flags, "stations": len(stations), "note": note}
 
     # -- dream pass status and controls ----------------------------------
 
@@ -2854,6 +2969,40 @@ def create_app(settings, database):
         note = "candidate patterns are hypotheses tagged 'dream', never findings"
         if not narration:
             note += "; the desktop language model is unavailable, so this pass ran its structural half only, with no narration"
+
+        # When a pass emits no patterns, explain why from the record itself, so a
+        # zero reads as "not enough evidence yet" rather than "broken". Every
+        # figure here is counted, never asserted: the verified count is the exact
+        # generative gate the pass applies, and the thresholds are the floors it
+        # measured each candidate against.
+        diagnostics = None
+        if result.patterns_emitted == 0:
+            verified_count = len(db.list_verified_observation_ids())
+            total_events = db.count_observations()
+            dream_thresholds = settings.thresholds_config()["dream"]
+            if total_events == 0:
+                reason = ("No events in the record yet, so the pass had nothing to reason over. "
+                          "A pattern is proposed only once verified events have been captured.")
+            elif verified_count == 0:
+                reason = (f"None of your {total_events} event(s) are verified yet. The pass builds "
+                          "its baseline from the whole record but proposes a pattern only from "
+                          "verified events, so run 'Run verification' (or verify events in "
+                          "Detections), then run the pass again.")
+            else:
+                reason = (f"{verified_count} verified event(s) in the record. A candidate needs at "
+                          f"least {dream_thresholds['min_events_for_correlation']} events for a "
+                          f"correlation, {dream_thresholds['min_events_for_co_occurrence']} for a "
+                          f"co-occurrence, or {dream_thresholds['min_periods_for_trend']} periods for "
+                          f"a trend, and must clear an effect-size floor of "
+                          f"{dream_thresholds['min_abs_effect']} and a p-value ceiling of "
+                          f"{dream_thresholds['max_p_value']}. With this much evidence a zero means "
+                          "not enough evidence yet, not a fault.")
+            diagnostics = {
+                "verified_count": verified_count,
+                "total_events": total_events,
+                "reason": reason,
+            }
+
         return {
             "ran": True,
             "dream_pass_id": result.dream_pass_id,
@@ -2864,6 +3013,7 @@ def create_app(settings, database):
             "patterns_emitted": result.patterns_emitted,
             "narration_available": narration,
             "note": note,
+            "diagnostics": diagnostics,
         }
 
     @app.post(f"{API_PREFIX}/reports/run")

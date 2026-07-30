@@ -88,6 +88,16 @@ INTERPRETER_POINT_TYPES = frozenset(
 # regardless, so a point from here can never be recorded as a measurement.
 _PRODUCED_BY_VERIFY = "verify"
 
+# The provenance for a point produced by an interpretive-tier skill. The
+# verification engine records it with the skill's id so the output is traceable
+# to the rule a person authored, still as labelled inference and never as a
+# measurement.
+_PRODUCED_BY_SKILL = "skill"
+
+# The point type an interpretive skill's output is recorded under. It is one of
+# the types the verification storage contract accepts for a skill point.
+_SKILL_POINT_TYPE = "skill_note"
+
 # Model-family and runtime defaults. These are starting values for the local
 # runtime, not per-deployment policy: a modest context window and a short output
 # budget keep a per-event interpretation and a one-line narration fast on a
@@ -181,22 +191,95 @@ class GGUFInterpreter:
         self.version = getattr(completer, "version", None)
 
     def interpret(self, context) -> list:
-        """Return the model's interpretive points for one event, or an empty list."""
+        """Return the interpretive points for one event, or an empty list.
+
+        Two sources contribute: the desktop model's own analysis of the resolved
+        taxon (tagged 'verify'), and each interpretive-tier skill the deployment
+        has defined (tagged 'skill' with its skill id). Either source may be
+        empty, and any fault in one never stops the other or breaks the record.
+        """
+        points: list = []
         try:
             taxon = self._resolved_taxon(context)
-            if not taxon:
-                # With no resolved taxon there is nothing to interpret; an event
-                # with no visual subject (for example a pure acoustic event) is
-                # left for a later tier rather than described from nothing.
-                return []
-            prompt = self._build_prompt(taxon, context)
-            text = self._completer.complete(
-                prompt, max_tokens=DEFAULT_INTERPRETER_MAX_TOKENS
-            )
-            return self._parse_points(text)
+            if taxon:
+                prompt = self._build_prompt(taxon, context)
+                text = self._completer.complete(
+                    prompt, max_tokens=DEFAULT_INTERPRETER_MAX_TOKENS
+                )
+                points.extend(self._parse_points(text))
         except Exception:  # noqa: BLE001 - interpretation is enrichment, never load-bearing
-            logger.exception("the desktop interpreter failed; recording no interpretation for this event")
-            return []
+            logger.exception("the desktop interpreter failed; recording no model interpretation for this event")
+
+        try:
+            points.extend(self._apply_skills(context))
+        except Exception:  # noqa: BLE001 - a skill fault is isolated, never load-bearing
+            logger.exception("applying interpretive skills failed; recording none for this event")
+
+        return points
+
+    def _apply_skills(self, context) -> list:
+        """Apply each interpretive-tier skill to the event, as labelled points.
+
+        A field-tier skill is never run here; it runs on the station as a
+        deterministic flag. For each interpretive skill, the model is asked to
+        carry out the skill's instruction as one qualitative sentence about this
+        event, and the result is returned as a point the verification engine
+        records with produced_by 'skill' and the skill's id. An empty response,
+        or a fault, contributes nothing.
+        """
+        skills = getattr(context, "interpretive_skills", None) or []
+        out: list = []
+        for skill in skills:
+            if len(out) >= _MAX_POINTS_PER_EVENT:
+                break
+            if not isinstance(skill, dict) or skill.get("tier") != "interpretive":
+                continue
+            try:
+                prompt = self._build_skill_prompt(skill, context)
+                text = self._completer.complete(prompt, max_tokens=DEFAULT_INTERPRETER_MAX_TOKENS)
+            except Exception:  # noqa: BLE001 - one skill's fault never stops the rest
+                logger.exception("interpretive skill %s failed during completion", skill.get("id"))
+                continue
+            value = (text or "").strip()
+            if not value:
+                continue
+            out.append({
+                "point_type": _SKILL_POINT_TYPE,
+                "value": value,
+                "produced_by": _PRODUCED_BY_SKILL,
+                "skill_id": skill.get("id"),
+            })
+        return out
+
+    def _build_skill_prompt(self, skill, context) -> str:
+        """Compose a prompt that carries out one interpretive skill on the event.
+
+        The skill's own instruction leads, followed by the same measured facts
+        the model's own analysis is given, with the same guardrails: qualitative
+        interpretation only, no restated measurement and no invented number.
+        """
+        taxon = self._resolved_taxon(context) or "an unresolved subject"
+        readings = self._describe_readings(getattr(context, "environmental_readings", []))
+        companions = self._describe_companions(taxon, getattr(context, "child_detections", []))
+        lines = [
+            "You are an ecological interpretation assistant for an environmental",
+            "monitoring platform. Carry out the following instruction for the event",
+            "described, offering only qualitative interpretation. Do not restate any",
+            "measurement as your own finding and do not invent any number.",
+            "",
+            f"Instruction: {skill.get('instruction', '').strip()}",
+            "",
+            f"Resolved taxon: {taxon}",
+        ]
+        if companions:
+            lines.append(f"Other taxa recorded in the same event: {companions}")
+        lines.append(f"Measured conditions: {readings}" if readings
+                     else "Measured conditions: none were recorded for this event.")
+        lines.extend([
+            "",
+            "Respond with one concise sentence of interpretation and nothing else.",
+        ])
+        return "\n".join(lines)
 
     # -- prompt ----------------------------------------------------------
 

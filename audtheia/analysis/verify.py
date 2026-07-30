@@ -283,6 +283,11 @@ class VerificationContext:
     verdict: VerificationVerdict
     field_gbif_usage_key: Optional[str] = None
     field_scientific_name: Optional[str] = None
+    # The interpretive-tier skills the deployment has defined. The interpreter
+    # applies each one and returns its output as a point tagged produced_by
+    # 'skill' with its skill_id, which the engine records as labelled inference.
+    # Empty when none are defined; the desktop model still runs its own analysis.
+    interpretive_skills: list = field(default_factory=list)
 
 
 # A frame verifier turns a list of resolved frame paths into one detection per
@@ -415,6 +420,7 @@ class VerifyEngine:
             verdict=verdict,
             field_gbif_usage_key=field_key,
             field_scientific_name=field_name,
+            interpretive_skills=self._db.list_skills(tier="interpretive"),
         )
         points = self._interpret(context)
 

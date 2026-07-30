@@ -1238,6 +1238,19 @@
       clear(framesHost);
       var frames = data.frames || [];
       framesHost.appendChild(auditDerivation(obs, frames));
+      // Any field-skill flags that fired on this event, shown as derived
+      // readings that stand beside the measurement, never as a correction to it.
+      var skillFlags = data.skill_flags || [];
+      if (skillFlags.length) {
+        var flagWrap = el("div", { class: "audit-derivation" });
+        flagWrap.appendChild(el("div", { class: "card-title", text: "Field-skill flags" }));
+        flagWrap.appendChild(el("p", { class: "form-hint", text:
+          "Each flag is a derived reading of this event's measured values, recorded by a field skill. It stands beside the measurement and never alters it." }));
+        var flagRow = el("div", { class: "badge-row" });
+        skillFlags.forEach(function (f) { flagRow.appendChild(badge(f.skill_title, "source")); });
+        flagWrap.appendChild(flagRow);
+        framesHost.appendChild(flagWrap);
+      }
       if (!frames.length) {
         framesHost.appendChild(el("p", { class: "empty-state", text: "No stored frames were found for this event on disk." }));
       } else {
@@ -2597,11 +2610,14 @@
     host.appendChild(el("p", { class: "card-note", text: "Loading language model." }));
     apiGet("/brain/llm").then(function (info) {
       clear(host);
-      host.appendChild(el("p", { class: "card-note", text:
-        (info.runtime_available
-          ? "The model runtime is installed. "
-          : "The model runtime (llama-cpp-python) is not installed yet, so the model cannot run until it is. ") +
-        (info.note || "") }));
+      // The honest readiness line, and the exact remedy when something is wrong,
+      // so the manager states the fix rather than only that the model is absent.
+      var statusOk = info.status === "model_present";
+      host.appendChild(el("p", { class: statusOk ? "card-note" : "form-message", text:
+        (info.status_message || (info.runtime_available ? "The model runtime is installed." : "The model runtime is not installed.")) }));
+      if (info.remedy && !statusOk) {
+        host.appendChild(el("p", { class: "form-hint", text: info.remedy }));
+      }
 
       var available = info.available || [];
       if (!available.length) {
@@ -2710,10 +2726,39 @@
 
   // Brain, Learning: the live longitudinal status with pause and resume, the
   // candidate patterns it has produced, and an audit summary.
+  // Paint the candidate-pattern grid into its own region, so a run-now refresh
+  // can repaint just this without rebuilding the whole panel.
+  function paintPatterns(host, learning) {
+    clear(host);
+    var patterns = (learning && learning.patterns) || [];
+    if (!patterns.length) { host.appendChild(el("p", { class: "card-note", text: "No candidate patterns yet." })); return; }
+    var grid = el("div", { class: "card-grid" });
+    patterns.forEach(function (p) {
+      grid.appendChild(el("article", { class: "card" }, [
+        el("div", { class: "badge-row" }, [badge("candidate hypothesis", "muted"), badge(p.dream_phase || "", "source"), badge(p.status || "candidate", "status")]),
+        el("div", { class: "card-title", text: p.description || p.pattern_type || "pattern" }),
+        el("div", { class: "card-stats", text:
+          "effect: " + fmtNum(p.effect_size, 2) + " " + (p.effect_size_type || "") +
+          "  n: " + fmtNum(p.n) +
+          "  span: " + fmtTime(p.data_span_start) + " to " + fmtTime(p.data_span_end) }),
+        (p.supporting_observation_ids && p.supporting_observation_ids.length)
+          ? el("div", { class: "card-meta", text: fmtNum(p.supporting_observation_ids.length) + " supporting observations" })
+          : null
+      ]));
+    });
+    host.appendChild(grid);
+  }
+
   function loadBrainLearning() {
     var host = region("brain-learning");
     clear(host);
     host.appendChild(el("p", { class: "empty-state", text: "Loading learning and audit history." }));
+
+    function auditDesc() {
+      return el("p", { class: "settings-desc", text:
+        "Evidence of how the system behaved, counted from the stored record. Every figure here is a count or an average over rows already written, never a new measurement and never an interpretation." });
+    }
+
     Promise.all([
       apiGet("/dream/status"),
       apiGet("/brain/learning"),
@@ -2731,7 +2776,6 @@
       host.appendChild(el("h3", { text: "Run now" }));
       var runHost = el("div");
       host.appendChild(runHost);
-      renderRunNowControls(runHost);
 
       host.appendChild(el("h3", { text: "Species data" }));
       var speciesHost = el("div");
@@ -2739,9 +2783,10 @@
       renderSpeciesData(speciesHost);
 
       host.appendChild(el("h3", { text: "Audit" }));
-      host.appendChild(el("p", { class: "settings-desc", text:
-        "Evidence of how the system behaved, counted from the stored record. Every figure here is a count or an average over rows already written, never a new measurement and never an interpretation." }));
-      host.appendChild(auditView(audit, analytics));
+      host.appendChild(auditDesc());
+      var auditHost = el("div");
+      host.appendChild(auditHost);
+      auditHost.appendChild(auditView(audit, analytics));
 
       host.appendChild(el("h3", { text: "Retraining exports" }));
       var retrainHost = el("div");
@@ -2749,25 +2794,29 @@
       renderRetraining(retrainHost);
 
       host.appendChild(el("h3", { text: "Candidate patterns" }));
-      var patterns = learning.patterns || [];
-      if (!patterns.length) { host.appendChild(el("p", { class: "card-note", text: "No candidate patterns yet." })); }
-      else {
-        var grid = el("div", { class: "card-grid" });
-        patterns.forEach(function (p) {
-          grid.appendChild(el("article", { class: "card" }, [
-            el("div", { class: "badge-row" }, [badge("candidate hypothesis", "muted"), badge(p.dream_phase || "", "source"), badge(p.status || "candidate", "status")]),
-            el("div", { class: "card-title", text: p.description || p.pattern_type || "pattern" }),
-            el("div", { class: "card-stats", text:
-              "effect: " + fmtNum(p.effect_size, 2) + " " + (p.effect_size_type || "") +
-              "  n: " + fmtNum(p.n) +
-              "  span: " + fmtTime(p.data_span_start) + " to " + fmtTime(p.data_span_end) }),
-            (p.supporting_observation_ids && p.supporting_observation_ids.length)
-              ? el("div", { class: "card-meta", text: fmtNum(p.supporting_observation_ids.length) + " supporting observations" })
-              : null
-          ]));
-        });
-        host.appendChild(grid);
+      var patternsHost = el("div");
+      host.appendChild(patternsHost);
+      paintPatterns(patternsHost, learning);
+
+      // A run-now action refreshes only the regions its run can change: the
+      // pass status, the audit, and the candidate patterns. It never rebuilds
+      // the run-now controls, so the outcome message a button just wrote stays
+      // on screen. A refresh failure is swallowed rather than allowed to wipe
+      // that outcome.
+      function refreshData() {
+        return Promise.all([
+          apiGet("/dream/status"),
+          apiGet("/brain/learning"),
+          apiGet("/analytics" + query({ station_id: state.stationId })),
+          apiGet("/brain/audit" + query({ station_id: state.stationId }))
+        ]).then(function (r2) {
+          clear(dreamHost); paintDreamStatus(dreamHost, r2[0]);
+          clear(auditHost); auditHost.appendChild(auditView(r2[3], r2[2]));
+          paintPatterns(patternsHost, r2[1]);
+        }).catch(function () { /* keep the run-now outcome visible on a refresh error */ });
       }
+
+      renderRunNowControls(runHost, refreshData);
     }).catch(function (e) { setState(host, "empty-state", "Could not load learning: " + e.message); });
   }
 
@@ -3035,7 +3084,7 @@
   // a weekly cadence; these run each stage now and report what it did. The scope
   // follows the station filter, so a control run while viewing one station acts on
   // that station, and one run while viewing all stations acts on all of them.
-  function renderRunNowControls(host) {
+  function renderRunNowControls(host, onAfterRun) {
     clear(host);
     var block = el("div", { class: "info-block" });
     block.appendChild(el("p", { class: "settings-desc", text:
@@ -3053,13 +3102,21 @@
         var buttons = row.querySelectorAll("button");
         Array.prototype.forEach.call(buttons, function (b) { b.disabled = true; });
         result.textContent = label + ": working...";
+        function reenable() { Array.prototype.forEach.call(buttons, function (b) { b.disabled = false; }); }
         apiSend(path + scopeQuery(), "POST", {}).then(function (r) {
+          // Write the outcome first, then refresh only the data regions. The
+          // refresh no longer rebuilds this control block, so the message stays
+          // on screen instead of being wiped by a full panel rebuild.
           result.textContent = describe(r) || (r && r.note) || (label + ": done.");
-          // Refresh the panel so the audit, the pass status, and any new patterns
-          // reflect what just ran, without a manual reload.
-          loadBrainLearning();
+          if (typeof onAfterRun === "function") {
+            var done = onAfterRun();
+            if (done && typeof done.then === "function") { done.then(reenable, reenable); }
+            else { reenable(); }
+          } else {
+            reenable();
+          }
         }).catch(function (e) {
-          Array.prototype.forEach.call(buttons, function (b) { b.disabled = false; });
+          reenable();
           result.textContent = label + " could not run: " + e.message;
         });
       });
@@ -3067,12 +3124,17 @@
     }
 
     row.appendChild(runControl("Run longitudinal pass", "/dream/run", function (r) {
-      return "Longitudinal pass " + (r.status || "ran") + ": " +
+      var msg = "Longitudinal pass " + (r.status || "ran") + ": " +
         fmtNum(r.observations_consolidated) + " consolidated, " +
         fmtNum(r.salience_scored) + " scored, " +
         fmtNum(r.patterns_emitted) + " candidate pattern(s). " +
         (r.narration_available ? "" : "Language model unavailable, so no narration. ") +
         "Candidate patterns are hypotheses, never findings.";
+      // When the pass found nothing, say plainly why, from the counted record.
+      if (r.patterns_emitted === 0 && r.diagnostics && r.diagnostics.reason) {
+        msg += " " + r.diagnostics.reason;
+      }
+      return msg;
     }));
     row.appendChild(runControl("Finalize quality control", "/qc/run", function (r) {
       return r.finalized ? "Finalized quality control on " + fmtNum(r.finalized) + " record(s)."
@@ -3414,6 +3476,62 @@
     if (!skillFormOpen) { renderSkills(host, ""); }
   }
 
+  // The narrow condition vocabulary the field engine compiles, mirrored here so
+  // the builder can only offer choices the engine accepts. Keeping it in one
+  // place means the interface and the engine never drift apart.
+  var CONDITION_SOURCES = [
+    ["observation", "An observation value"],
+    ["detection", "A detection confidence"],
+    ["channel", "A sensor channel reading"],
+    ["time", "The time of day"]
+  ];
+  var CONDITION_FIELDS = {
+    observation: [
+      ["screening_confidence", "screening confidence"],
+      ["duration", "event duration (seconds)"],
+      ["frame_count", "number of frames"],
+      ["audio_true_duration_seconds", "audio duration (seconds)"],
+      ["salience_provisional", "provisional salience"]
+    ],
+    detection: [["confidence", "confidence"]],
+    time: [["hour_utc", "hour of day (UTC, 0 to 23)"]]
+  };
+  var CONDITION_OPS = [
+    ["lt", "is below"], ["lte", "is at most"], ["gt", "is above"],
+    ["gte", "is at least"], ["between", "is between"], ["outside", "is outside"]
+  ];
+  var CONDITION_AGGREGATES = [["max", "the strongest"], ["min", "the weakest"]];
+
+  function opLabel(op) {
+    for (var i = 0; i < CONDITION_OPS.length; i += 1) { if (CONDITION_OPS[i][0] === op) { return CONDITION_OPS[i][1]; } }
+    return op;
+  }
+
+  // A stored condition rendered in plain words, so a saved skill reads as a rule
+  // rather than as raw JSON.
+  function describeCondition(cond) {
+    if (!cond) { return null; }
+    var subject;
+    if (cond.source === "observation") { subject = "the observation's " + labelFor(CONDITION_FIELDS.observation, cond.field); }
+    else if (cond.source === "detection") { subject = "the " + labelFor(CONDITION_AGGREGATES, cond.aggregate || "max") + " detection " + labelFor(CONDITION_FIELDS.detection, cond.field); }
+    else if (cond.source === "channel") { subject = "the " + cond.field + " channel reading"; }
+    else if (cond.source === "time") { subject = "the hour of day (UTC)"; }
+    else { subject = cond.field; }
+    var value = Array.isArray(cond.value) ? cond.value.join(" and ") : cond.value;
+    return subject + " " + opLabel(cond.op) + " " + value;
+  }
+
+  function labelFor(pairs, key) {
+    for (var i = 0; i < pairs.length; i += 1) { if (pairs[i][0] === key) { return pairs[i][1]; } }
+    return key;
+  }
+
+  function parseStoredCondition(raw) {
+    if (!raw) { return null; }
+    if (typeof raw === "object") { return raw; }
+    try { return JSON.parse(raw); } catch (e) { return null; }
+  }
+
   function renderSkills(host, tier) {
     // Showing the list means no form is open, so the background refresh may
     // repaint the panel again.
@@ -3423,10 +3541,13 @@
     apiGet("/brain/skills" + query({ tier: tier })).then(function (skills) {
       clear(host);
       host.appendChild(skillsGuidance());
-      // Skills are stored and synced today, but nothing applies them to an
-      // observation yet, and the panel must say so rather than let a saved rule
-      // look like a rule that is running.
-      host.appendChild(deferredNote("Skills are saved to the library and travel to your stations. A field skill applies to new observations only once it carries a checkable condition, and an interpretive skill is not yet passed to the desktop interpreter."));
+      host.appendChild(el("p", { class: "settings-desc", text:
+        "A field skill runs on the station during quality control: when its condition holds for an event, it records a flag that stands beside the measurement. New captures are flagged automatically; use Apply skills to existing records to run the current field skills over events already captured. An interpretive skill runs on the desktop and is applied when the language model is available; its output is recorded as labeled inference." }));
+      host.appendChild(el("button", {
+        type: "button", class: "btn", text: "Apply skills to existing records",
+        onclick: function () { applySkills(host, tier); }
+      }));
+
       if (!skills.length) {
         host.appendChild(el("p", { class: "empty-state", text:
           "No skills defined yet. Use Start from an example to insert one and edit it, or New skill to write your own." }));
@@ -3434,11 +3555,22 @@
       }
       var grid = el("div", { class: "card-grid" });
       skills.forEach(function (s) {
+        var cond = parseStoredCondition(s.condition);
+        var flagged = Number(s.flagged_events || 0);
         grid.appendChild(el("article", { class: "card" }, [
-          el("div", { class: "badge-row" }, [badge(s.tier === "interpretive" ? "desktop" : "field", "source"), badge(s.tier, "status")]),
+          el("div", { class: "badge-row" }, [
+            badge(s.tier === "interpretive" ? "desktop" : "field", "source"),
+            badge(s.tier, "status"),
+            (s.tier === "deterministic_flag")
+              ? badge(flagged === 1 ? "1 event flagged" : fmtNum(flagged) + " events flagged", flagged ? "source" : "muted")
+              : null
+          ]),
           el("div", { class: "card-title", text: s.title }),
           el("div", { class: "card-stats", text: "When: " + s.trigger_condition }),
           el("div", { class: "card-stats", text: "Do: " + s.instruction }),
+          (s.tier === "deterministic_flag")
+            ? el("div", { class: "card-meta", text: cond ? ("Runs when: " + describeCondition(cond)) : "No condition set yet, so this skill records nothing until one is added." })
+            : null,
           el("div", { class: "card-actions" }, [
             el("button", { type: "button", class: "btn btn-small", text: "Edit", onclick: function () { showSkillForm(host, tier, s); } }),
             el("button", { type: "button", class: "btn btn-small", text: "Delete", onclick: function () { deleteSkill(host, tier, s); } })
@@ -3447,6 +3579,19 @@
       });
       host.appendChild(grid);
     }).catch(function (e) { setState(host, "empty-state", "Could not load skills: " + e.message); });
+  }
+
+  function applySkills(host, tier) {
+    var msg = el("p", { class: "form-message", text: "Applying field skills to existing records." });
+    host.appendChild(msg);
+    apiSend("/brain/skills/apply" + (state.stationId ? query({ station_id: state.stationId }) : ""), "POST", {})
+      .then(function (r) {
+        msg.textContent = "Scanned " + fmtNum(r.scanned) + " record(s); " + fmtNum(r.flags) +
+          " skill flag(s) now stand on the record. Open a detection to see its flags.";
+        // Refresh the counts on the cards, keeping the outcome message visible.
+        window.setTimeout(function () { renderSkills(host, tier); }, 1200);
+      })
+      .catch(function (e) { msg.textContent = "Could not apply skills: " + e.message; });
   }
 
   // The create and edit form. With no existing skill it authors a new one;
@@ -3478,14 +3623,120 @@
       tierSelect.appendChild(opt);
     });
 
+    // The condition builder: the same narrow vocabulary the field engine
+    // compiles, offered as dropdowns so a non-programmer can author a runnable
+    // rule without writing JSON or touching a config file.
+    var existingCond = existing ? parseStoredCondition(existing.condition) : null;
+
+    var sourceSel = el("select", { class: "form-input", "aria-label": "Condition source" });
+    CONDITION_SOURCES.forEach(function (o) {
+      var opt = el("option", { value: o[0], text: o[1] });
+      if (existingCond && existingCond.source === o[0]) { opt.selected = true; }
+      sourceSel.appendChild(opt);
+    });
+
+    var fieldSel = el("select", { class: "form-input", "aria-label": "Condition field" });
+    var channelInput = el("input", { type: "text", class: "form-input", placeholder: "channel name, for example water_temperature" });
+    if (existingCond && existingCond.source === "channel") { channelInput.value = existingCond.field || ""; }
+
+    var aggSel = el("select", { class: "form-input", "aria-label": "Which detection" });
+    CONDITION_AGGREGATES.forEach(function (o) {
+      var opt = el("option", { value: o[0], text: o[1] });
+      if (existingCond && (existingCond.aggregate || "max") === o[0]) { opt.selected = true; }
+      aggSel.appendChild(opt);
+    });
+
+    var opSel = el("select", { class: "form-input", "aria-label": "Comparison" });
+    CONDITION_OPS.forEach(function (o) {
+      var opt = el("option", { value: o[0], text: o[1] });
+      if (existingCond && existingCond.op === o[0]) { opt.selected = true; }
+      opSel.appendChild(opt);
+    });
+
+    var v1 = el("input", { type: "number", step: "any", class: "form-input", "aria-label": "Value" });
+    var v2 = el("input", { type: "number", step: "any", class: "form-input", "aria-label": "Second value" });
+    if (existingCond) {
+      if (Array.isArray(existingCond.value)) { v1.value = existingCond.value[0]; v2.value = existingCond.value[1]; }
+      else if (existingCond.value !== undefined && existingCond.value !== null) { v1.value = existingCond.value; }
+    }
+
+    var aggField = field("Which detection", aggSel);
+    var fieldField = field("Field", fieldSel);
+    var channelField = field("Channel name", channelInput);
+    var v2Field = field("and", v2);
+
+    function populateFields() {
+      var src = sourceSel.value;
+      clear(fieldSel);
+      var opts = CONDITION_FIELDS[src] || [];
+      opts.forEach(function (o) {
+        var opt = el("option", { value: o[0], text: o[1] });
+        if (existingCond && existingCond.field === o[0]) { opt.selected = true; }
+        fieldSel.appendChild(opt);
+      });
+      fieldField.style.display = (src === "observation" || src === "detection") ? "" : "none";
+      channelField.style.display = (src === "channel") ? "" : "none";
+      aggField.style.display = (src === "detection") ? "" : "none";
+    }
+
+    function syncOpValues() {
+      var twoValued = (opSel.value === "between" || opSel.value === "outside");
+      v2Field.style.display = twoValued ? "" : "none";
+    }
+
+    sourceSel.addEventListener("change", populateFields);
+    opSel.addEventListener("change", syncOpValues);
+
+    var builder = el("div", { class: "info-block" }, [
+      el("p", { class: "form-hint", text:
+        "A field skill runs only from this structured condition, never from the prose above, because a station that acted on a sentence would be interpreting. Leave the value empty to save the skill without a runnable condition yet." }),
+      field("When (source)", sourceSel),
+      fieldField, channelField, aggField,
+      field("Comparison", opSel),
+      field("Value", v1),
+      v2Field
+    ]);
+
+    function syncTierVisibility() {
+      builder.style.display = (tierSelect.value === "deterministic_flag") ? "" : "none";
+    }
+    tierSelect.addEventListener("change", syncTierVisibility);
+
+    function buildCondition() {
+      if (tierSelect.value !== "deterministic_flag") { return { ok: true, value: null }; }
+      var src = sourceSel.value;
+      var fld = (src === "channel") ? channelInput.value.trim() : (src === "time" ? "hour_utc" : fieldSel.value);
+      var primary = v1.value.trim();
+      // An empty value means no runnable condition yet, which is allowed.
+      if (primary === "") { return { ok: true, value: null }; }
+      if (!fld) { return { ok: false, error: "Choose a field for the condition, or clear the value to save without one." }; }
+      var op = opSel.value;
+      var value;
+      if (op === "between" || op === "outside") {
+        var a = parseFloat(v1.value), b = parseFloat(v2.value);
+        if (isNaN(a) || isNaN(b)) { return { ok: false, error: "A between or outside comparison needs two numbers." }; }
+        value = [a, b];
+      } else {
+        var n = parseFloat(v1.value);
+        if (isNaN(n)) { return { ok: false, error: "The value must be a number." }; }
+        value = n;
+      }
+      var cond = { source: src, field: fld, op: op, value: value };
+      if (src === "detection") { cond.aggregate = aggSel.value; }
+      return { ok: true, value: cond };
+    }
+
     var message = el("p", { class: "form-message" });
     var save = el("button", { type: "button", class: "btn btn-primary", text: isEdit ? "Save changes" : "Create skill" });
     save.addEventListener("click", function () {
+      var cond = buildCondition();
+      if (!cond.ok) { message.textContent = cond.error; return; }
       var body = {
         title: titleInput.value.trim(),
         trigger_condition: triggerInput.value.trim(),
         instruction: instructionInput.value.trim(),
-        tier: tierSelect.value
+        tier: tierSelect.value,
+        condition: cond.value
       };
       if (!body.title || !body.trigger_condition || !body.instruction) {
         message.textContent = "Title, trigger, and instruction are all required.";
@@ -3508,10 +3759,16 @@
       field("How to apply (instruction)", instructionInput),
       field("Type", tierSelect),
       el("p", { class: "form-hint", text: "A deterministic flag is a pure function of a measured value and runs on the station. An interpretive skill reasons on the desktop, and its output is recorded as labeled inference." }),
-      el("p", { class: "form-hint", text: "Keep the trigger specific enough to be evaluated: \"confidence is below 0.45\" can be checked, \"looks unusual\" cannot. A skill flags and annotates; it cannot teach a model to recognise something it was never trained on, and it never alters or deletes what was captured." }),
+      el("p", { class: "form-hint", text: "A skill flags and annotates; it cannot teach a model to recognise something it was never trained on, and it never alters or deletes what was captured." }),
+      builder,
       message,
       el("div", { class: "form-actions" }, [save, cancel])
     ]));
+
+    // Set the initial visibility and field lists to match the loaded values.
+    populateFields();
+    syncOpValues();
+    syncTierVisibility();
   }
 
   function deleteSkill(host, tier, s) {

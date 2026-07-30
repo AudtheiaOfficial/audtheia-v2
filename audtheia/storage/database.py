@@ -363,6 +363,25 @@ class Interpretation:
 
 
 @dataclass
+class SkillFlagRow:
+    """One fired deterministic_flag skill on one event: a derived reading.
+
+    A field flag is a measured or derived reading of the record, never an
+    inference, so it lives in its own table with data_source fixed to
+    'rule_derived' and never enters the inferred-only interpretations table. It
+    stands beside the measurement and never alters it.
+    """
+
+    id: str
+    observation_id: str
+    skill_id: str
+    skill_title: str
+    flag_name: str
+    created_at: str
+    data_source: str = "rule_derived"
+
+
+@dataclass
 class StationTelemetry:
     id: str
     station_id: str
@@ -473,6 +492,7 @@ _TABLE_FOR_TYPE = {
     ObservationCorrection: "observation_corrections",
     FrameReview: "frame_review",
     Interpretation: "interpretations",
+    SkillFlagRow: "skill_flags",
     StationTelemetry: "station_telemetry",
     TelemetryError: "station_telemetry_errors",
     DreamPass: "dream_passes",
@@ -1232,6 +1252,49 @@ class Database:
     def delete_skill(self, skill_id: str) -> None:
         with self.connect() as conn:
             conn.execute("DELETE FROM skills WHERE id = ?", (skill_id,))
+
+    # -- skill flags (field-derived; measured/derived, never inferred) ---
+
+    def insert_skill_flag(self, flag: SkillFlagRow) -> None:
+        """Record one fired deterministic_flag skill, idempotently.
+
+        Re-scanning the same event and skill leaves the single existing row in
+        place instead of adding a duplicate, because the flag is a derived
+        reading of a measurement that did not change. The unique key on
+        (observation_id, skill_id) is what makes a re-run harmless.
+        """
+        with self.connect() as conn:
+            self._insert_row(conn, flag, ignore=True)
+
+    def clear_skill_flag(self, observation_id: str, skill_id: str) -> None:
+        """Remove a skill's flag from one event.
+
+        Used by a re-scan that finds a skill's condition no longer holds, for
+        example after the skill was edited, so a stale flag never lingers.
+        """
+        with self.connect() as conn:
+            conn.execute(
+                "DELETE FROM skill_flags WHERE observation_id = ? AND skill_id = ?",
+                (observation_id, skill_id),
+            )
+
+    def list_skill_flags(self, observation_id: str) -> list[dict]:
+        """The current derived flags on one event, ordered for a stable read."""
+        with self.connect() as conn:
+            return self._all(
+                conn,
+                "SELECT * FROM skill_flags WHERE observation_id = ? ORDER BY skill_title, id",
+                (observation_id,),
+            )
+
+    def count_skill_flags_by_skill(self) -> dict:
+        """How many events each skill has flagged, keyed by skill id."""
+        with self.connect() as conn:
+            rows = self._all(
+                conn,
+                "SELECT skill_id AS sid, COUNT(*) AS n FROM skill_flags GROUP BY skill_id",
+            )
+        return {r["sid"]: int(r["n"]) for r in rows}
 
     # -- observation verification (desktop-owned) ------------------------
 

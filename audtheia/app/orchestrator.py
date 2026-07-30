@@ -41,7 +41,19 @@ from audtheia.pipeline.monitor import Monitor, NullTriggerSink, build_tracker_fr
 
 logger = logging.getLogger("audtheia.app.orchestrator")
 
-__all__ = ["DesktopStation", "NullVerifier", "NullInterpreter", "LiveCapture", "AudioLiveCapture", "DEFAULT_VERIFY_INTERVAL_SECONDS"]
+__all__ = ["DesktopStation", "NullVerifier", "NullInterpreter", "LiveCapture", "AudioLiveCapture",
+           "DEFAULT_VERIFY_INTERVAL_SECONDS", "last_llm_error"]
+
+# The most recent reason the desktop language model could not be loaded, if any.
+# Recorded when a load attempt fails so the interface can report the actual cause
+# (for example a CPU-instruction mismatch) rather than only that the model is
+# absent. None means no load has failed since the process started.
+_LAST_LLM_ERROR: Optional[str] = None
+
+
+def last_llm_error() -> Optional[str]:
+    """The most recent desktop-language-model load failure, or None."""
+    return _LAST_LLM_ERROR
 
 # How many recent records a single quality-control sweep examines. Records
 # awaiting control are the newest, which this ordering reaches first, so the
@@ -193,6 +205,7 @@ class DesktopStation:
         backend is left unset, so the dream pass simply contributes no novel
         groupings until one is provided.
         """
+        global _LAST_LLM_ERROR
         try:
             from audtheia.inference.gguf_llm import (
                 load_completer,
@@ -202,6 +215,7 @@ class DesktopStation:
 
             completer = load_completer(settings)
         except Exception as exc:  # noqa: BLE001 - a missing model must not stop the desktop
+            _LAST_LLM_ERROR = str(exc)
             logger.warning(
                 "the desktop language model is not available (%s); running without "
                 "interpretation and narration until a GGUF model is placed.",
@@ -209,6 +223,7 @@ class DesktopStation:
             )
             return NullInterpreter(), None
 
+        _LAST_LLM_ERROR = None
         interpreter = build_interpreter(settings, completer=completer)
         narrator = build_narrator(settings, completer=completer)
         return interpreter, narrator
@@ -278,6 +293,24 @@ class DesktopStation:
         for observation_id in pending:
             engine.process(observation_id)
         return len(pending)
+
+    def apply_skills(self) -> dict:
+        """Apply the current field skills to this station's existing records.
+
+        Quality control runs skills as records are captured, but a record
+        finalized before a skill existed is never revisited by it. This walks
+        the station's records and re-evaluates the deterministic-flag skills
+        over each, recording any flag that now fires and clearing any that no
+        longer does, without altering a record or its quality-control decision.
+        Returns the number of records scanned and the number of flags recorded.
+        """
+        engine = QCEngine(settings=self._settings, db=self._db)
+        scanned = 0
+        flags = 0
+        for row in self._db.list_observations(station_id=self._station_id, limit=DEFAULT_SWEEP_SCAN_LIMIT):
+            flags += engine.rescan_flag_skills(row["id"])
+            scanned += 1
+        return {"scanned": scanned, "flags": flags}
 
     def verify_pending(self) -> int:
         """Re-score and gate every eligible observation not yet verified."""

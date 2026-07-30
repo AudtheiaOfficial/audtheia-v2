@@ -72,6 +72,7 @@ from audtheia.config import ConfigError
 from audtheia.storage.database import (
     Database,
     EnvironmentalReading,
+    SkillFlagRow,
     new_id,
     utc_now_iso,
 )
@@ -637,6 +638,11 @@ class QCEngine:
             snapshot, self._db.list_skills(tier=TIER_DETERMINISTIC_FLAG)
         )
         snapshot.flags = flags
+        # Persist each fired flag as a durable derived reading, so a skill's
+        # effect on this event outlives the in-memory snapshot and is visible on
+        # the desktop. This is the only field-tier write about a skill, and it
+        # goes to the flag table alone, never to the measured record.
+        self._persist_flags(observation_id, flags)
 
         if skill_breach:
             return self._finalize(
@@ -845,6 +851,54 @@ class QCEngine:
         # bool is a subclass of int, so both booleans and numbers pass here,
         # while a string or other object does not.
         return isinstance(flag.value, (bool, int, float))
+
+    def _persist_flags(self, observation_id: str, flags: list[SkillFlag]) -> None:
+        """Write each fired flag as a durable derived reading, idempotently.
+
+        The unique key on (observation_id, skill_id) makes a repeated write
+        harmless, so re-running the field engine over a record never duplicates
+        a flag. Nothing here touches the measured record.
+        """
+        for flag in flags:
+            self._db.insert_skill_flag(SkillFlagRow(
+                id=new_id(),
+                observation_id=observation_id,
+                skill_id=flag.skill_id,
+                skill_title=flag.skill_title,
+                flag_name=flag.name,
+                created_at=utc_now_iso(),
+            ))
+
+    def rescan_flag_skills(self, observation_id: str) -> int:
+        """Re-evaluate the deterministic-flag skills over one finalized record.
+
+        The live path runs skills during quality control, but a record captured
+        before a skill existed is already finalized and quality control will not
+        touch it again. This lets the desktop apply the current field skills to
+        such a record: it consolidates a read-only snapshot from the stored
+        rows, runs the same evaluation and firewall as the live path, records
+        any flag that now fires, and clears any earlier flag whose skill no
+        longer fires (for example after the skill's condition was edited). It
+        never changes the record or its quality-control decision. Returns the
+        number of skills that fired on this record.
+        """
+        obs = self._db.get_observation(observation_id)
+        if obs is None:
+            return 0
+        children = self._db.list_child_detections(observation_id)
+        readings = self._db.list_environmental_readings(observation_id)
+        snapshot = self._build_snapshot(obs, children, readings, [], [], [])
+
+        skills = self._db.list_skills(tier=TIER_DETERMINISTIC_FLAG)
+        flags, _breach = self.evaluate_flag_skills(snapshot, skills)
+        fired_skill_ids = {flag.skill_id for flag in flags}
+
+        # A skill that no longer fires must not leave a stale flag behind.
+        for skill in skills:
+            if skill.get("id") not in fired_skill_ids:
+                self._db.clear_skill_flag(observation_id, skill.get("id"))
+        self._persist_flags(observation_id, flags)
+        return len(flags)
 
     # -- validation ------------------------------------------------------
 

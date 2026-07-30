@@ -277,6 +277,35 @@ CREATE TABLE skills (
 ) STRICT;
 
 -- ============================================================================
+-- SKILL_FLAGS  (field-owned; a derived reading, never an inference)
+-- The durable home a fired deterministic_flag skill needed. When the field
+-- engine's compiled condition holds for an event, it records one row here. A
+-- field flag is a measured or derived reading of a record, so data_source is
+-- fixed to 'rule_derived' and this table is deliberately separate from the
+-- inferred-only interpretations table: the provenance firewall stays a
+-- structural property, and a rule flag can never be mistaken for an LLM
+-- interpretation. A flag never alters or deletes what was captured; it stands
+-- beside the measurement as a derived note about it. One current row per skill
+-- per event (a re-scan is idempotent); deleting a skill removes its derived
+-- flags, whose meaning depends on that skill's condition.
+-- ============================================================================
+CREATE TABLE skill_flags (
+    id                  TEXT PRIMARY KEY,       -- UUID
+    observation_id      TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+    skill_id            TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+    skill_title         TEXT NOT NULL,          -- the skill's title when it fired, so a surfaced flag reads on its own
+    flag_name           TEXT NOT NULL,          -- the short, stable flag name derived from the title
+
+    data_source         TEXT NOT NULL CHECK (data_source = 'rule_derived'),
+    created_at          TEXT NOT NULL,          -- UTC ISO8601, when the flag was recorded
+
+    UNIQUE (observation_id, skill_id)           -- one current flag per skill per event
+) STRICT;
+
+CREATE INDEX idx_skill_flags_observation ON skill_flags(observation_id);
+CREATE INDEX idx_skill_flags_skill ON skill_flags(skill_id);
+
+-- ============================================================================
 -- OBSERVATION_VERIFICATION  (desktop-owned)
 -- One-to-one extension of an observation, written only by the desktop
 -- verification step. The `verified` flag here is exactly the gate the dream

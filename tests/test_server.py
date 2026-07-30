@@ -59,6 +59,11 @@ def make_settings(tmp: Path) -> object:
     # An absolute reports directory in the temp area, so a generated report never
     # touches the repository.
     base["paths"]["reports_dir"] = str((tmp / "reports_out").resolve())
+    # Point the configured database at the same temp file the harness seeds, so
+    # endpoints that build a DesktopStation (which opens the configured db) act on
+    # the seeded record rather than a separate empty file. tr.fresh_db uses
+    # report.db in the same temp directory.
+    base["paths"]["db_path"] = str((tmp / "report.db").resolve())
     path = tmp / "settings.server.json"
     path.write_text(json.dumps(base), encoding="utf-8")
     return load_settings(path)
@@ -157,6 +162,14 @@ def run() -> None:
               "brain models did not classify each station's deployment")
         memory = client.get("/api/brain/memory").json()
         check("site_baselines" in memory, "brain memory did not return the gist container")
+
+        # -- brain audit and retraining surfaces show real, counted data ----
+        audit = client.get("/api/brain/audit").json()
+        check("verification" in audit and "versions" in audit and audit.get("events") == 4,
+              "the audit view did not summarise the seeded record")
+        cands = client.get("/api/brain/retraining/candidates").json()
+        check("vision" in cands and "acoustic" in cands,
+              "the retraining candidate summary did not return both modalities")
         learning = client.get("/api/brain/learning").json()
         check(len(learning["patterns"]) == 2, "brain learning did not return the candidate patterns")
         for p in learning["patterns"]:
@@ -205,10 +218,39 @@ def run() -> None:
         check(len(client.get("/api/brain/skills").json()) == 1, "the deleted skill was not removed")
         check(client.delete("/api/brain/skills/none").status_code == 404, "deleting an unknown skill was not a 404")
 
+        # -- skill execution: condition round-trip, fired counts, apply -----
+        # A field skill authored with a structured condition stores it, and the
+        # skills surface reports how many events each has flagged.
+        first_skills = client.get("/api/brain/skills").json()
+        check(all("flagged_events" in s for s in first_skills), "a skill did not report its flagged-event count")
+        with_cond = client.post("/api/brain/skills", json={
+            "title": "Flag weak screening",
+            "trigger_condition": "the screening confidence is low",
+            "instruction": "raise a low-confidence flag",
+            "tier": "deterministic_flag",
+            "condition": {"source": "observation", "field": "screening_confidence", "op": "lt", "value": 0.5},
+        })
+        check(with_cond.status_code == 201, "authoring a field skill with a condition was refused")
+        stored_cond = with_cond.json().get("condition")
+        check(stored_cond and json.loads(stored_cond)["field"] == "screening_confidence",
+              "the structured condition did not round-trip")
+        check(client.post("/api/brain/skills", json={
+            "title": "bad", "trigger_condition": "x", "instruction": "y", "tier": "interpretive",
+            "condition": {"source": "observation", "field": "screening_confidence", "op": "lt", "value": 0.5},
+        }).status_code == 422, "an interpretive skill was wrongly allowed to carry a condition")
+        applied = client.post("/api/brain/skills/apply")
+        check(applied.status_code == 200 and "scanned" in applied.json() and "flags" in applied.json(),
+              "applying skills to existing records did not report a result")
+
         # -- language model management: list, select, and guards --------
         llm0 = client.get("/api/brain/llm").json()
-        check(all(k in llm0 for k in ("available", "active", "runtime_available", "directory")),
+        check(all(k in llm0 for k in ("available", "active", "runtime_available", "directory",
+                                      "status", "status_message", "remedy")),
               "the language model view was missing fields")
+        # With no model configured yet, the status is honest about which step is
+        # missing and carries an actionable remedy rather than a bare flag.
+        check(llm0["status"] in ("runtime_missing", "no_model") and llm0["remedy"],
+              "the language model status was not actionable when no model is present")
 
         # Point the language model folder at a temp directory holding two models,
         # so listing and selection act on something real.
@@ -245,6 +287,20 @@ def run() -> None:
         check(client.post(f"/api/dream/{ids['dream_pass']}/pause").status_code == 409,
               "a completed pass was allowed to be paused")
         check(client.post("/api/dream/none/pause").status_code == 404, "unknown pass not a 404")
+
+        # A run-now longitudinal pass reports its counts, and when it emits no
+        # pattern it carries a counted, plain-language reason rather than a blank.
+        # No pass may be running when one is started, so the live pass is paused first.
+        client.post(f"/api/dream/{running_id}/pause")
+        ran = client.post("/api/dream/run")
+        check(ran.status_code == 200, "the longitudinal pass did not run")
+        rp = ran.json()
+        check(all(k in rp for k in ("observations_consolidated", "salience_scored",
+                                    "patterns_emitted", "narration_available", "diagnostics")),
+              "the pass result was missing its reporting fields")
+        if rp["patterns_emitted"] == 0:
+            check(rp["diagnostics"] and rp["diagnostics"].get("reason"),
+                  "a zero-pattern pass did not explain why")
 
         # -- reports: list empty, generate in background, list again ----
         first = client.get("/api/reports").json()
