@@ -259,6 +259,7 @@ def provision(
     make_key: bool = True,
     generate_key: bool = True,
     preauthorized_key: Optional[Path] = None,
+    settings_only: bool = False,
 ) -> None:
     """Send everything a station needs and run the Pi-side setup, through the runner.
 
@@ -266,6 +267,14 @@ def provision(
     Pi (it was added when the card was flashed), so the connection is key-based
     from the first step and no password is ever needed, which is what lets the
     guided flow run without a terminal prompt.
+
+    With settings_only, this pushes just the station's configuration (and its
+    secrets) to an already-provisioned Pi and stops, rather than re-sending the
+    code and the models and re-running the Pi-side setup. It is the fast path a
+    "push changes to the Pi" control uses after a config edit such as adding a
+    target species: the running station picks up the new configuration the next
+    time it starts. It relies on the per-station key already being authorized,
+    so it is only used after a full provisioning has connected the Pi once.
     """
     station = settings.station(station_id)
     _info(f"Station: {station.get('station_name')} ({station_id})")
@@ -304,6 +313,22 @@ def provision(
             )
             if private is not None and hasattr(runner, "key_path"):
                 runner.key_path = private
+
+    if settings_only:
+        # A fast configuration-only push to an already-connected Pi: update the
+        # settings (and secrets) and stop, without re-sending code or models or
+        # re-running the Pi-side setup. The station applies it on its next start.
+        _step("Preparing the updated configuration to send")
+        pi_settings = build_pi_settings(settings, station_id, work_dir)
+        pi_secrets = build_pi_secrets(settings, work_dir)
+        _step("Sending the updated configuration to the Pi")
+        runner.run(f"mkdir -p ~/{REMOTE_ROOT}", use_key=send_with_key)
+        runner.put(pi_settings, f"{REMOTE_ROOT}/settings.json", use_key=send_with_key)
+        if pi_secrets is not None:
+            runner.put(pi_secrets, f"{REMOTE_ROOT}/secrets.json", use_key=send_with_key)
+        _step("Done")
+        _info("The station's configuration was updated; it applies the next time the station starts.")
+        return
 
     _step("Preparing the files to send")
     archive = build_code_archive(work_dir)
@@ -377,6 +402,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         action="store_true",
         help="Connect using the station's already-authorized key, with no password (the guided flow uses this).",
     )
+    parser.add_argument(
+        "--settings-only",
+        action="store_true",
+        help="Push only the updated configuration to an already-connected Pi, without re-sending code or models.",
+    )
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     try:
@@ -413,6 +443,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 make_key=not (args.no_key or args.key_auth),
                 generate_key=(not args.no_key) and (not args.dry_run) and (not args.key_auth),
                 preauthorized_key=preauthorized,
+                settings_only=args.settings_only,
             )
         return 0
 

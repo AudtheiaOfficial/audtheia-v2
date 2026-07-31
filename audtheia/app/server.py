@@ -3506,6 +3506,48 @@ def create_app(settings, database):
         _PROVISION_JOBS[station_id] = {"proc": proc, "log": str(log_path), "started": _utc_now_iso()}
         return {"state": "running", "note": "connecting to the Pi; poll the status endpoint for progress."}
 
+    @app.post(f"{API_PREFIX}/stations/{{station_id}}/push-config")
+    def push_config(station_id):
+        """Push the station's current configuration to its already-connected Pi.
+
+        A config edit on the desktop, such as adding a target species, reaches a
+        Pi field station when it is pushed down. This sends only the updated
+        configuration over the station's already-authorized key, without
+        re-sending code or models, and the station applies it on its next start.
+        It needs the Pi to have been connected once already (so the key is in
+        place and the address is known); a station that has never been connected
+        is asked to run the full connect flow in Settings first.
+        """
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="configuration is pushed from the desktop; this node is not the desktop.")
+        _require_station(station_id)
+        station = next((s for s in settings.stations() if s.get("station_id") == station_id), None)
+        prov = (station or {}).get("provisioning") or {}
+        host = (prov.get("host") or "").strip()
+        user = (prov.get("user") or "").strip()
+        port = int(prov.get("port") or 22)
+        if not host or not user:
+            raise HTTPException(
+                status_code=409,
+                detail="this station's Pi has not been connected yet; use Connect Pi in Settings first, then changes can be pushed.",
+            )
+        existing = _PROVISION_JOBS.get(station_id)
+        if existing and existing["proc"].poll() is None:
+            raise HTTPException(status_code=409, detail="a connection or push is already in progress for this station")
+
+        log_path = Path(tempfile.gettempdir()) / f"audtheia-provision-{station_id}.log"
+        log = open(log_path, "w", encoding="utf-8")
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, str(_pi_script()), "--station-id", station_id,
+                 "--host", host, "--user", user, "--port", str(port), "--key-auth", "--settings-only"],
+                stdout=log, stderr=subprocess.STDOUT, cwd=str(settings.repo_root),
+            )
+        finally:
+            log.close()
+        _PROVISION_JOBS[station_id] = {"proc": proc, "log": str(log_path), "started": _utc_now_iso()}
+        return {"state": "running", "note": "pushing the updated configuration to the Pi; poll the status endpoint for progress."}
+
     @app.get(f"{API_PREFIX}/stations/{{station_id}}/provision/status")
     def provision_status(station_id):
         """Report progress of an in-flight or finished provisioning run."""

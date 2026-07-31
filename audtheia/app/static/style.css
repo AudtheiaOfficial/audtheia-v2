@@ -1431,6 +1431,41 @@ textarea:hover {
 .info-block > .settings-desc:last-child,
 .info-block > p:last-child { margin-bottom: 0; }
 
+/* A foldable, softly shadowed card, used to keep a long list of stations
+   compact: each station collapses to a one-line summary the eye can scan, and
+   opens to its editor. The shadow and radius set each card apart from the page
+   so a human finds the boundaries quickly. */
+.fold-card {
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  padding: var(--space-3) var(--space-4);
+  margin: var(--space-3) 0;
+}
+.fold-card > summary {
+  cursor: pointer;
+  font-weight: 600;
+  padding: var(--space-2) 0;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+.fold-card > summary::-webkit-details-marker { display: none; }
+.fold-card > summary::after {
+  content: "v";
+  font-family: inherit;
+  color: var(--text-muted);
+  transform: rotate(0deg);
+  transition: transform 0.15s ease;
+}
+.fold-card[open] > summary::after { transform: rotate(180deg); }
+.fold-card > .fold-body { padding-top: var(--space-3); }
+/* Comfortable air between the add control and the text above it. */
+.fold-card .control-row { margin-top: var(--space-4); }
+
 /* The Brain sub-panels stack several sections in one scroll, so each heading
    gets clear air above it. Without this the sections run together and the eye
    has nowhere to rest between them. The first heading keeps a smaller gap,

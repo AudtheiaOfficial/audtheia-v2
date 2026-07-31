@@ -348,6 +348,10 @@ def run() -> None:
               "the removed target species is still in scope")
         check(client.delete(f"/api/settings/stations/{reef}/target-species/Nope").status_code == 404,
               "removing an unknown target species was not a 404")
+        # Pushing config to a Pi that was never connected is refused with a clear
+        # message rather than attempting an impossible connection.
+        check(client.post(f"/api/stations/{reef}/push-config").status_code == 409,
+              "pushing config to an unconnected station was not refused")
 
         # -- settings: read-only, secrets redacted ----------------------
         s = client.get("/api/settings").json()

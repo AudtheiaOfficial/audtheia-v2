@@ -2773,6 +2773,13 @@
       host.appendChild(dreamHost);
       paintDreamStatus(dreamHost, status);
 
+      // Candidate patterns sit directly under the pass that produces them, so the
+      // run and its results read as one thing.
+      host.appendChild(el("h3", { text: "Candidate patterns" }));
+      var patternsHost = el("div");
+      host.appendChild(patternsHost);
+      paintPatterns(patternsHost, learning);
+
       host.appendChild(el("h3", { text: "Run now" }));
       var runHost = el("div");
       host.appendChild(runHost);
@@ -2792,11 +2799,6 @@
       var retrainHost = el("div");
       host.appendChild(retrainHost);
       renderRetraining(retrainHost);
-
-      host.appendChild(el("h3", { text: "Candidate patterns" }));
-      var patternsHost = el("div");
-      host.appendChild(patternsHost);
-      paintPatterns(patternsHost, learning);
 
       // A run-now action refreshes only the regions its run can change: the
       // pass status, the audit, and the candidate patterns. It never rebuilds
@@ -3175,6 +3177,24 @@
 
     function stillHere(node) { return state.activePanel === "brain" && document.body.contains(node); }
 
+    // Poll a config push to the Pi until it finishes, then report the outcome.
+    // A push reuses the provisioning status endpoint, so the states are the same
+    // ones the connect flow reports.
+    function pollPush(sid, btn, msg) {
+      apiGet("/stations/" + encodeURIComponent(sid) + "/provision/status").then(function (s) {
+        if (s.state === "running") {
+          if (stillHere(msg)) { window.setTimeout(function () { pollPush(sid, btn, msg); }, 2000); }
+          return;
+        }
+        btn.disabled = false;
+        if (s.state === "succeeded") {
+          msg.textContent = "Configuration pushed to the Pi; it applies on the station's next start.";
+        } else {
+          msg.textContent = "The push did not finish (" + (s.state || "unknown") + "). It is safe to try again.";
+        }
+      }).catch(function (e) { btn.disabled = false; msg.textContent = "Could not read push status: " + e.message; });
+    }
+
     // The target-species editor: add or remove the species each station is
     // looking for. The reference fetch covers these and the field model is
     // trained on them, so this is where a person declares them without editing a
@@ -3190,8 +3210,13 @@
         stations.forEach(function (st) {
           var sid = st.station_id;
           var targets = st.target_species || [];
-          var card = el("div", { class: "species-step" });
-          card.appendChild(el("div", { class: "card-meta", text: st.station_name || sid }));
+          // Each station is a foldable, softly shadowed card, so a long list of
+          // stations stays compact and scannable. It opens by default when it
+          // has no targets yet, so a first-time setup is not hidden.
+          var summaryText = (st.station_name || sid) + "  (" +
+            (targets.length ? fmtNum(targets.length) + (targets.length === 1 ? " target species" : " target species") : "no targets yet") + ")";
+          var body = el("div", { class: "fold-body" });
+
           var chips = el("div", { class: "badge-row" });
           if (!targets.length) { chips.appendChild(el("span", { class: "card-note", text: "none yet" })); }
           targets.forEach(function (name) {
@@ -3204,7 +3229,8 @@
             });
             chips.appendChild(chip);
           });
-          card.appendChild(chips);
+          body.appendChild(chips);
+
           var input = el("input", { type: "text", class: "form-input", placeholder: "scientific name, for example Aplysina fistularis" });
           var add = el("button", { type: "button", class: "btn btn-small", text: "Add species" });
           function doAdd() {
@@ -3217,7 +3243,29 @@
           }
           add.addEventListener("click", doAdd);
           input.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); doAdd(); } });
-          card.appendChild(el("div", { class: "control-row" }, [input, add]));
+          body.appendChild(el("div", { class: "control-row" }, [input, add]));
+
+          // Push the current configuration down to this station's Pi. A config
+          // edit reaches a field station only when it is pushed, so this sends
+          // the updated settings over the station's already-authorized key.
+          var pushMsg = el("p", { class: "form-hint", text:
+            "Editing here updates the desktop. For a Pi field station, push the change down so the Pi applies it on its next start. A station whose Pi has not been connected yet will say so." });
+          var push = el("button", { type: "button", class: "btn btn-small", text: "Push changes to Pi" });
+          push.addEventListener("click", function () {
+            push.disabled = true;
+            pushMsg.textContent = "Pushing the configuration to the Pi.";
+            apiSend("/stations/" + encodeURIComponent(sid) + "/push-config", "POST", {})
+              .then(function () { pollPush(sid, push, pushMsg); })
+              .catch(function (e) { push.disabled = false; pushMsg.textContent = e.message; });
+          });
+          body.appendChild(el("div", { class: "control-row" }, [push]));
+          body.appendChild(pushMsg);
+
+          var card = el("details", { class: "fold-card" }, [
+            el("summary", { text: summaryText }),
+            body
+          ]);
+          if (!targets.length) { card.setAttribute("open", "open"); }
           targetHost.appendChild(card);
         });
       }).catch(function (e) { clear(targetHost); targetHost.appendChild(el("p", { class: "card-note", text: "Could not read target species: " + e.message })); });
