@@ -3038,22 +3038,42 @@
     }
 
     // What produced each row, which is what makes a result reproducible later.
+    // Two different kinds of provenance are shown apart, because they are set in
+    // different ways: model VERSIONS a person types in Settings, and reference
+    // DATES that the fetch stamps automatically. Mixing them read as if a date
+    // were a version, which was confusing.
     var versions = audit.versions || {};
+    function versionRows(host, rows) {
+      var kv = el("div", { class: "kv-list" });
+      rows.forEach(function (pair) {
+        var counts = versions[pair[0]] || {};
+        var parts = Object.keys(counts).map(function (k) { return k + " (" + fmtNum(counts[k]) + ")"; });
+        kv.appendChild(modelKvRow(pair[1], parts.length ? parts.join(", ") : "none recorded"));
+      });
+      host.appendChild(kv);
+    }
+
     var verBlock2 = el("div", { class: "info-block" });
-    verBlock2.appendChild(el("div", { class: "card-title", text: "Model and data versions" }));
+    verBlock2.appendChild(el("div", { class: "card-title", text: "Provenance of the stored rows" }));
     verBlock2.appendChild(el("p", { class: "settings-desc", text:
-      "Which model version and which taxonomic snapshot produced the stored rows. This is what lets someone reproduce a result years later, so a value of \"not stated\" is worth filling in before a deployment you intend to publish." }));
-    var pkv = el("div", { class: "kv-list" });
-    [["screening_model_version", "Field screening model"],
-     ["acoustic_model_version", "Acoustic model"],
-     ["rfdetr_version", "Desktop verifier"],
-     ["gbif_snapshot_date", "GBIF backbone snapshot"],
-     ["iucn_fetch_date", "IUCN fetch date"]].forEach(function (pair) {
-      var counts = versions[pair[0]] || {};
-      var parts = Object.keys(counts).map(function (k) { return k + " (" + fmtNum(counts[k]) + ")"; });
-      pkv.appendChild(modelKvRow(pair[1], parts.length ? parts.join(", ") : "none recorded"));
-    });
-    verBlock2.appendChild(pkv);
+      "What produced each stored row, so a result can be reproduced later. Two different kinds are shown separately: the model versions you set, and the dates the offline reference data was fetched." }));
+
+    verBlock2.appendChild(el("div", { class: "card-meta", text: "Model versions" }));
+    verBlock2.appendChild(el("p", { class: "form-hint", text:
+      "The version of each model that produced the row. You set these per model in Settings; \"not stated\" means the version was blank when the row was produced. Worth filling in before a deployment you intend to publish." }));
+    versionRows(verBlock2, [
+      ["screening_model_version", "Field screening model"],
+      ["acoustic_model_version", "Acoustic model"],
+      ["rfdetr_version", "Desktop verifier"]
+    ]);
+
+    verBlock2.appendChild(el("div", { class: "card-meta", text: "Reference-data fetch dates" }));
+    verBlock2.appendChild(el("p", { class: "form-hint", text:
+      "These are not versions you type. Each is the date the GBIF or IUCN reference data was current when it was fetched, stamped so a result stays reproducible against that data vintage. \"not stated\" means the record was captured before that data was fetched, or its species name did not match GBIF. Run Species data, Fetch reference data (and correct any misspelled names) to fill them; they update on their own." }));
+    versionRows(verBlock2, [
+      ["gbif_snapshot_date", "GBIF backbone snapshot date"],
+      ["iucn_fetch_date", "IUCN status fetch date"]
+    ]);
     wrap.appendChild(verBlock2);
 
     if (audit.note) { wrap.appendChild(el("p", { class: "card-note", text: audit.note })); }
@@ -3261,11 +3281,13 @@
           body.appendChild(el("div", { class: "control-row" }, [push]));
           body.appendChild(pushMsg);
 
+          // Cards start folded, so a long station list opens as a compact,
+          // scannable set of one-line summaries; a person opens the one they
+          // want. The open state is not stored, so nothing is persisted.
           var card = el("details", { class: "fold-card" }, [
             el("summary", { text: summaryText }),
             body
           ]);
-          if (!targets.length) { card.setAttribute("open", "open"); }
           targetHost.appendChild(card);
         });
       }).catch(function (e) { clear(targetHost); targetHost.appendChild(el("p", { class: "card-note", text: "Could not read target species: " + e.message })); });

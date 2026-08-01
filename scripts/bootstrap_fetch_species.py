@@ -205,7 +205,19 @@ def iucn_status(client, name: str, token: Optional[str]) -> Optional[str]:
         return None
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
 
-    taxon = client.get_json(f"{IUCN_BASE}/taxa/scientific_name/{name}", headers=headers)
+    # The v4 endpoint takes the genus and species as separate query parameters,
+    # not the binomial as one path segment; a full name in the path (with its
+    # space) does not resolve. The name resolved by GBIF is a clean binomial, so
+    # the first two words are the genus and the species. A name with fewer than
+    # two words (a genus-only match) has no species-level assessment to read.
+    parts = str(name).split()
+    if len(parts) < 2:
+        return None
+    taxon = client.get_json(
+        f"{IUCN_BASE}/taxa/scientific_name",
+        params={"genus_name": parts[0], "species_name": parts[1]},
+        headers=headers,
+    )
     if not isinstance(taxon, dict):
         return None
     assessments = taxon.get("assessments") or []
@@ -221,7 +233,8 @@ def iucn_status(client, name: str, token: Optional[str]) -> Optional[str]:
     assessment_id = latest.get("assessment_id") or latest.get("id")
     if assessment_id is None:
         return None
-    detail = client.get_json(f"{IUCN_BASE}/assessment/{assessment_id}", headers=headers)
+    # The assessment detail lives at the plural path in v4.
+    detail = client.get_json(f"{IUCN_BASE}/assessments/{assessment_id}", headers=headers)
     return _extract_category_code(detail)
 
 
