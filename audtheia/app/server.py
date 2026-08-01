@@ -2209,7 +2209,11 @@ def create_app(settings, database):
         """
         stamped = 0
         for obs in db.list_observations():
-            if obs.get("gbif_snapshot_date") or obs.get("iucn_fetch_date"):
+            # Skip only a record that already has both dates. A record with one
+            # date but not the other (for example a GBIF date stamped before the
+            # conservation status could be fetched) is still processed, so the
+            # missing date is filled independently.
+            if obs.get("gbif_snapshot_date") and obs.get("iucn_fetch_date"):
                 continue
             children = db.list_child_detections(obs["id"])
             if not children:

@@ -362,9 +362,18 @@ def run(
         try:
             existing = _cached_key(db, client, name)
             if existing is not None and not args.refresh:
-                _info(f"{name}: already on file (key {existing}); skipping. Use --refresh to update.")
-                outcome["cached"] += 1
-                continue
+                # A species already on file is normally left as is. But when it
+                # is missing its conservation status and a token is now set, it
+                # is re-fetched to fill that status: this heals the common case
+                # where GBIF was fetched earlier but IUCN could not be reached,
+                # without needing a full refresh of everything.
+                row = db.get_species_reference(existing) or {}
+                missing_status = bool(token) and not row.get("iucn_status")
+                if not missing_status:
+                    _info(f"{name}: already on file (key {existing}); skipping. Use --refresh to update.")
+                    outcome["cached"] += 1
+                    continue
+                _info(f"{name}: on file but missing conservation status; re-fetching to fill it.")
 
             result = fetch_one(client, name, token)
             if result is None:

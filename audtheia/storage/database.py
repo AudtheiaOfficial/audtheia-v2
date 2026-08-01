@@ -1266,19 +1266,27 @@ class Database:
     def stamp_observation_snapshot(
         self, observation_id: str, gbif_snapshot_date: Optional[str], iucn_fetch_date: Optional[str]
     ) -> bool:
-        """Fill an observation's reference snapshot dates, only when they are unset.
+        """Fill an observation's reference snapshot dates, each only when unset.
 
         The observation's taxonomic snapshot is meant to be written once, at
         capture. This completes it for a record captured before its species
-        reference existed, and it is guarded to touch only a row whose date is
-        still NULL, so a value already stamped is never overwritten and no
-        measured field is affected. Returns True when a row was filled.
+        reference existed. Each date is filled independently and only when it is
+        still NULL, using COALESCE so a value already stamped is never
+        overwritten. Filling them independently matters because GBIF and IUCN can
+        succeed at different times: a record stamped with a GBIF date earlier can
+        still receive its IUCN date once the conservation status is fetched. No
+        measured field is ever touched. Returns True when a date was filled.
         """
         with self.connect() as conn:
             cur = conn.execute(
-                "UPDATE observations SET gbif_snapshot_date = ?, iucn_fetch_date = ? "
-                "WHERE id = ? AND gbif_snapshot_date IS NULL AND iucn_fetch_date IS NULL",
-                (gbif_snapshot_date, iucn_fetch_date, observation_id),
+                "UPDATE observations SET "
+                "gbif_snapshot_date = COALESCE(gbif_snapshot_date, ?), "
+                "iucn_fetch_date = COALESCE(iucn_fetch_date, ?) "
+                "WHERE id = ? AND ("
+                "  (gbif_snapshot_date IS NULL AND ? IS NOT NULL) OR "
+                "  (iucn_fetch_date IS NULL AND ? IS NOT NULL))",
+                (gbif_snapshot_date, iucn_fetch_date, observation_id,
+                 gbif_snapshot_date, iucn_fetch_date),
             )
             return cur.rowcount > 0
 

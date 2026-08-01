@@ -1143,13 +1143,14 @@ class _ReportPdf:
                             new_x=self.XPos.LMARGIN, new_y=self.YPos.NEXT)
 
     def _kv(self, label: str, value: str, tag: str = "", inferred: bool = False,
-            derived: bool = False) -> None:
+            derived: bool = False, label_w: float = 55) -> None:
         """One labeled value line with its provenance tag.
 
         Inferred and derived values are set apart in style and color, so a
         reader can see at a glance which numbers are measured and which are not.
+        label_w widens the label column for a section whose labels are long, so
+        a long label never runs into its value.
         """
-        label_w = 55
         self._set("B", 9.5, _COLOR_TEXT)
         self.pdf.cell(label_w, 5, _pdf_safe(label),
                       new_x=self.XPos.RIGHT, new_y=self.YPos.TOP)
@@ -1505,8 +1506,10 @@ class _ReportPdf:
                     tag=_provenance_tag("database"))
 
     def _provenance_line(self, label: str, values) -> None:
+        # These labels are long ("Taxonomic backbone snapshot dates"), so the
+        # label column is widened here to keep the value clear of the label.
         text = ", ".join(values) if values else "not recorded"
-        self._kv(label, text, tag="[reference]", derived=True)
+        self._kv(label, text, tag="[reference]", derived=True, label_w=72)
 
     # -- shared record rendering ----------------------------------------
 
