@@ -1431,6 +1431,19 @@ textarea:hover {
 .info-block > .settings-desc:last-child,
 .info-block > p:last-child { margin-bottom: 0; }
 
+/* An inline text link set inside a caption: underlined, and slightly bolder on
+   hover, so it reads as an action without becoming a heavy button. */
+.link-inline {
+  text-decoration: underline;
+  cursor: pointer;
+  color: inherit;
+}
+.link-inline:hover,
+.link-inline:focus {
+  font-weight: 600;
+  outline: none;
+}
+
 /* A foldable, softly shadowed card, used to keep a long list of stations
    compact: each station collapses to a one-line summary the eye can scan, and
    opens to its editor. The shadow and radius set each card apart from the page

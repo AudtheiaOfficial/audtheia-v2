@@ -2058,6 +2058,35 @@ def create_app(settings, database):
         _, frames, distribution = _event_frames_on_disk(obs)
         return {"review": stored, "review_summary": _frame_review_summary(observation_id, frames, distribution)}
 
+    @app.post(f"{API_PREFIX}/detections/{{observation_id}}/frames/review-all", status_code=201)
+    def review_all_frames(observation_id, request: FrameReviewRequest):
+        """Record one verdict on every saved frame of an event at once.
+
+        This backs the "mark all accurate" action, so a reviewer accepts the
+        whole event in one step and then only has to mark the few wrong frames,
+        whose later per-frame verdict wins on read. Nothing measured is modified;
+        each frame gets its own appended human claim, exactly like a single
+        review. The response carries the same curated summary the frames read
+        returns, so the interface updates live.
+        """
+        obs = db.get_observation(observation_id)
+        if obs is None:
+            raise HTTPException(status_code=404, detail=f"no observation with id {observation_id}")
+        verdict = (request.verdict or "").strip()
+        if verdict not in _FRAME_REVIEW_VERDICTS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"verdict must be one of {', '.join(_FRAME_REVIEW_VERDICTS)}",
+            )
+        _, frames, distribution = _event_frames_on_disk(obs)
+        indices = [f.get("index") for f in frames if f.get("index") is not None]
+        written = db.add_frame_reviews_bulk(
+            observation_id, indices,
+            verdict=verdict,
+            corrector=(request.corrector or "").strip() or _DEFAULT_CORRECTOR,
+        )
+        return {"written": written, "review_summary": _frame_review_summary(observation_id, frames, distribution)}
+
     # -- expert corrections ----------------------------------------------
 
     @app.get(f"{API_PREFIX}/species/search")

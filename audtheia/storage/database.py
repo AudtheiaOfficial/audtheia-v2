@@ -1588,6 +1588,41 @@ class Database:
             self._insert_row(conn, row)
             return self._one(conn, "SELECT * FROM frame_review WHERE id = ?", (row.id,))
 
+    def add_frame_reviews_bulk(
+        self,
+        observation_id: str,
+        frame_indices,
+        *,
+        verdict: str,
+        corrector: str,
+    ) -> int:
+        """Append the same verdict to many frames of one event in one transaction.
+
+        This backs a "mark all" action, so a reviewer can accept a whole event
+        and then correct only the few wrong frames. Nothing measured is touched;
+        each row is a separate human claim about one frame, exactly like a single
+        review, appended so the newest verdict per frame still wins on read.
+        Returns the number of frames written.
+        """
+        now = utc_now_iso()
+        rows = [
+            FrameReview(
+                id=new_id(),
+                observation_id=observation_id,
+                frame_index=int(i),
+                verdict=verdict,
+                corrector=corrector,
+                reviewed_at=now,
+                created_at=now,
+                reason=None,
+            )
+            for i in frame_indices
+        ]
+        with self.connect() as conn:
+            for row in rows:
+                self._insert_row(conn, row)
+        return len(rows)
+
     def frame_reviews_for_observation(self, observation_id: str) -> list[dict]:
         """The current verdict per reviewed frame of one event.
 

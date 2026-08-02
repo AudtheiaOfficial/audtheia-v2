@@ -1313,7 +1313,7 @@
   // The two per-frame verdict buttons. A second click on the active verdict
   // clears it, so a frame can return to unreviewed without leaving a false
   // record. The measured frame is never altered; this only appends a verdict.
-  function frameReviewButtons(f, obsId, cell, onReviewed) {
+  function frameReviewButtons(f, obsId, cell, onReviewed, painters) {
     var rowEl = el("div", { class: "frame-review" });
     var accBtn = el("button", { type: "button", class: "frame-review-btn acc", text: "Accurate" });
     var badBtn = el("button", { type: "button", class: "frame-review-btn bad", text: "Inaccurate" });
@@ -1325,6 +1325,9 @@
       cell.classList.toggle("frame-inaccurate", f.review === "inaccurate");
       cell.classList.toggle("frame-accurate", f.review === "accurate");
     }
+    // Let a "mark all accurate" action set this frame and repaint it, so the
+    // whole strip reflects the bulk verdict without rebuilding.
+    if (painters) { painters.push(function () { f.review = "accurate"; paint(); }); }
     function send(target) {
       var verdict = (f.review === target) ? "cleared" : target;
       accBtn.disabled = badBtn.disabled = true;
@@ -1377,8 +1380,31 @@
 
   function auditFrameStrip(frames, caption, obsId, onReviewed) {
     var wrap = el("div", { class: "audit-strip-wrap" });
-    wrap.appendChild(el("div", { class: "card-note", text: frames.length +
-      " frames · scroll to review · click a frame to enlarge · mark each Accurate or Inaccurate" }));
+    var painters = [];
+    // The caption doubles as a control: a "mark all Accurate" link lets a
+    // reviewer accept the whole event at once and then only mark the few wrong
+    // frames Inaccurate (a later per-frame verdict wins). It reads as plain text
+    // set apart from the buttons, per the review layout.
+    var cap = el("div", { class: "card-note" }, [
+      el("span", { text: frames.length + " frames · scroll to review · click a frame to enlarge · mark each Accurate or Inaccurate · " })
+    ]);
+    var markAll = el("span", { class: "link-inline", text: "mark all Accurate", role: "button", tabindex: "0" });
+    function doMarkAll() {
+      if (!obsId || !frames.length) { return; }
+      if (!window.confirm("Mark all " + frames.length + " frames as accurate? You can still mark individual frames Inaccurate afterward.")) { return; }
+      markAll.textContent = "marking all accurate...";
+      apiSend("/detections/" + encodeURIComponent(obsId) + "/frames/review-all", "POST", { verdict: "accurate" })
+        .then(function (res) {
+          painters.forEach(function (fn) { fn(); });
+          if (onReviewed) { onReviewed(res.review_summary); }
+          markAll.textContent = "all marked Accurate";
+        })
+        .catch(function (e) { markAll.textContent = "could not mark all: " + e.message; });
+    }
+    markAll.addEventListener("click", doMarkAll);
+    markAll.addEventListener("keydown", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); doMarkAll(); } });
+    if (obsId && frames.length) { cap.appendChild(markAll); }
+    wrap.appendChild(cap);
     var strip = el("div", { class: "audit-strip" });
     frames.forEach(function (f) {
       var src = API + "/media" + query({ path: f.path });
@@ -1398,7 +1424,7 @@
         (f.confidence != null ? "  ·  " + Math.round(Number(f.confidence) * 100) + "%" : "") +
         (f.class_name ? "  ·  " + f.class_name : "") }));
       if (obsId != null && f.index != null) {
-        cell.appendChild(frameReviewButtons(f, obsId, cell, onReviewed));
+        cell.appendChild(frameReviewButtons(f, obsId, cell, onReviewed, painters));
       }
       strip.appendChild(cell);
     });

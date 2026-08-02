@@ -310,6 +310,17 @@ def test_endpoints(tmp: Path) -> None:
     marked = [f for f in again["frames"] if f["index"] == 3]
     check("the reviewed frame reports its verdict", marked and marked[0]["review"] == "inaccurate")
 
+    # Mark every frame accurate in one call. Frame 3 was inaccurate above; a
+    # later verdict wins, so it becomes accurate too.
+    allr = client.post(f"/api/detections/{obs.id}/frames/review-all", json={"verdict": "accurate"})
+    check("mark-all returns 201", allr.status_code == 201)
+    check("mark-all wrote a verdict for every frame", allr.json()["written"] == 4)
+    after_all = client.get(f"/api/detections/{obs.id}/frames").json()["review_summary"]
+    check("every frame now reads accurate", after_all["accurate"] == 4)
+    check("no frame remains inaccurate after mark-all", after_all["inaccurate"] == 0)
+    bad_all = client.post(f"/api/detections/{obs.id}/frames/review-all", json={"verdict": "sideways"})
+    check("mark-all refuses an unknown verdict", bad_all.status_code == 400)
+
 
 def test_dream_gate(tmp: Path) -> None:
     print("\nThe dream pass excludes a rejected or wholly-inaccurate event, keeps a partial one")
