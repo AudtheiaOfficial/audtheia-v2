@@ -1401,6 +1401,64 @@ class Database:
         with self.connect() as conn:
             return [r["oid"] for r in conn.execute(sql, params).fetchall()]
 
+    def list_pass_eligible_observation_ids(
+        self, *, station_id: Optional[str] = None
+    ) -> list[str]:
+        """Events the longitudinal pass may rest a generated claim on.
+
+        Wider than the desktop-only gate: an event is eligible when the desktop
+        verifier cleared it (verified = 1), OR when its current expert verdict on
+        any target is 'confirm' or 'relabel'. A human identification is at least
+        as authoritative as the automated re-score, so the pass reasons over the
+        expert-validated record rather than only the fraction the automated
+        verifier happened to clear. An expert 'reject' is not eligible here and is
+        also dropped downstream by the exclusion gate. Statistics are still built
+        from everything; this only widens what a new claim may rest on.
+        """
+        sql = (
+            "SELECT DISTINCT oid FROM ("
+            "  SELECT v.observation_id AS oid FROM observation_verification v WHERE v.verified = 1"
+            "  UNION"
+            "  SELECT observation_id AS oid FROM ("
+            "    SELECT observation_id, detection_id, verdict,"
+            "           ROW_NUMBER() OVER (PARTITION BY observation_id, detection_id"
+            "                              ORDER BY corrected_at DESC, rowid DESC) AS rn"
+            "    FROM observation_corrections"
+            "  ) WHERE rn = 1 AND verdict IN ('confirm', 'relabel')"
+            ") AS eligible"
+        )
+        params: tuple = ()
+        if station_id is not None:
+            sql += " WHERE oid IN (SELECT id FROM observations WHERE station_id = ?)"
+            params = (station_id,)
+        sql += " ORDER BY oid"
+        with self.connect() as conn:
+            return [r["oid"] for r in conn.execute(sql, params).fetchall()]
+
+    def expert_resolved_species(self, observation_id: str) -> list[str]:
+        """The GBIF usage keys for an event after applying expert corrections.
+
+        For each detected taxon, the expert's current verdict wins: a 'relabel'
+        replaces the model's taxon with the corrected one, a 'reject' drops it,
+        and a 'confirm' (or no verdict) keeps the model's call. This is what the
+        pass reasons over, so a relabelled event contributes its corrected taxon
+        to a co-occurrence or correlation rather than the model's mistaken one.
+        """
+        keys: list[str] = []
+        for det in self.list_child_detections(observation_id):
+            model_key = det.get("gbif_usage_key")
+            latest = self.latest_correction(observation_id, det.get("id"))
+            if latest is not None:
+                verdict = latest.get("verdict")
+                if verdict == "reject":
+                    continue
+                if verdict == "relabel" and latest.get("corrected_gbif_usage_key"):
+                    keys.append(str(latest["corrected_gbif_usage_key"]))
+                    continue
+            if model_key:
+                keys.append(str(model_key))
+        return keys
+
     def set_authoritative_salience(
         self,
         observation_id: str,

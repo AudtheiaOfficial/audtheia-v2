@@ -710,10 +710,12 @@ class DreamEngine:
         for station_id, channel, period in touched:
             self._recompute_cell(station_id, channel, period)
 
-        # Score verified events against the now-current gist, each held out of its
-        # own cells. A per-cell membership cache is built once and reused, so the
-        # hold-out costs no extra queries per event.
-        verified_ids = set(self._db.list_verified_observation_ids(station_id=station_scope))
+        # Score eligible events against the now-current gist, each held out of its
+        # own cells. Eligible means the desktop verifier cleared it or an expert
+        # confirmed or relabelled it, matching the generative gate. A per-cell
+        # membership cache is built once and reused, so the hold-out costs no
+        # extra queries per event.
+        verified_ids = set(self._db.list_pass_eligible_observation_ids(station_id=station_scope))
         membership_cache: dict[tuple[str, str], dict[str, list[tuple[str, float]]]] = {}
         station_taxon_cache: dict[str, dict] = {}
         for obs in batch:
@@ -950,15 +952,17 @@ class DreamEngine:
     def _build_working_set(self, station_scope: Optional[str]) -> list[_Exemplar]:
         """Assemble the bounded, salience-ranked set the generative phase reads.
 
-        Only verified events are eligible, which is the gate that keeps a
-        proposed claim from resting on an unconfirmed field call. The set is
-        ranked by authoritative salience, falling back to the field provisional
-        salience when the authoritative value is not yet set, so an early-record
-        event is ranked by a real value rather than buried by a missing one, and
-        capped to the configured size so the generative phase's cost stays
-        bounded no matter how large the archive grows.
+        An event is eligible when the desktop verifier cleared it or an expert
+        confirmed or relabelled it, which is the gate that keeps a proposed claim
+        from resting on an unconfirmed field call while still letting expert
+        identifications, the strongest evidence there is, feed pattern discovery.
+        The set is ranked by authoritative salience, falling back to the field
+        provisional salience when the authoritative value is not yet set, so an
+        early-record event is ranked by a real value rather than buried by a
+        missing one, and capped to the configured size so the generative phase's
+        cost stays bounded no matter how large the archive grows.
         """
-        verified_ids = self._db.list_verified_observation_ids(station_id=station_scope)
+        verified_ids = self._db.list_pass_eligible_observation_ids(station_id=station_scope)
         scored: list[tuple[float, dict]] = []
         for oid in verified_ids:
             obs = self._db.get_observation(oid)
@@ -985,11 +989,9 @@ class DreamEngine:
 
         exemplars: list[_Exemplar] = []
         for rank, obs in kept:
-            species = [
-                c["gbif_usage_key"]
-                for c in self._db.list_child_detections(obs["id"])
-                if c.get("gbif_usage_key")
-            ]
+            # Apply the expert's corrections, so a relabelled event contributes
+            # its corrected taxon to the generative phase, not the model's call.
+            species = self._db.expert_resolved_species(obs["id"])
             readings = {
                 r["channel"]: float(r["value"])
                 for r in self._db.list_environmental_readings(obs["id"])

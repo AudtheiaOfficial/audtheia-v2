@@ -1499,9 +1499,12 @@ class _ReportPdf:
             for sp in self.model.species_reference:
                 name = sp.get("scientific_name") or sp.get("gbif_usage_key") or "unknown"
                 status = sp.get("iucn_status") or "no status"
+                occ = sp.get("gbif_occurrence_count")
+                occ_text = f"{int(occ):,}" if isinstance(occ, (int, float)) else "not recorded"
                 self._kv(
                     name,
-                    f"IUCN {status}; taxonomy snapshot {sp.get('gbif_snapshot_date') or 'not recorded'}; "
+                    f"IUCN {status}; GBIF occurrences {occ_text}; "
+                    f"taxonomy snapshot {sp.get('gbif_snapshot_date') or 'not recorded'}; "
                     f"status fetched {sp.get('iucn_fetch_date') or 'not recorded'}",
                     tag=_provenance_tag("database"))
 

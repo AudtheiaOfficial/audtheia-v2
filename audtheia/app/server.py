@@ -3061,19 +3061,20 @@ def create_app(settings, database):
         # measured each candidate against.
         diagnostics = None
         if result.patterns_emitted == 0:
-            verified_count = len(db.list_verified_observation_ids())
+            verified_count = len(db.list_pass_eligible_observation_ids())
             total_events = db.count_observations()
             dream_thresholds = settings.thresholds_config()["dream"]
             if total_events == 0:
                 reason = ("No events in the record yet, so the pass had nothing to reason over. "
-                          "A pattern is proposed only once verified events have been captured.")
+                          "A pattern is proposed only once confirmed events have been captured.")
             elif verified_count == 0:
-                reason = (f"None of your {total_events} event(s) are verified yet. The pass builds "
-                          "its baseline from the whole record but proposes a pattern only from "
-                          "verified events, so run 'Run verification' (or verify events in "
-                          "Detections), then run the pass again.")
+                reason = (f"None of your {total_events} event(s) are confirmed yet. The pass builds "
+                          "its baseline from the whole record but proposes a pattern only from events "
+                          "the desktop verifier cleared or an expert confirmed, so verify or expertly "
+                          "identify some events in Detections, then run the pass again.")
             else:
-                reason = (f"{verified_count} verified event(s) in the record. A candidate needs at "
+                reason = (f"{verified_count} confirmed event(s) in the record (desktop-verified or "
+                          f"expert-identified). A candidate needs at "
                           f"least {dream_thresholds['min_events_for_correlation']} events for a "
                           f"correlation, {dream_thresholds['min_events_for_co_occurrence']} for a "
                           f"co-occurrence, or {dream_thresholds['min_periods_for_trend']} periods for "
