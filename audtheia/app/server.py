@@ -590,75 +590,64 @@ def _llm_runtime_available() -> bool:
     return importlib.util.find_spec("llama_cpp") is not None
 
 
-# The exact remedy for the illegal-instruction crash a wrong prebuilt wheel
-# causes. The default llama-cpp-python wheel targets CPU instructions (AVX2, FMA)
-# that an older or basic CPU does not have; loading then fails with Windows error
-# 0xc000001d. The fix is a wheel that matches the CPU, or a rebuild with those
-# instructions off. Kept in one place so the interface, the logs, and the docs
-# agree.
+# A short, plain-language pointer for the one failure a person cannot fix by
+# themselves: the model runtime was installed for a different processor type, so
+# it cannot start. The exact commands live in the guide, not in the interface, so
+# the panel stays calm and readable.
 _LLM_CPU_REMEDY = (
-    "If the model does not load and the log shows Windows error 0xc000001d (an "
-    "illegal instruction), the installed llama-cpp-python was built for CPU "
-    "instructions this computer does not have (commonly AVX2 or FMA). Reinstall a "
-    "build that matches this CPU (a 'basic' or 'AVX' wheel), or rebuild with those "
-    "instructions off using CMAKE_ARGS=\"-DGGML_NATIVE=OFF -DGGML_AVX2=OFF "
-    "-DGGML_FMA=OFF\". See docs/language-model.md."
+    "This is a one-time setup step, not a problem with your data. The model "
+    "runtime was installed for a different processor type, so it cannot start on "
+    "this computer. Installing a matching build fixes it; the exact steps are in "
+    "docs/language-model.md."
 )
 
 
 def _llm_status(settings) -> dict:
-    """An honest, actionable readiness status for the desktop language model.
+    """A calm, plain-language readiness status for the desktop language model.
 
-    Reports which of three states holds without loading the model (loading can be
-    slow and is where a CPU-mismatched wheel fails): the runtime is not installed,
-    no model file is present, or both are present. When both are present it also
-    carries the exact remedy for the one failure a person is otherwise left to
-    decode from a raw Windows error code, so the interface can state the fix
-    rather than only that the model is unavailable.
+    The language model is optional enrichment: the whole platform runs without it.
+    So this never alarms. It reports one of a few friendly states without loading
+    the model (loading is slow): the runtime is missing, no model is present yet,
+    a model is present and will load on the next run, or, in the one case a person
+    truly cannot self-diagnose, the runtime does not match this computer's
+    processor and the guide has the fix. Raw error codes and build flags stay in
+    the log and the guide, never in the panel.
     """
     if not _llm_runtime_available():
         return {
             "status": "runtime_missing",
-            "message": "The model runtime (llama-cpp-python) is not installed, so no model can run yet.",
-            "remedy": ("Install the runtime with: pip install llama-cpp-python. On an older CPU, install a "
-                       "build that matches it (a 'basic' or 'AVX' wheel) rather than the default. " + _LLM_CPU_REMEDY),
+            "message": ("The optional language model is not set up yet, so interpretation and narration "
+                        "are off. Everything else works without it."),
+            "remedy": "To turn it on, install the runtime: pip install llama-cpp-python. Then drop a .gguf model into the folder below and reload.",
         }
     if not _active_llm_name(settings):
         return {
             "status": "no_model",
-            "message": "The runtime is installed, but no GGUF model file is present.",
-            "remedy": "Add a .gguf model file to the language model folder shown below, then reload.",
+            "message": "No language model is set up yet, so interpretation and narration are off.",
+            "remedy": "Drop a .gguf model file into the language-model folder shown below, then reload to turn it on.",
         }
 
-    # If a load has already been attempted and failed, report the real cause. An
-    # illegal-instruction failure means the wheel does not match this CPU, which
-    # is the one case a person cannot decode from the raw error on their own.
+    # A model is present. The only failure worth surfacing here is the one a
+    # person cannot decode alone: the runtime does not match this CPU. Any other
+    # recorded error (for example a stale "no model configured" from before a
+    # model was placed) is not shown, because the model is present now and will be
+    # tried again on the next run; the detail stays in the log.
     try:
         from audtheia.app.orchestrator import last_llm_error
-        recorded = last_llm_error()
+        recorded = (last_llm_error() or "").lower()
     except Exception:  # noqa: BLE001 - status must never fail because of an import
-        recorded = None
-    if recorded:
-        low = recorded.lower()
-        if "0xc000001d" in low or "illegal" in low or "1073741795" in low:
-            return {
-                "status": "cpu_incompatible",
-                "message": ("A model load failed because the installed runtime uses CPU instructions this "
-                            "computer does not have: " + recorded),
-                "remedy": _LLM_CPU_REMEDY,
-            }
+        recorded = ""
+    if any(k in recorded for k in ("0xc000001d", "illegal instruction", "1073741795")):
         return {
-            "status": "load_failed",
-            "message": "The last attempt to load the model failed: " + recorded,
+            "status": "cpu_incompatible",
+            "message": "The model is installed but could not start on this computer's processor.",
             "remedy": _LLM_CPU_REMEDY,
         }
 
     return {
         "status": "model_present",
-        "message": ("The runtime is installed and a model is present. The model loads when the desktop "
-                    "next starts a run (verification or the longitudinal pass); if it cannot load, the "
-                    "status here and the log will say why."),
-        "remedy": _LLM_CPU_REMEDY,
+        "message": "The language model is set. It loads the next time the desktop runs verification or the longitudinal pass.",
+        "remedy": "",
     }
 
 

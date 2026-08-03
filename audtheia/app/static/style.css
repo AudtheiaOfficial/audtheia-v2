@@ -1382,7 +1382,15 @@ textarea:hover {
 /* Station cards stretch to share the full width rather than sitting in narrow
    columns with dead space beside them: auto-fit collapses the empty tracks that
    auto-fill would leave behind. */
-.station-model-grid { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+/* Station cards are capped at three per row so a long model path never has to
+   squeeze into a narrow column and wrap mid-word. It steps down to two, then
+   one, on smaller screens. minmax(0, 1fr) lets a column shrink so its content
+   wraps cleanly instead of overflowing. */
+.station-model-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+@media (max-width: 1200px) { .station-model-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 800px) { .station-model-grid { grid-template-columns: minmax(0, 1fr); } }
+/* Long file paths inside a station card wrap instead of spilling past the card. */
+.station-model-grid .kv-val { overflow-wrap: anywhere; word-break: break-word; }
 
 /* The section headings in Model paths ("This computer", "Stations") label the
    cards underneath them. Headings carry no margin globally, so these sat tight

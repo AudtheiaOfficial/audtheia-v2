@@ -525,9 +525,14 @@ def _resolve_model_file(settings) -> Path:
     entry = settings.raw.get("desktop_models", {}).get("llm", {})
     configured = entry.get("path")
     if not configured:
-        raise LLMError(
-            "no desktop language model is configured under desktop_models.llm.path."
-        )
+        # No specific model was pinned, so fall back to the default language-model
+        # folder and use whatever GGUF is there. This matches the management
+        # interface, which lists and activates a model from that folder, so a
+        # model dropped in and shown active also loads without a path being set.
+        try:
+            configured = str(Path(settings.path("models_dir")) / "llm")
+        except Exception:  # noqa: BLE001 - fall back to a repo-relative default
+            configured = "models/llm"
 
     model_path = Path(configured)
     if not model_path.is_absolute():
