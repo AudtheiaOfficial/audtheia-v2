@@ -5274,6 +5274,72 @@
       if (rows.length) { host.appendChild(el("div", { class: "subgroup" }, [el("h4", { text: "Records awaiting sync" })].concat(rows))); }
     }
     host.appendChild(el("p", { class: "card-note", text: s.note || "" }));
+
+    if (state.settingsCanEdit) {
+      host.appendChild(renderDataDirectory(host, s));
+      host.appendChild(renderArchiveControl(host, s));
+    }
+  }
+
+  // Choose where captured data is stored (for example an external drive). It
+  // applies to new captures; data already on disk is not moved.
+  function renderDataDirectory(statusHost, s) {
+    var wrap = el("div", { class: "subgroup" });
+    wrap.appendChild(el("h4", { text: "Data directory" }));
+    wrap.appendChild(el("p", { class: "settings-desc", text:
+      "Where captured images and clips are stored. Point this at a large or external drive to keep the working drive free. It applies to new captures; data already saved is not moved." }));
+    wrap.appendChild(el("p", { class: "card-note", text: "Currently: " + ((s.data && s.data.path) || "not set") }));
+    var input = el("input", { type: "text", class: "form-input", placeholder: "for example D:/AudtheiaData", value: (s.data && s.data.path) || "" });
+    var msg = el("p", { class: "form-message" });
+    var save = el("button", { type: "button", class: "btn btn-small", text: "Save data directory" });
+    save.addEventListener("click", function () {
+      var path = input.value.trim();
+      if (!path) { msg.textContent = "Enter a folder path."; return; }
+      save.disabled = true; msg.textContent = "Saving.";
+      apiSend("/settings/data-directory", "POST", { path: path })
+        .then(function (r) { msg.textContent = r.note || "Saved."; save.disabled = false; apiGet("/storage").then(function (ns) { renderStorageStatus(statusHost, ns); }); })
+        .catch(function (e) { save.disabled = false; msg.textContent = "Could not save: " + e.message; });
+    });
+    wrap.appendChild(el("div", { class: "control-row" }, [input, save]));
+    wrap.appendChild(msg);
+    return wrap;
+  }
+
+  // Export captured frames to a chosen folder, optionally freeing the originals
+  // to reclaim space while keeping the observation record.
+  function renderArchiveControl(statusHost, s) {
+    var wrap = el("div", { class: "subgroup" });
+    wrap.appendChild(el("h4", { text: "Export and free space" }));
+    wrap.appendChild(el("p", { class: "settings-desc", text:
+      "Copy captured frames (with a metadata sidecar) to another folder, for training or long-term keeping. Optionally free the originals afterward to reclaim space; the observation record, with its counts, taxa, verdicts and salience, always stays. Copying is verified before anything is freed, and the record is never deleted." }));
+    var start = el("input", { type: "date", "aria-label": "From date" });
+    var end = el("input", { type: "date", "aria-label": "To date" });
+    var dest = el("input", { type: "text", class: "form-input", placeholder: "destination folder, for example E:/AudtheiaArchive" });
+    var reclaim = el("input", { type: "checkbox", "aria-label": "Free the originals after copying" });
+    var msg = el("p", { class: "form-message" });
+    var run = el("button", { type: "button", class: "btn btn-small", text: "Export" });
+    run.addEventListener("click", function () {
+      var target = dest.value.trim();
+      if (!target) { msg.textContent = "Enter a destination folder."; return; }
+      if (reclaim.checked && !window.confirm("This will copy the selected frames to the destination and then delete the originals from Audtheia to free space. The observation records are kept. Continue?")) { return; }
+      run.disabled = true; msg.textContent = reclaim.checked ? "Exporting and freeing space." : "Exporting.";
+      apiSend("/storage/archive", "POST", {
+        start: start.value || null, end: end.value || null,
+        target_dir: target, reclaim: !!reclaim.checked
+      }).then(function (r) {
+        run.disabled = false; msg.textContent = r.note || "Done.";
+        apiGet("/storage").then(function (ns) { renderStorageStatus(statusHost, ns); });
+      }).catch(function (e) { run.disabled = false; msg.textContent = "Could not export: " + e.message; });
+    });
+    wrap.appendChild(el("div", { class: "control-row" }, [
+      el("label", { class: "filter-field" }, [el("span", { text: "From" }), start]),
+      el("label", { class: "filter-field" }, [el("span", { text: "To" }), end]),
+      dest
+    ]));
+    wrap.appendChild(el("label", { class: "filter-field" }, [reclaim, el("span", { text: "Free the originals after copying (reclaim space)" })]));
+    wrap.appendChild(el("div", { class: "control-row" }, [run]));
+    wrap.appendChild(msg);
+    return wrap;
   }
 
   function credStatusRow(label, on) {

@@ -1702,6 +1702,16 @@ def create_app(settings, database):
 
     db = database
 
+    class DataDirectoryRequest(BaseModel):
+        path: Optional[str] = None
+
+    class ArchiveRequest(BaseModel):
+        start: Optional[str] = None
+        end: Optional[str] = None
+        station_id: Optional[str] = None
+        target_dir: Optional[str] = None
+        reclaim: Optional[bool] = False
+
     class ReportRequest(BaseModel):
         station_id: Optional[str] = None
         start: Optional[str] = None
@@ -3418,6 +3428,68 @@ def create_app(settings, database):
             "total_unsynced": sum(unsynced.values()) if unsynced else 0,
             "note": "syncing and cleaning a field station's buffer run when a Pi is connected.",
         }
+
+    @app.post(f"{API_PREFIX}/settings/data-directory")
+    def set_data_directory(request: DataDirectoryRequest):
+        """Choose where captured data is stored, for example an external drive.
+
+        Sets the data folder and the detections and GPS folders under it. It
+        applies to new captures; data already written is not moved, so a person
+        who wants the old data alongside the new copies it over once by hand. An
+        absolute path is honored as given, which is how a store lives on another
+        drive.
+        """
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="storage is configured on the desktop; this node is not the desktop.")
+        raw = (request.path or "").strip()
+        if not raw:
+            raise HTTPException(status_code=422, detail="a folder path is required")
+        base = str(Path(raw).expanduser()).replace("\\", "/").rstrip("/")
+        if not base:
+            raise HTTPException(status_code=422, detail="a folder path is required")
+        draft = copy.deepcopy(settings.raw)
+        paths = draft.setdefault("paths", {})
+        paths["data_dir"] = base
+        paths["detections_visual_dir"] = base + "/detections/visual"
+        paths["detections_audio_dir"] = base + "/detections/audio"
+        paths["gps_dir"] = base + "/gps"
+        try:
+            _commit_draft(settings, draft)
+        except BackendError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"config": _redact(settings.raw),
+                "note": "new captures will be stored here; data already on disk is not moved."}
+
+    @app.post(f"{API_PREFIX}/storage/archive")
+    def archive_storage(request: ArchiveRequest):
+        """Copy captured frames to a chosen folder, optionally freeing the originals.
+
+        Exports each event in the window to the destination with a metadata
+        sidecar, and, when reclaim is set, removes those frames from the active
+        store only after the copy is confirmed. The observation record is never
+        changed, so the science stays; only the images move. The destination must
+        be outside the captured-data folder.
+        """
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="archiving runs on the desktop; this node is not the desktop.")
+        from audtheia.storage.archive import archive_events, ArchiveError
+        try:
+            result = archive_events(
+                db, settings,
+                target_dir=request.target_dir or "",
+                start=request.start, end=request.end,
+                station_id=request.station_id,
+                reclaim=bool(request.reclaim),
+            )
+        except ArchiveError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - reported as a clear client error
+            raise HTTPException(status_code=500, detail=f"could not archive: {exc}") from exc
+        freed_mb = round((result.get("bytes_freed") or 0) / (1024 * 1024), 1)
+        note = (f"archived {result['archived']} event(s) to {result['target']}"
+                + (f"; reclaimed {result['reclaimed']} event(s), freeing about {freed_mb} MB"
+                   if request.reclaim else "; originals were kept"))
+        return {"ran": True, **result, "note": note}
 
     # -- stations: add and remove (desktop-authored configuration) ---------
 

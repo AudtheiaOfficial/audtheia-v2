@@ -353,6 +353,20 @@ def run() -> None:
         check(client.post(f"/api/stations/{reef}/push-config").status_code == 409,
               "pushing config to an unconnected station was not refused")
 
+        # -- storage: configurable data directory and archive/reclaim ---
+        newdir = str((tmp / "AudtheiaData").resolve()).replace("\\", "/")
+        dd = client.post("/api/settings/data-directory", json={"path": newdir})
+        check(dd.status_code == 200, "setting the data directory failed")
+        cfg = client.get("/api/settings").json()["config"]["paths"]
+        check(cfg["data_dir"] == newdir and cfg["detections_visual_dir"] == newdir + "/detections/visual",
+              "the data directory and its subfolders were not set together")
+        check(client.post("/api/settings/data-directory", json={"path": "  "}).status_code == 422,
+              "an empty data directory was accepted")
+        arch = client.post("/api/storage/archive", json={"target_dir": str((tmp / "arch").resolve()), "reclaim": False})
+        check(arch.status_code == 200 and "archived" in arch.json(), "the archive action did not report a result")
+        check(client.post("/api/storage/archive", json={"target_dir": ""}).status_code == 422,
+              "archiving without a destination was accepted")
+
         # -- settings: read-only, secrets redacted ----------------------
         s = client.get("/api/settings").json()
         check(s["config"]["node"]["role"] == "desktop", "settings view did not return the config")
