@@ -1392,6 +1392,26 @@ textarea:hover {
 /* Long file paths inside a station card wrap instead of spilling past the card. */
 .station-model-grid .kv-val { overflow-wrap: anywhere; word-break: break-word; }
 
+/* Inside a station card the three model roles (vision screening, acoustic
+   recognition, desktop screening) each sit on their own softly filled panel
+   rather than being told apart by a hairline alone. The quiet --surface-2 fill
+   against the card's --surface, a hairline border and a small radius give each
+   section a gentle boundary, so the roles read as distinct blocks at a glance
+   without any heavy rule or colour. A small gap separates one from the next. */
+.card .model-entry {
+  padding: var(--space-3) var(--space-4);
+  margin-top: var(--space-3);
+  border-top: 0;
+  border: var(--border-width) solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+.card .model-entry:first-of-type { margin-top: 0; }
+/* The "No model set" pill is itself --surface-2, so on a --surface-2 panel it
+   would disappear; on these shaded sections it sits on the card colour instead
+   so it stays clearly legible. */
+.card .model-entry .model-status.is-absent { background: var(--surface); }
+
 /* The section headings in Model paths ("This computer", "Stations") label the
    cards underneath them. Headings carry no margin globally, so these sat tight
    against both the card above and the card below and read as a stray line of

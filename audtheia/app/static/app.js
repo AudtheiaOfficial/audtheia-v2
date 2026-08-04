@@ -2470,10 +2470,13 @@
         "Re-scores the saved frames of an event for publication-grade accuracy. It can overrule a station's call, and it adds the interpretive points such as ecological role and rarity, which are always labelled as inference and never stored as measurement.",
         deskModels.visual_rfdetr, models.files)]));
 
-      var llmBlock = el("div", { class: "info-block" });
-      llmBlock.appendChild(el("h4", { text: "Language model" }));
-      llmBlock.appendChild(el("p", { class: "settings-desc", text:
+      // The heading and its description sit above the panel, exactly as the
+      // "Vision verification" section does, so this block carries the same
+      // comfortable spacing rather than crowding its title against the top edge.
+      host.appendChild(el("h4", { text: "Language model" }));
+      host.appendChild(el("p", { class: "settings-desc", text:
         "Runs here on your computer. It powers the longitudinal pass and the interpretation text. It does not write your reports: a report is assembled from the stored record, and anything this model produced is labelled in it as inference." }));
+      var llmBlock = el("div", { class: "info-block" });
       var llmHost = el("div", { class: "llm-manager" });
       llmBlock.appendChild(llmHost);
       host.appendChild(llmBlock);
