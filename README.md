@@ -1,5 +1,20 @@
 # Audtheia V2
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![GitHub Stars](https://img.shields.io/github/stars/AudtheiaOfficial/audtheia-v2?style=flat&logo=github&cacheSeconds=3600)](https://github.com/AudtheiaOfficial/audtheia-v2/stargazers)
+[![GitHub Forks](https://img.shields.io/github/forks/AudtheiaOfficial/audtheia-v2?style=flat&logo=github&cacheSeconds=3600)](https://github.com/AudtheiaOfficial/audtheia-v2/network/members)
+[![GitHub Issues](https://img.shields.io/github/issues/AudtheiaOfficial/audtheia-v2?logo=github)](https://github.com/AudtheiaOfficial/audtheia-v2/issues)
+[![Documentation](https://img.shields.io/badge/documentation-wiki-blue)](https://github.com/AudtheiaOfficial/audtheia-v2/wiki)
+
+<div align="center">
+
+<img src="assets/audtheia-logo.png" width="240" alt="Audtheia">
+
+### Fully offline environmental intelligence for the field
+
+</div>
+
 **A fully offline environmental-intelligence platform for biodiversity monitoring, Marine Protected Area designation support, and longitudinal pattern discovery.**
 
 Audtheia V2 runs on an ordinary personal computer and, when you want a field deployment, connects to one or more Raspberry Pi 5 field stations with a Hailo AI accelerator, deployed in marine, terrestrial, estuarine, or freshwater sites. Once set up, **no internet connection is required at runtime.** A camera or a hydrophone, a field station, and the desktop application are enough to run a rigorous, structured monitoring pipeline anywhere, including the remote, hard-to-reach places where continuous observation is least practical and most needed.
@@ -28,6 +43,18 @@ Some of the ecosystems most worth protecting are the hardest to watch. Field sit
 
 It does that without asking you to give up control of your data. Everything runs on hardware you own. Observations live in a local database on your own computer; nothing is sent to a cloud service, and no credentials leave your machine. The detection code, the analysis code, the database schema, and the desktop application are released under the MIT license, so anyone can deploy it, adapt it to their own species and sites, or build on it.
 
+## Who it is for
+
+Audtheia is built for people who need a defensible ecological record but do not have a data-engineering team behind them. Everything a study needs is reachable from the interface, so no programming is required to run it.
+
+- **Field researchers and graduate students** running longitudinal studies at sites that are remote, hard to reach, or simply too demanding to watch by hand around the clock.
+- **Marine Protected Area managers** who need continuous, provenance-labeled evidence to support designation, evaluation, and reporting.
+- **Small conservation organizations** that want research-grade monitoring without a cloud subscription or a standing compute budget.
+- **Educators and classrooms** using the desktop hardware-free mode to teach detection, verification, and the difference between a measurement and an inference.
+- **Anyone re-analyzing recorded footage**, comparing methods, or building a baseline before committing to field hardware.
+
+Typical uses include coral-reef and benthic monitoring, marine megafauna and fish surveys, bird phenology and acoustic monitoring, estuarine and freshwater biodiversity work, and endangered-species presence tracking with conservation status attached to each observation.
+
 ## How it works
 
 **Detection is the trigger for everything.** A camera streams continuously into a detection model, which screens every frame it can. Nothing is captured on a timer. When the model sees something, or when the acoustic stream hears something, that moment becomes an **event**:
@@ -43,6 +70,12 @@ The desktop hub does the heavy, high-accuracy work: it re-verifies every detecti
 What makes Audtheia's data trustworthy is not a metaphor; it is bookkeeping, enforced at the database level. Every value the system stores carries a provenance tag and a quality-control status. A number a sensor measured, a value looked up from a reference database, a model's classification, an interpretation inferred downstream, and a candidate pattern proposed by the longitudinal pass all remain permanently distinguishable. The database makes it structurally impossible to blur measured fact with inference. Marine sensor channels additionally carry the standard oceanographic quality flags. Interpretation and pattern discovery live on the far side of that firewall, always labeled, always traceable back to the confirmed detections that produced them. The goal is a research-grade, FAIR-defensible record a scientist can stand behind.
 
 ---
+
+## System requirements
+
+**Desktop hub (required).** Any reasonably modern computer running Windows, macOS, or Linux, with Python 3.11 or newer. No GPU is required: the desktop verifier runs on ONNX Runtime and works on the CPU, though a supported GPU speeds it up. Allow several gigabytes of free disk for the offline GBIF taxonomic backbone and the models, which setup downloads once. After setup, no internet connection is needed to run the platform; a network is used only to reach a field station and, at setup time, to fetch species reference data.
+
+**Field station (optional).** A Raspberry Pi 5 running Raspberry Pi OS (64-bit, Bookworm or newer) with the Raspberry Pi AI HAT+ 2 and its Hailo accelerator, a camera, and, for underwater sites, a hydrophone, plus the environmental sensors your site needs. Field stations run on solar and battery, or on wall power near shore. The exact parts, reference builds, and the power-and-solar budget method are in the [hardware guide](docs/hardware.md).
 
 ## Getting started
 
@@ -207,10 +240,51 @@ audtheia-v2/
 - [Custom models guide](docs/custom-models.md): training your own detectors, compiling a field model to the accelerator, exporting the desktop model, and training acoustic classifiers.
 - [Dream pass guide](docs/dream-pass.md): how the longitudinal analysis works and how to read its candidate hypotheses.
 
+## Current status and roadmap
+
+Audtheia V2 is a working platform. The full capture-to-report pipeline runs today in both deployments: detection triggers a multimodal observation, quality control finalizes it, the desktop verifies it with a second model and runs the longitudinal pass over the record, and reports are generated with every value labeled by its provenance. Station management, sensor and capture configuration, the acoustic pipeline, per-observation language-model analysis, the taxonomic index and species-reference fetch, conservation status, and the storage and export tools are all reachable from the interface.
+
+Work continues on the following, roughly in order:
+
+- **A promotional render.** A built-in function that produces a short showcase clip from real detections, for outreach and documentation.
+- **Broadened acoustic coverage**, including an underwater passive-acoustic model slot alongside the terrestrial and avian recognizer.
+- **Interface refinement**, continuing the accessibility and contrast work across the light and dark themes.
+- **A first tagged release** and a minted DOI at that release, after which the citation below will carry it.
+
 ## Relationship to Audtheia V1
 
 Audtheia V2 builds on the earlier Audtheia monitoring platform, [Audtheia V1](https://audtheiaofficial.github.io/audtheia-environmental-monitoring), which remains available and unchanged. V2 is a fresh, fully offline redesign in its own repository. The marine-sponge detection model from V1 carries forward here as the default desktop verification model, so earlier work continues to apply.
 
+## Citation
+
+If you use Audtheia V2 in your research, please cite it. A machine-readable [`CITATION.cff`](CITATION.cff) is included; GitHub renders a "Cite this repository" button from it. A DOI will be added here and in the citation file at the first tagged release.
+
+```bibtex
+@software{audtheia_v2,
+  author  = {Portalatin, Andy},
+  title   = {Audtheia V2: A Fully Offline Environmental-Intelligence Platform},
+  year    = {2026},
+  version = {2.0.0},
+  url     = {https://github.com/AudtheiaOfficial/audtheia-v2}
+}
+```
+
 ## License
 
 Released under the MIT license. Copyright 2026 Andy Portalatin. See [LICENSE](LICENSE).
+
+## Acknowledgments
+
+Audtheia V2 stands on open scientific data and open-source software.
+
+- **[GBIF](https://www.gbif.org/)**, the Global Biodiversity Information Facility, for the taxonomic backbone and occurrence data, used under CC BY 4.0.
+- **[IUCN Red List](https://www.iucnredlist.org/)** for conservation-status data, fetched under the user's own credentials.
+- **[BirdNET](https://github.com/birdnet-team/BirdNET-Analyzer)** for avian and terrestrial acoustic recognition. Its analyzer code is MIT-licensed; its models are provided under CC BY-NC-SA 4.0, under which research and educational use is treated as non-commercial.
+- **[RF-DETR](https://github.com/roboflow/rf-detr)** (Apache-2.0), the transformer detection architecture used for high-accuracy desktop verification through ONNX Runtime.
+- **[ONNX Runtime](https://onnxruntime.ai/)**, **[llama.cpp](https://github.com/ggml-org/llama.cpp)** for on-device language-model inference, and **[FastAPI](https://fastapi.tiangolo.com/)** and **[Uvicorn](https://www.uvicorn.org/)** for the local application server.
+
+Thanks to the marine biology, acoustic monitoring, and conservation communities whose feedback shaped the platform.
+
+## Contact
+
+Questions, bug reports, and feature requests go through **[GitHub Issues](https://github.com/AudtheiaOfficial/audtheia-v2/issues)**. Please search existing issues before opening a new one, and see [CONTRIBUTING.md](CONTRIBUTING.md) for how to report effectively.

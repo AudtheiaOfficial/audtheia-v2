@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+message: "If you use Audtheia V2 in your research, please cite it as below."
+title: "Audtheia V2: A Fully Offline Environmental-Intelligence Platform"
+abstract: >-
+  Audtheia V2 is a fully offline environmental-intelligence platform for
+  biodiversity monitoring, Marine Protected Area designation support, and
+  longitudinal pattern discovery. Detection triggers a complete multimodal
+  observation; the desktop verifies it and runs a longitudinal pass over the
+  record; reports are generated with every value labeled by its provenance.
+type: software
+authors:
+  - family-names: Portalatin
+    given-names: Andy
+repository-code: "https://github.com/AudtheiaOfficial/audtheia-v2"
+url: "https://github.com/AudtheiaOfficial/audtheia-v2"
+version: "2.0.0"
+license: MIT
+keywords:
+  - biodiversity monitoring
+  - environmental intelligence
+  - marine protected areas
+  - offline
+  - provenance
+  - bioacoustics
+# A DOI will be added here at the first tagged release, minted through Zenodo.
+# doi: "10.5281/zenodo.XXXXXXXX"
