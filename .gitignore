@@ -84,3 +84,15 @@ Thumbs.db
 *.log
 logs/
 config/secrets.json
+
+# --- Session working documents (never publish) ---
+# Planning and handoff notes carry session language and local machine paths and
+# must never reach the public remote. These patterns keep them untracked; a note
+# that was tracked before this rule was added still needs `git rm --cached` once.
+KICKOFF-*.md
+DECISIONS-TO-MERGE*.md
+SESSION-*.md
+/docs/handoff-*.md
+
+# --- Wiki staging (drafted here, published to the separate wiki repository) ---
+/wiki/
