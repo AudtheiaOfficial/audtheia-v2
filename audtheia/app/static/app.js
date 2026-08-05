@@ -5413,45 +5413,111 @@
     body.appendChild(el("div", { class: "form-actions" }, [save, cancel]));
   }
 
-  // A short, built-in walkthrough. It is plain guidance that points at the tabs
-  // and panels where each step happens, so a first-time user has a path from a
-  // fresh install to a running station without leaving the interface.
-  function guideSection(host, title, steps) {
-    host.appendChild(el("h4", { class: "guide-title", text: title }));
+  // A short, built-in walkthrough, rebuilt as a foldable accordion. Each phase is
+  // a card that is collapsed by default, so a first-time user opens one thing at a
+  // time and is never shown everything at once. A step that carries a terminal
+  // command shows it in a monospace block with a one-click copy button. The copy
+  // reuses the same hidden-textarea plus execCommand path as the Connect to Pi
+  // key, so it works offline over http with no clipboard-permission prompt.
+  function guideCopy(text, btn) {
+    var scratch = el("textarea", { class: "guide-copy-scratch", "aria-hidden": "true" });
+    scratch.value = text;
+    document.body.appendChild(scratch);
+    scratch.select();
+    try {
+      document.execCommand("copy");
+      var was = btn.textContent;
+      btn.textContent = "Copied";
+      window.setTimeout(function () { btn.textContent = was; }, 1500);
+    } catch (e) { /* selection is left for a manual copy */ }
+    document.body.removeChild(scratch);
+  }
+
+  // A command block: one or more command lines shown as monospace text with a
+  // Copy button that copies the exact lines.
+  function guideCommand(lines) {
+    var text = lines.join("\n");
+    var btn = el("button", { type: "button", class: "btn btn-small guide-copy", text: "Copy" });
+    btn.addEventListener("click", function () { guideCopy(text, btn); });
+    return el("div", { class: "guide-cmd" }, [
+      el("pre", { class: "guide-cmd-text" }, [el("code", { text: text })]),
+      btn
+    ]);
+  }
+
+  // Build one collapsible phase from { title, steps, note }. A step is a plain
+  // string, or an object { text, cmds, examples } that attaches a copyable command
+  // block or a set of inline example tokens beneath the step.
+  function guidePhase(phase) {
     var ol = el("ol", { class: "guide-steps" });
-    steps.forEach(function (s) { ol.appendChild(el("li", { text: s })); });
-    host.appendChild(ol);
+    phase.steps.forEach(function (s) {
+      if (typeof s === "string") { ol.appendChild(el("li", { text: s })); return; }
+      var li = el("li", {}, [el("span", { text: s.text })]);
+      if (s.cmds) { li.appendChild(guideCommand(s.cmds)); }
+      if (s.examples) {
+        var ex = el("div", { class: "guide-examples" });
+        s.examples.forEach(function (e) { ex.appendChild(el("code", { class: "guide-example", text: e })); });
+        li.appendChild(ex);
+      }
+      ol.appendChild(li);
+    });
+    var body = el("div", { class: "fold-body" }, [ol]);
+    if (phase.note) { body.appendChild(el("p", { class: "card-note guide-phase-note", text: phase.note })); }
+    return el("details", { class: "fold-card guide-phase" }, [
+      el("summary", { class: "guide-phase-title", text: phase.title }),
+      body
+    ]);
   }
 
   function renderSetupGuide(host) {
     if (!host) { return; }
     clear(host);
-    host.appendChild(el("p", { class: "settings-desc", text: "A short walkthrough to get Audtheia running, on the desktop alone or with a Raspberry Pi field station." }));
+    host.appendChild(el("p", { class: "settings-desc", text: "A short walkthrough to get Audtheia running, on the desktop alone or with a Raspberry Pi field station. Open one phase at a time; any command can be copied with a click." }));
 
-    guideSection(host, "Set up the visual detection model (desktop)", [
-      "Get your trained detector's weights. From Roboflow, use Download Weights (not the dataset); this is the checkpoint file, for example weights.pt.",
-      "Export it to ONNX. Install the exporter with: pip install \"rfdetr[onnxexport]\". Then export, for example: python -c \"from rfdetr import RFDETRMedium; RFDETRMedium(pretrain_weights=r'C:/path/weights.pt').export(output_dir=r'models/visual')\". This writes models/visual/inference_model.onnx; rename it if you like.",
-      "Point the app at it in two places, because the desktop uses two models. Edit the station and set its Desktop screening model to that .onnx (the detector that runs during capture), and under Settings, Model paths set the Verification model to the same file (the re-score). One file serves both.",
-      "The .onnx file must actually exist on disk. Setting a path or a citation does not create it; if a path points at no file, capture cannot start."
-    ]);
-    guideSection(host, "Run desktop capture, no hardware", [
-      "Open Detections, use Set capture source, pick a station, and enter a source such as webcam:0, stream:<web page url>, url:<direct stream>, or file:C:/clip.mp4.",
-      "Open Detections, Capture, and press Start for that station. Detections appear below, each with its captured frame; a station with no screening model in place cannot start."
-    ]);
-    guideSection(host, "Connect a Raspberry Pi field station", [
-      "Settings, Stations, Add station: give it a name and environment. A station identifier is generated for you.",
-      "On the station card, choose Connect to Pi and copy the shown desktop key.",
-      "Flash a Raspberry Pi 5 with the AI HAT+ 2 using Raspberry Pi Imager. In the advanced options, enable SSH with public-key authentication and paste the key.",
-      "Boot the Pi on the same network, return to Connect to Pi, enter its address (an IP or a name ending in .local) and user, and connect. It then runs on its own and broadcasts its field hotspot."
-    ]);
-    guideSection(host, "Add environmental sensors", [
-      "Settings, Sensors: expand a station and choose Add channel.",
-      "Pick a reference sensor (pH, temperature, salinity, and so on) to fill the driver and quality-control ranges, or choose Custom, then save. Readings appear on the Sensors panel once the station is capturing."
-    ]);
-    guideSection(host, "Species data and reports", [
-      "Settings, Species data credentials: add your free IUCN token to enrich records with Red List conservation status. GBIF taxonomy is anonymous and needs no login.",
-      "Settings, Schedules: choose how often reports and the longitudinal pass run. Generate a report any time from the Reports panel."
-    ]);
+    var phases = [
+      {
+        title: "Set up the visual detection model (desktop)",
+        steps: [
+          "Get your trained detector's weights. From Roboflow, use Download Weights (not the dataset); this is the checkpoint file, for example weights.pt.",
+          { text: "Export it to ONNX. This is a one-time, offline build step, not something that runs during capture:", cmds: ["pip install \"rfdetr[onnxexport]\"", "python scripts/export_rfdetr_onnx.py"] },
+          "The exporter writes an .onnx file under models/visual. The exact arguments and the training workflow are in the custom models guide (docs/custom-models.md).",
+          "Point the app at it in two places, because the desktop uses two models. Edit the station and set its Desktop screening model to that .onnx (the detector that runs during capture), and under Settings, Model paths set the Verification model to the same file (the re-score). One file can serve both.",
+          "The .onnx file must actually exist on disk. Setting a path or a citation does not create it; if a path points at no file, capture cannot start."
+        ]
+      },
+      {
+        title: "Run desktop capture, no hardware",
+        steps: [
+          { text: "Open Detections, use Set capture source, pick a station, and enter a source, one of:", examples: ["webcam:0", "stream:<web page url>", "url:<direct stream url>", "file:C:/clip.mp4"] },
+          "Open Detections, Capture, and press Start for that station. Detections appear below, each with its captured frame; a station with no screening model in place cannot start."
+        ]
+      },
+      {
+        title: "Connect a Raspberry Pi field station",
+        steps: [
+          "Settings, Stations, Add station: give it a name and environment. A station identifier is generated for you.",
+          "On the station card, choose Connect to Pi and copy the shown desktop key.",
+          "Flash a Raspberry Pi 5 with the AI HAT+ 2 using Raspberry Pi Imager. In the advanced options, enable SSH with public-key authentication and paste the key.",
+          { text: "Boot the Pi on the same network, return to Connect to Pi, enter its address and user, and connect. It then runs on its own and broadcasts its field hotspot. The address is an IP or a name ending in .local:", examples: ["<ip address>", "<name>.local"] }
+        ]
+      },
+      {
+        title: "Add environmental sensors",
+        steps: [
+          "Settings, Sensors: expand a station and choose Add channel.",
+          "Pick a reference sensor (pH, temperature, salinity, and so on) to fill the driver and quality-control ranges, or choose Custom, then save. Readings appear on the Sensors panel once the station is capturing."
+        ]
+      },
+      {
+        title: "Species data and reports",
+        steps: [
+          "Settings, Species data credentials: add your free IUCN token to enrich records with Red List conservation status. GBIF taxonomy is anonymous and needs no login.",
+          "Settings, Schedules: choose how often reports and the longitudinal pass run. Generate a report any time from the Reports panel."
+        ]
+      }
+    ];
+
+    phases.forEach(function (p) { host.appendChild(guidePhase(p)); });
 
     host.appendChild(el("p", { class: "card-note", text: "Where your data lives: this desktop is the authoritative, long-term store. A Pi keeps only a rolling buffer and syncs to the desktop when they are on the same network." }));
   }

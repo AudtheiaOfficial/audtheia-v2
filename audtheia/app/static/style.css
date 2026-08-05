@@ -2019,6 +2019,68 @@ textarea:hover {
   line-height: 1.5;
 }
 
+/* The Setup Guide accordion: each phase is a fold-card, collapsed by default, so a
+   reader opens one thing at a time. A step that needs a command shows it in a
+   monospace block with a Copy button. The command and example blocks use
+   --surface-2, which is defined for every theme, so they stay legible in both the
+   dark and light palettes. */
+.guide-phase { margin: var(--space-2) 0; }
+.guide-phase-title { font-size: var(--text-base); color: var(--text); }
+.guide-phase .guide-steps { margin-bottom: 0; }
+.guide-phase .guide-steps li { margin-bottom: var(--space-3); }
+
+.guide-cmd {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  margin: var(--space-2) 0;
+  background: var(--surface-2);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
+}
+.guide-cmd-text {
+  margin: 0;
+  flex: 1 1 auto;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text);
+  white-space: pre;
+}
+.guide-cmd-text code {
+  font-family: inherit;
+  color: inherit;
+  background: none;
+  padding: 0;
+}
+.guide-copy { flex: 0 0 auto; }
+
+.guide-examples {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-2) 0;
+}
+.guide-example {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--text);
+  background: var(--surface-2);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--space-2);
+}
+
+/* Off-screen scratch textarea used only to copy a command to the clipboard. */
+.guide-copy-scratch {
+  position: fixed;
+  left: -9999px;
+  top: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* Visual detections: the stored frame on a card, a full-size lightbox, the audio
    clip player, and the desktop capture Start and Stop control. */
 /* The frame is shown at its true aspect so a stored detection box, recorded in
