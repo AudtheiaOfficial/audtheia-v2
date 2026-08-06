@@ -1,19 +1,15 @@
 # Audtheia V2
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
-[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-1f6feb?style=flat-square)](#system-requirements)
-[![Runtime](https://img.shields.io/badge/Runtime-100%25%20offline-2ea44f?style=flat-square)](#why-it-exists)
-[![Edge AI](https://img.shields.io/badge/Edge%20AI-Raspberry%20Pi%205%20%2B%20Hailo-c51a4a?style=flat-square&logo=raspberrypi&logoColor=white)](docs/hardware.md)
-[![Version](https://img.shields.io/badge/version-2.0.0-blue?style=flat-square)](CHANGELOG.md)
-[![Documentation](https://img.shields.io/badge/docs-wiki-8250df?style=flat-square)](https://github.com/AudtheiaOfficial/audtheia-v2/wiki)
-
-<!-- These live GitHub badges render once the repository is public (they read counts from the
-     GitHub API, which cannot see a private repo). Uncomment them at publish:
-[![GitHub Stars](https://img.shields.io/github/stars/AudtheiaOfficial/audtheia-v2?style=flat-square&logo=github)](https://github.com/AudtheiaOfficial/audtheia-v2/stargazers)
-[![GitHub Forks](https://img.shields.io/github/forks/AudtheiaOfficial/audtheia-v2?style=flat-square&logo=github)](https://github.com/AudtheiaOfficial/audtheia-v2/network/members)
-[![GitHub Issues](https://img.shields.io/github/issues/AudtheiaOfficial/audtheia-v2?style=flat-square&logo=github)](https://github.com/AudtheiaOfficial/audtheia-v2/issues)
--->
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-1f6feb?style=flat)](#system-requirements)
+[![Runtime](https://img.shields.io/badge/Runtime-100%25%20offline-2ea44f?style=flat)](#why-it-exists)
+[![Edge AI](https://img.shields.io/badge/Edge%20AI-Raspberry%20Pi%205%20%2B%20Hailo-c51a4a?style=flat&logo=raspberrypi&logoColor=white)](docs/hardware.md)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue?style=flat)](CHANGELOG.md)
+[![Documentation](https://img.shields.io/badge/docs-wiki-8250df?style=flat)](https://github.com/AudtheiaOfficial/audtheia-v2/wiki)
+[![GitHub Stars](https://img.shields.io/github/stars/AudtheiaOfficial/audtheia-v2?style=flat&logo=github&cacheSeconds=3600)](https://github.com/AudtheiaOfficial/audtheia-v2/stargazers)
+[![GitHub Forks](https://img.shields.io/github/forks/AudtheiaOfficial/audtheia-v2?style=flat&logo=github&cacheSeconds=3600)](https://github.com/AudtheiaOfficial/audtheia-v2/network/members)
+[![GitHub Issues](https://img.shields.io/github/issues/AudtheiaOfficial/audtheia-v2?style=flat&logo=github&cacheSeconds=3600)](https://github.com/AudtheiaOfficial/audtheia-v2/issues)
 
 
 <div align="center">
