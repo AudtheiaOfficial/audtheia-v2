@@ -115,15 +115,34 @@ When it finishes, it prints a short summary, including any model it could not do
 
 ### Step 3: Launch the application
 
+Audtheia runs as a desktop application in its own window. The first time only, add the window component; after that the app launcher opens it directly:
+
 ```
+scripts\start-app.bat --install-window        # Windows
+./scripts/start-app.sh --install-window        # Linux, macOS
+```
+
+From then on, launch it with the app launcher alone (or just double-click it):
+
+```
+scripts\start-app.bat          # Windows
+./scripts/start-app.command    # macOS (or double-click it in Finder)
+./scripts/start-app.sh         # Linux
+```
+
+This opens Audtheia in its own window using your system's built-in web view (Edge WebView2 on Windows, WebKit on macOS), so it looks and behaves like a normal application rather than a browser tab.
+
+**Prefer a browser tab instead?** The plain launcher serves the same interface and offers to open it in your browser at `http://127.0.0.1:8000`:
+
+```
+scripts\start.bat           # Windows
+./scripts/start.command     # macOS
 ./scripts/start.sh          # Linux
-./scripts/start.command     # macOS (or double-click it in Finder)
-scripts\start.bat           # Windows (or double-click it)
 ```
 
-The launcher starts the local server, waits until it answers, prints the address, and offers to open it in your browser. The interface opens at `http://127.0.0.1:8000`. Nothing else is needed for day-to-day use; there is no terminal interaction after this.
+Either way, the launcher starts the local server and waits until it answers; there is no terminal interaction after this.
 
-> **Note:** `start` serves the interface and the database. To also capture and analyze on the desktop with no field hardware, use the desktop hardware-free mode below, which runs the whole pipeline and the interface together.
+> **Note:** the launcher serves the interface and the database. To also capture and analyze on the desktop with no field hardware, use the desktop hardware-free mode below, which runs the whole pipeline and the interface together.
 
 ## Running the desktop hardware-free mode
 
@@ -293,3 +312,11 @@ Thanks to the marine biology, acoustic monitoring, and conservation communities 
 ## Contact
 
 Questions, bug reports, and feature requests go through **[GitHub Issues](https://github.com/AudtheiaOfficial/audtheia-v2/issues)**. Please search existing issues before opening a new one, and see [CONTRIBUTING.md](CONTRIBUTING.md) for how to report effectively.
+
+---
+
+<div align="center">
+
+Made with 💚 for the scientific community.
+
+</div>

@@ -111,7 +111,7 @@
     "local_timezone": "auto"
   },
   "ui": {
-    "theme": "cloud-dancer",
+    "theme": "ocean",
     "last_dark": "ocean",
     "last_light": "cloud-dancer"
   },
