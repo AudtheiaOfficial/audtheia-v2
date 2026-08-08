@@ -162,6 +162,8 @@ You do not need any field hardware to use Audtheia. In this mode your computer w
   <p><em>Set a video source, start capture, and watch labeled detections appear, each with its confidence, salience, and provenance.</em></p>
 </div>
 
+Everything is ready out of the box. The reference setup already includes a detection model and its species names, so there are only two things to do: pick what to watch, and start.
+
 ### Step 1: Choose what to watch
 
 Tell a station where its video comes from. You can set this in the app under **Detections, Set capture source**, or in the settings file under `capture.source.video`. Any of these work:
@@ -173,15 +175,13 @@ Tell a station where its video comes from. You can set this in the app under **D
 
 The reference setup ships a station already set to `webcam:0`, so you can start right away.
 
-### Step 2: The detection model is already set up
+### Step 2: Start capturing
 
-The reference setup includes a detection model and its species names, so there is nothing to prepare; detections are labeled for you. To use your own model instead, see the [custom models guide](docs/custom-models.md), which covers exporting a model and giving it species names. Until a model is present, a station still runs; it simply records no detections.
+Open **Detections**, set your source, then press **Capture** and **Start**. Detections appear below as they happen, each with its frame and species label, exactly as in the demo above. Press Start again to stop. That is all it takes.
 
-### Step 3: Start capturing
+---
 
-**The easy way, in the app:** open **Detections**, set your source, then press **Capture** and **Start**. Detections appear below as they happen, each with its frame and species label. Press Start again to stop. That is all it takes.
-
-**Or, one command:** if you would rather run everything hands-off from a terminal, the desktop runner captures, verifies, runs the longitudinal analysis on schedule, generates reports, and serves the interface, all at once:
+**Two optional extras.** The reference model recognizes marine sponges; to detect other species, add your own model (the [custom models guide](docs/custom-models.md) covers it). And if you would rather run everything unattended from a terminal instead of pressing Start, one command does it all, capture, verification, the longitudinal analysis, reports, and the interface:
 
 ```
 scripts\run-desktop.bat     # Windows
@@ -313,6 +313,8 @@ Audtheia V2 stands on open scientific data and open-source software.
 - **[ONNX Runtime](https://onnxruntime.ai/)**, **[llama.cpp](https://github.com/ggml-org/llama.cpp)** for on-device language-model inference, and **[FastAPI](https://fastapi.tiangolo.com/)** and **[Uvicorn](https://www.uvicorn.org/)** for the local application server.
 
 Thanks to the marine biology, acoustic monitoring, and conservation communities whose feedback shaped the platform.
+
+**Demo footage.** The desktop hardware-free demonstration uses *The Giant Barrel Sponge (Xestospongia muta) Spawning* by [Shane Wever](https://www.youtube.com/@shanewever), shown for illustration with gratitude for his contribution to marine science outreach.
 
 ## Contact
 
