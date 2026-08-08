@@ -157,6 +157,11 @@ Either way, the launcher starts the local server and waits until it answers; the
 
 You do not need any field hardware to use Audtheia. In this mode your computer watches an ordinary video source and runs the whole pipeline itself, detecting, verifying, analyzing, and reporting, exactly as a field station would.
 
+<div align="center">
+  <img src="assets/hardware-free.gif" width="820" alt="Desktop hardware-free mode: set a video source, start capture, and see labeled detections with provenance">
+  <p><em>Set a video source, start capture, and watch labeled detections appear, each with its confidence, salience, and provenance.</em></p>
+</div>
+
 ### Step 1: Choose what to watch
 
 Tell a station where its video comes from. You can set this in the app under **Detections, Set capture source**, or in the settings file under `capture.source.video`. Any of these work:
