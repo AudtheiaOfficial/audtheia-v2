@@ -48,13 +48,13 @@ In both modes, detection triggers a complete multimodal observation, quality con
 
 ## Why it exists
 
-Some of the ecosystems most worth protecting are the hardest to watch. Field sites can be remote, difficult to access, or demand around-the-clock observation that no small team can sustain in person. Audtheia was built to close that gap: to give a single researcher, a classroom, a small organization, or a protected-area manager the kind of continuous, defensible monitoring that normally takes a full team on site.
+Some of the ecosystems most worth protecting are the hardest to observe. Traditional field surveys are limited by what a person can see and how long they can stay: many species are cryptic, nocturnal, or rare; dense habitats and low light conceal them; skilled fieldwork is costly and hard to sustain; and even careful observers introduce bias. Continuous audio-visual monitoring closes those gaps, watching quietly around the clock and hearing what cannot be seen, catching the crepuscular and nocturnal activity that timed surveys miss, so that even elusive species are detected and counted more reliably, and without the disturbance a human presence brings. Audtheia was built to put that capability in the hands of a single researcher, a classroom, a small organization, or a protected-area manager, work that would otherwise take a full team on site.
 
 It does that without asking you to give up control of your data. Everything runs on hardware you own. Observations live in a local database on your own computer; nothing is sent to a cloud service, and no credentials leave your machine. The detection code, the analysis code, the database schema, and the desktop application are released under the MIT license, so anyone can deploy it, adapt it to their own species and sites, or build on it.
 
 ## Who it is for
 
-Audtheia is built for people who need a defensible ecological record but do not have a data-engineering team behind them. Everything a study needs is reachable from the interface, so no programming is required to run it.
+Audtheia is built for people who need a defensible ecological record but do not have a data-engineering team behind them. Everything a study needs is reachable from the interface, so no programming is required to run it. It is also an accessible way for anyone curious about environmental monitoring in the age of edge AI to learn by doing, from a first detection to a finished, provenance-labeled report.
 
 - **Field researchers and graduate students** running longitudinal studies at sites that are remote, hard to reach, or simply too demanding to watch by hand around the clock.
 - **Marine Protected Area managers** who need continuous, provenance-labeled evidence to support designation, evaluation, and reporting.
@@ -76,7 +76,7 @@ The desktop hub does the heavy, high-accuracy work: it re-verifies every detecti
 
 ## The scientific guarantee
 
-What makes Audtheia's data trustworthy is not a metaphor; it is bookkeeping, enforced at the database level. Every value the system stores carries a provenance tag and a quality-control status. A number a sensor measured, a value looked up from a reference database, a model's classification, an interpretation inferred downstream, and a candidate pattern proposed by the longitudinal pass all remain permanently distinguishable. The database makes it structurally impossible to blur measured fact with inference. Marine sensor channels additionally carry the standard oceanographic quality flags. Interpretation and pattern discovery live on the far side of that firewall, always labeled, always traceable back to the confirmed detections that produced them. The goal is a research-grade, FAIR-defensible record a scientist can stand behind.
+Trust in a dataset comes from knowing where every number came from, and Audtheia keeps that record for you, at the database level, rather than leaving it to good intentions. Every value the system stores carries a provenance tag and a quality-control status. A number a sensor measured, a value looked up from a reference database, a model's classification, an interpretation inferred downstream, and a candidate pattern proposed by the longitudinal pass all remain permanently distinguishable. The database makes it structurally impossible to blur measured fact with inference. Marine sensor channels additionally carry a QARTOD quality flag, the standard oceanographic scale of pass, not evaluated, suspect, fail, or missing, so a questionable reading is marked as such rather than trusted silently. Interpretation and pattern discovery live on the far side of that firewall, always labeled, always traceable back to the confirmed detections that produced them. The goal is a research-grade, FAIR-defensible record a scientist can stand behind.
 
 ---
 
@@ -281,20 +281,18 @@ audtheia-v2/
 - [Custom models guide](docs/custom-models.md): training your own detectors, compiling a field model to the accelerator, exporting the desktop model, and training acoustic classifiers.
 - [Dream pass guide](docs/dream-pass.md): how the longitudinal analysis works and how to read its candidate hypotheses.
 
-## Current status and roadmap
+## Applications and impact
 
-Audtheia V2 is a working platform. The full capture-to-report pipeline runs today in both deployments: detection triggers a multimodal observation, quality control finalizes it, the desktop verifies it with a second model and runs the longitudinal pass over the record, and reports are generated with every value labeled by its provenance. Station management, sensor and capture configuration, the acoustic pipeline, per-observation language-model analysis, the taxonomic index and species-reference fetch, conservation status, and the storage and export tools are all reachable from the interface.
+Because it turns continuous observation into a structured, provenance-labeled record, Audtheia is suited to work that traditional surveys struggle to sustain.
 
-Work continues on the following, roughly in order:
-
-- **A promotional render.** A built-in function that produces a short showcase clip from real detections, for outreach and documentation.
-- **Broadened acoustic coverage**, including an underwater passive-acoustic model slot alongside the terrestrial and avian recognizer.
-- **Interface refinement**, continuing the accessibility and contrast work across the light and dark themes.
-- **A first tagged release** and a minted DOI at that release, after which the citation below will carry it.
+- **Marine Protected Area monitoring and compliance.** Continuous, defensible baselines and time series that support designation, evaluation, and reporting against conservation frameworks, with every figure traceable to the detections behind it.
+- **Research on elusive, nocturnal, and rare species.** Around-the-clock audio-visual capture surfaces the crepuscular and nocturnal activity and hard-to-see taxa that timed transects miss, and paired environmental sensors relate that activity to the conditions driving it.
+- **Education and edge-AI training.** A hands-on way to learn environmental monitoring and on-device AI from end to end, from a first detection to a finished report, with no programming required.
+- **Expert-in-the-loop science and FAIR data.** Reviewers confirm, reject, or relabel detections to fine-tune models and audit results; captured frames export as ready-to-correct training packages; and the record follows FAIR and comparable scientific guidelines, feeding both report generation and the longitudinal pass that surfaces trends, correlations, and co-occurrences across a site over time.
 
 ## Relationship to Audtheia V1
 
-Audtheia V2 builds on the earlier Audtheia monitoring platform, [Audtheia V1](https://audtheiaofficial.github.io/audtheia-environmental-monitoring), which remains available and unchanged. V2 is a fresh, fully offline redesign in its own repository. The marine-sponge detection model from V1 carries forward here as the default desktop verification model, so earlier work continues to apply.
+Audtheia V2 builds on the earlier Audtheia monitoring platform, [Audtheia V1](https://audtheiaofficial.github.io/audtheia-environmental-monitoring/index.html), which remains available and unchanged. V1 is a cloud-connected system that processes video in real time while specialized AI agents perform deep ecological analysis in parallel, storing research-grade observations and generating professional PDF reports; its [website](https://audtheiaofficial.github.io/audtheia-environmental-monitoring/index.html) hosts a live demo, a researcher dashboard, and full documentation. V2 is a fresh, fully offline redesign in its own repository. The marine-sponge detection model from V1, the [Official Porifera Classifier](https://universe.roboflow.com/marine-sciences-research-station/official-porifera-classifier-ju8er) on Roboflow Universe, carries forward here as the default desktop verification model, so earlier work continues to apply.
 
 ## Citation
 
