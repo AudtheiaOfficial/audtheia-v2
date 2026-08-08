@@ -1,5 +1,7 @@
 # Audtheia V2
 
+<div align="center">
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-1f6feb?style=flat)](#system-requirements)
@@ -10,6 +12,8 @@
 [![GitHub Stars](https://img.shields.io/github/stars/AudtheiaOfficial/audtheia-v2?style=flat&logo=github&cacheSeconds=3600)](https://github.com/AudtheiaOfficial/audtheia-v2/stargazers)
 [![GitHub Forks](https://img.shields.io/github/forks/AudtheiaOfficial/audtheia-v2?style=flat&logo=github&cacheSeconds=3600)](https://github.com/AudtheiaOfficial/audtheia-v2/network/members)
 [![GitHub Issues](https://img.shields.io/github/issues/AudtheiaOfficial/audtheia-v2?style=flat&logo=github&cacheSeconds=3600)](https://github.com/AudtheiaOfficial/audtheia-v2/issues)
+
+</div>
 
 
 <div align="center">
@@ -143,6 +147,11 @@ scripts\start.bat           # Windows
 Either way, the launcher starts the local server and waits until it answers; there is no terminal interaction after this.
 
 > **Note:** the launcher serves the interface and the database. To also capture and analyze on the desktop with no field hardware, use the desktop hardware-free mode below, which runs the whole pipeline and the interface together.
+
+<div align="center">
+  <img src="assets/getting-started.gif" width="820" alt="Installing and launching Audtheia V2: clone, run setup, and open the desktop app">
+  <p><em>From a fresh clone to the Audtheia desktop app: clone, run setup once, and launch.</em></p>
+</div>
 
 ## Running the desktop hardware-free mode
 
