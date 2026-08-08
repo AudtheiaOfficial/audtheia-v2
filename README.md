@@ -212,6 +212,11 @@ This sends the code, the station's configuration and models, and its network set
 
 Two one-time steps prepare the species data Audtheia uses offline at run time. Both are guided actions in the interface, under **Brain, Species data**, so neither needs a command line; each runs in the background and shows its progress, and you can leave the page while one runs.
 
+<div align="center">
+  <img src="assets/species-data.gif" width="820" alt="Building the offline taxonomic index and fetching species reference data in the Brain panel">
+  <p><em>Building the offline taxonomic index, then fetching each species' GBIF and IUCN reference data, from the Brain panel.</em></p>
+</div>
+
 - **Build the taxonomic index.** Relabelling a detection to a corrected species searches a prebuilt index of the shipped GBIF backbone. Building it reads the backbone once and takes several minutes. Confirming a detection, rejecting it, and marking individual frames accurate or inaccurate need no index and work without it; only relabelling to a searched species depends on it.
 - **Fetch reference data.** For each of your stations' target species, Audtheia fetches the GBIF taxonomic match, the GBIF global occurrence count, and, when a token is present, the IUCN Red List category, and caches them locally with the fetch date stamped on every dependent record. New captures then carry a snapshot date, so the "Model and data versions" panel discloses how current its taxonomy and status data is.
 
@@ -221,7 +226,14 @@ Both steps are also available from the command line for an unattended setup: `py
 
 ## Using the interface
 
-The interface is a browser-based application served locally by the device, with all assets bundled so it loads with no internet. A sidebar organizes it:
+The interface is a browser-based application served locally by the device, with all assets bundled so it loads with no internet.
+
+<div align="center">
+  <img src="assets/interface-tour.gif" width="820" alt="A tour of the Audtheia sidebar: Detections, Audio, Brain, GPS, Analytics, Reports, and Settings">
+  <p><em>A quick tour of the sidebar: detections, audio, the Brain, the map, analytics, reports, and settings.</em></p>
+</div>
+
+A sidebar organizes it:
 
 - **Detections**: the live feed and the browsable history, each observation shown as an event card with its frames, labels, audio, location, sensor readings, quality flags, and the desktop verification result.
 - **Audio**: acoustic detections and playable clips, with the active acoustic model shown.
