@@ -90,6 +90,11 @@ What makes Audtheia's data trustworthy is not a metaphor; it is bookkeeping, enf
 
 By the end of this section your computer will be running the Audtheia application, ready to connect a field station or to capture directly with no hardware. No programming experience is required.
 
+<div align="center">
+  <img src="assets/getting-started.gif" width="820" alt="Installing and launching Audtheia V2: clone, run setup, and open the desktop app">
+  <p><em>From a fresh clone to the Audtheia desktop app: clone, run setup once, and launch.</em></p>
+</div>
+
 ### Before you begin
 
 You need two things installed:
@@ -146,53 +151,39 @@ scripts\start.bat           # Windows
 
 Either way, the launcher starts the local server and waits until it answers; there is no terminal interaction after this.
 
-> **Note:** the launcher serves the interface and the database. To also capture and analyze on the desktop with no field hardware, use the desktop hardware-free mode below, which runs the whole pipeline and the interface together.
-
-<div align="center">
-  <img src="assets/getting-started.gif" width="820" alt="Installing and launching Audtheia V2: clone, run setup, and open the desktop app">
-  <p><em>From a fresh clone to the Audtheia desktop app: clone, run setup once, and launch.</em></p>
-</div>
+> **Note:** launching the app opens the interface. To actually capture and analyze on your own computer with no field hardware, see [Running the desktop hardware-free mode](#running-the-desktop-hardware-free-mode) below. You can start it right from the Detections panel, or with a single command.
 
 ## Running the desktop hardware-free mode
 
-This mode captures from an ordinary source and runs the full pipeline, detection, quality control, verification, the longitudinal pass, reports, and the interface, all on one computer.
+You do not need any field hardware to use Audtheia. In this mode your computer watches an ordinary video source and runs the whole pipeline itself, detecting, verifying, analyzing, and reporting, exactly as a field station would.
 
-### Step 1: Choose a video source
+### Step 1: Choose what to watch
 
-In the settings file, a station's capture source names where frames come from. Set `capture.source.video` on the station you want to run to one of:
+Tell a station where its video comes from. You can set this in the app under **Detections, Set capture source**, or in the settings file under `capture.source.video`. Any of these work:
 
 - `webcam:0` for a connected camera (use `webcam:1` for a second one);
 - `url:rtsp://...` or `url:https://...m3u8` for a direct camera or streaming address;
-- `stream:https://...` for a web-page live stream (a public wildlife camera page, for example), which is resolved to its underlying stream automatically;
-- `file:/path/to/clip.mp4` for a recorded video.
+- `stream:https://...` for a public web-page live stream, such as a wildlife camera page, found automatically;
+- `file:/path/to/clip.mp4` for a video file on your computer.
 
-The reference configuration ships a station already set to `webcam:0` so you can start immediately.
+The reference setup ships a station already set to `webcam:0`, so you can start right away.
 
-### Step 2: Provide a detection model
+### Step 2: The detection model is already set up
 
-Desktop detection uses an RF-DETR model exported to ONNX, placed at the path the station's desktop model setting names (`models/visual/porifera_rfdetr.onnx` in the reference configuration). See the [custom models guide](docs/custom-models.md) for how to obtain or train one. If you have trained an RF-DETR checkpoint, `python scripts/export_rfdetr_onnx.py` converts it to the ONNX form Audtheia loads, a one-time offline build step that never runs during capture. Until a model is present, the pipeline still runs; it simply records no detections.
+The reference setup includes a detection model and its species names, so there is nothing to prepare; detections are labeled for you. To use your own model instead, see the [custom models guide](docs/custom-models.md), which covers exporting a model and giving it species names. Until a model is present, a station still runs; it simply records no detections.
 
-### Step 3: Give the model its species names
+### Step 3: Start capturing
 
-An RF-DETR ONNX carries no class names of its own, and its class head is 1-based with a reserved slot at index 0, so without a names file the interface would label detections by their numeric class id. Audtheia reads names from a small file placed beside the model, named `<model-name>.labels.json` (a plain `{"id": "name"}` map). The reference Porifera model already ships its names file at `models/visual/porifera_rfdetr.labels.json`, so as long as you keep the model named `porifera_rfdetr.onnx`, detections are labeled with the correct species automatically, with nothing else to do.
+**The easy way, in the app:** open **Detections**, set your source, then press **Capture** and **Start**. Detections appear below as they happen, each with its frame and species label. Press Start again to stop. That is all it takes.
 
-For any other model, or to rebuild the file, generate it from that model's Roboflow COCO export. This is a one-time, offline build step; it never runs during capture:
-
-```
-pip install roboflow
-python scripts/fetch_porifera_dataset.py --api-key YOUR_ROBOFLOW_KEY   # from roboflow.com -> Settings -> API keys
-```
-
-That downloads the dataset version matching your model, reads its authoritative class list, and writes the names file beside the model (checking it against the model's own class head as it goes). If you already have a COCO export on disk, skip the download and run `python scripts/build_porifera_labels.py --coco path/to/_annotations.coco.json` instead. If your model came from a dataset with a `data.yaml` class list (a common YOLO or RF-DETR training layout), `python scripts/build_labels_from_yaml.py` writes the names file from that instead. The [custom models guide](docs/custom-models.md) explains the details.
-
-### Step 4: Run it
+**Or, one command:** if you would rather run everything hands-off from a terminal, the desktop runner captures, verifies, runs the longitudinal analysis on schedule, generates reports, and serves the interface, all at once:
 
 ```
-./scripts/run-desktop.sh    # Linux, macOS, Raspberry Pi OS
 scripts\run-desktop.bat     # Windows
+./scripts/run-desktop.sh    # Linux, macOS, Raspberry Pi OS
 ```
 
-The station captures, screens every frame, writes provenance-tagged observations, quality-controls and verifies them, runs the longitudinal pass on its schedule, generates reports, and serves the interface, all on your computer. Add `--once` to run a single pass over a video file and exit.
+Add `--once` to run through a single video file and then stop.
 
 ## Connecting a field station
 
