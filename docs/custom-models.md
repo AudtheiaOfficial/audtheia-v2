@@ -53,36 +53,55 @@ The path, at a high level, is:
 
 Ultralytics publishes a Hailo export integration that wraps much of this, and the Hailo Model Zoo provides reference flows and pre-built examples, both of which are good starting points. If compiling is beyond your setup, a `.hef` compiled for your species by someone else drops straight in; only the file matters to the station, not how it was made.
 
-## Preparing the desktop verifier: exporting RF-DETR to ONNX
+## Preparing the desktop model: from a Roboflow project to a labeled detector
 
-The desktop verifier is far simpler, because it needs no special compilation. Train or fine-tune your RF-DETR model, then export it to ONNX with RF-DETR's own tooling:
+The desktop verifier and the desktop hardware-free detector both load an RF-DETR model in ONNX, with a small labels file beside it. No special compilation is needed; the model runs through ONNX Runtime on your computer's own processor, so there is no accelerator, no compiler, and no calibration step. If your model lives in a Roboflow project, the full path from project to working, named detector is below, in order.
 
-1. Install the export extension: `pip install "rfdetr[onnxexport]"` (the extra is `onnxexport`, not `onnx`).
-2. Export your checkpoint, which writes a single `inference_model.onnx` compatible with ONNX Runtime. For an RF-DETR Medium checkpoint, for example: `python -c "from rfdetr import RFDETRMedium; RFDETRMedium(pretrain_weights=r'path/to/weights.pt').export(output_dir=r'models/visual')"`.
-3. The `.onnx` file must exist on disk; setting a path alone does not create it. Point the interface at the file in two places, because the desktop uses two models: the station's **Desktop screening model** (the detector that runs during capture) and, under Settings, Model paths, the **desktop verification model** (the re-score). The same file can serve both.
+Two different things are downloaded from Roboflow, and confusing them is the most common mistake. The trained **model weights** become the `.onnx` the app loads. The **dataset in COCO format** supplies the class names. Downloading only the dataset gives you no model; downloading only the weights gives you a model that labels detections by number. You need both.
 
-The desktop runs the ONNX model through ONNX Runtime on your computer's own processor, so there is no accelerator, no compiler, and no calibration step.
+Have three things ready: your Roboflow **API key** (Account, then Roboflow Keys), the **version number** you trained, and the **RF-DETR size** you trained (Nano, Small, Medium, Base, or Large).
 
-## Giving the model its class names
+### 1. Download the trained weights
 
-An RF-DETR ONNX export does not carry its class names, so Audtheia reads them from a small file placed beside the model. Name the file after the model with a `.labels.json` suffix (`porifera_rfdetr.onnx` pairs with `porifera_rfdetr.labels.json`); the loader also accepts `.labels.txt` or `.names`, or an inline `class_names` map on the model's settings entry. Without any of these, detections are still recorded but are labeled by their numeric class id.
-
-Two properties of RF-DETR make the names non-obvious, and both are handled for you. First, RF-DETR uses **1-based** class ids with a reserved dummy slot at index 0, so a detection reported as class 21 corresponds to the annotation category whose id is 21. Second, RF-DETR sizes its class head to the highest category id it was trained against plus one, not to the number of classes you actually use; a model with 130 live classes can therefore export a much wider head (the reference Porifera model's head is 366 wide, with only ids 1-130 in use and the rest inert). This is expected, not a defect, and it means you cannot infer names from a class list sorted alphabetically, because the display order is not the id order. The authoritative id-to-name mapping is the `categories` array in the model's own training data, exported in COCO format.
-
-Build the labels file from that export with the helper scripts. If the model is hosted on Roboflow, fetch and build in one step:
+`version(N).model` is a property, so there are no parentheses after `model`:
 
 ```
 pip install roboflow
-python scripts/fetch_porifera_dataset.py --api-key YOUR_ROBOFLOW_KEY
+python -c "from roboflow import Roboflow; Roboflow(api_key='YOUR_KEY').workspace('YOUR_WORKSPACE').project('YOUR_PROJECT').version(N).model.download()"
 ```
 
-It downloads the dataset version that matches your model, reads its `categories`, and writes `<model>.labels.json` beside the model, warning you if the category ids do not fit the model's head (a sign the export and the model are different versions). If you already have a COCO `_annotations.coco.json` on disk, skip the download:
+This writes `weights.pt` into the current folder. Downloading weights is a paid Roboflow feature; if it is refused, open that version on the Roboflow website and use **Download Weights** instead, or use the checkpoint from wherever you trained the model.
+
+### 2. Export the weights to ONNX
 
 ```
-python scripts/build_porifera_labels.py --coco path/to/_annotations.coco.json --model models/visual/your_model.onnx
+pip install "rfdetr[onnxexport]"
+python scripts/export_rfdetr_onnx.py "path/to/weights.pt"
 ```
 
-Both steps are one-time and offline; neither is a runtime dependency. To confirm the mapping rather than trust it, run the model on a few labeled images from the export's test split and check that the predicted ids resolve to the species actually pictured. The reference Porifera model already ships its `porifera_rfdetr.labels.json`, verified this way against its own test set, so keeping that model's filename gives correct species names with no further work.
+This writes `weights.onnx` next to the checkpoint. The script assumes RF-DETR **Small**; if you trained a different size, open `scripts/export_rfdetr_onnx.py` and change `RFDETRSmall` to your size before running it. Move the `.onnx` into `models/visual/` and give it a clear name, for example `bird_rfdetr.onnx`. The `.onnx` is the only file the app loads at run time; the `.pt` checkpoint is just the source, and you can keep it elsewhere as a backup.
+
+### 3. Give the model its class names
+
+An RF-DETR ONNX carries no class names, so Audtheia reads them from a file named after the model with a `.labels.json` suffix, placed beside it: `bird_rfdetr.onnx` pairs with `bird_rfdetr.labels.json` (the loader also accepts `.labels.txt` or `.names`). Without it, detections are still recorded but labeled by numeric id, which is exactly what you see if this step is skipped. Download the dataset in COCO format and build the file from its class list:
+
+```
+python -c "from roboflow import Roboflow; Roboflow(api_key='YOUR_KEY').workspace('YOUR_WORKSPACE').project('YOUR_PROJECT').version(N).download('coco')"
+```
+
+That creates a folder holding `train/`, `valid/`, and `test/`, each with an `_annotations.coco.json`. Build the labels from any one of them, using the real path it wrote (not a placeholder), and point `--model` at your renamed `.onnx`:
+
+```
+python scripts/build_porifera_labels.py --coco "path/to/train/_annotations.coco.json" --model "models/visual/bird_rfdetr.onnx"
+```
+
+It writes `bird_rfdetr.labels.json` beside the model. The script's name is historical; it works for any species. It warns if the category ids do not fit the model's head, which means the dataset version and the model version differ. The dataset folder is only needed for this step and can be deleted afterward.
+
+Two properties of RF-DETR make the names non-obvious, and both are handled for you. First, RF-DETR uses **1-based** class ids with a reserved dummy slot at index 0, so a detection reported as class 21 corresponds to the annotation category whose id is 21. Second, RF-DETR sizes its class head to the highest category id it was trained against plus one, not to the number of classes you actually use, so a model with 130 live classes can export a much wider head (the reference Porifera model's head is 366 wide, ids 1 to 130 in use and the rest inert). The authoritative id-to-name mapping is therefore the `categories` array in the model's own COCO training data, which is exactly what the step above reads.
+
+### 4. Point Audtheia at the model
+
+In Settings, set the station's **Desktop screening model** and, under **Model paths**, the **verification model**, both to `models/visual/bird_rfdetr.onnx`. The labels file is found automatically from its matching name; you never enter its path. Restart capture so the model reloads, and detections now carry species names. The reference Porifera model already ships with its own `porifera_rfdetr.labels.json`, so keeping that model's filename gives correct names with no further work.
 
 ## Preparing the desktop hardware-free detector
 
