@@ -344,7 +344,13 @@ def event_review_records(
 
     records: list[dict] = []
     for det in detections:
-        key = det.get("gbif_usage_key") or det.get("scientific_name")
+        # Identify a taxon the same way the rest of the platform does (see
+        # Database.taxon_event_counts): the backbone key when it resolved, then
+        # the scientific name, then the model's own class label. A detection whose
+        # only identity is a class label that never matched the backbone still
+        # names a taxon and must be counted, or a whole class of reviewed
+        # detections would silently fall out of the accuracy.
+        key = det.get("gbif_usage_key") or det.get("scientific_name") or det.get("common_name")
         if key in (None, ""):
             continue
         label = det.get("scientific_name") or det.get("common_name") or key

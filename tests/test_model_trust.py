@@ -252,7 +252,7 @@ def test_event_review_mapping() -> None:
     check("a box verdict takes precedence over an event-level one",
           len(recs3) == 1 and recs3[0]["verdict"] == "confirm")
 
-    # A detection with no species is skipped, since accuracy is per species.
+    # A detection with no species at all is skipped, since accuracy is per species.
     nameless = [{"id": "x1", "modality": "vision", "gbif_usage_key": None,
                  "scientific_name": None}]
     recs4 = event_review_records(
@@ -260,6 +260,20 @@ def test_event_review_mapping() -> None:
         screening_model_version="screen-v1", acoustic_model_version=None,
     )
     check("a detection with no species contributes nothing", recs4 == [])
+
+    # A class-label-only detection (a model class name that never matched the
+    # backbone, so no gbif key and no scientific name) still names a taxon and is
+    # counted, keyed and labelled by that class label. This is the case that made
+    # reviewed example events read "not yet rated" before the identity fallback.
+    class_label = [{"id": "b1", "modality": "vision", "gbif_usage_key": None,
+                    "scientific_name": None, "common_name": "annas-hummingbird"}]
+    recs5 = event_review_records(
+        class_label, [{"detection_id": None, "verdict": "confirm", "corrected_at": "2026-01-01"}],
+        screening_model_version="screen-v1", acoustic_model_version=None,
+    )
+    check("a class-label-only detection is counted", len(recs5) == 1)
+    check("the class label is its species key and label",
+          recs5[0]["species_key"] == "annas-hummingbird" and recs5[0]["species_label"] == "annas-hummingbird")
 
 
 def test_latest_verdicts() -> None:

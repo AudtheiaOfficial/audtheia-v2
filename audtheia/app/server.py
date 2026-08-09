@@ -566,7 +566,13 @@ def _event_trust(obs: dict, children: list, index: dict) -> dict:
     a_eff = _strongest(audio)
     evidence = _detection_evidence(c_eff, a_eff)
 
-    identified = [c for c in children if (c.get("gbif_usage_key") or c.get("scientific_name"))]
+    # A taxon is identified by its backbone key, then its scientific name, then the
+    # model's class label, exactly as the accuracy layer keys it, so a class-label
+    # detection that never matched the backbone is still scored.
+    identified = [
+        c for c in children
+        if (c.get("gbif_usage_key") or c.get("scientific_name") or c.get("common_name"))
+    ]
     if not identified:
         return {
             "computable": False,
@@ -583,7 +589,7 @@ def _event_trust(obs: dict, children: list, index: dict) -> dict:
         obs.get("acoustic_model_version") if modality == "audio"
         else obs.get("screening_model_version")
     )
-    species_key = rep.get("gbif_usage_key") or rep.get("scientific_name")
+    species_key = rep.get("gbif_usage_key") or rep.get("scientific_name") or rep.get("common_name")
     species_label = rep.get("scientific_name") or rep.get("common_name") or species_key
     accuracy = index.get((model_version, species_key))
 
