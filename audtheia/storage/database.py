@@ -1613,6 +1613,110 @@ class Database:
         counts["total"] = sum(counts[v] for v in ("confirm", "relabel", "reject"))
         return counts
 
+    # -- model trust: per-species accuracy and Event Trust (inferred) -----
+    #
+    # These reads produce the derived, inferred model-trust layer. Every value
+    # they return is an inference computed from measured confidences and human
+    # verdicts; none is ever written back, and nothing here alters a stored
+    # measurement, a salience value, or a longitudinal-pass result. The pure
+    # mathematics lives in audtheia/analysis/model_trust.py and is imported
+    # lazily so the storage layer carries no import-time dependency on analysis.
+
+    def reviewed_detection_records(self) -> list[dict]:
+        """Resolve every expert-reviewed detection into a model-trust record.
+
+        Read-only. Walks only the events that carry at least one correction, so
+        the work is bounded to the reviewed record rather than the whole
+        database. For each such event it applies the two settled mapping rules,
+        in audtheia/analysis/model_trust.py: a vision call is keyed to the
+        screening model version and an audio call to the acoustic model version,
+        and an event-level verdict (one naming no specific detection) is applied
+        only when the event has a single detection, never guessed onto a species
+        in a multi-taxon event.
+
+        A database that predates the corrections table has nothing to review and
+        yields an empty list rather than an error.
+        """
+        from audtheia.analysis.model_trust import event_review_records
+
+        try:
+            with self.connect() as conn:
+                ids = [
+                    r["observation_id"]
+                    for r in conn.execute(
+                        "SELECT DISTINCT observation_id FROM observation_corrections"
+                    ).fetchall()
+                ]
+        except sqlite3.OperationalError:
+            return []
+
+        records: list[dict] = []
+        for observation_id in ids:
+            obs = self.get_observation(observation_id)
+            if obs is None:
+                continue
+            records.extend(
+                event_review_records(
+                    self.list_child_detections(observation_id),
+                    self.corrections_for_observation(observation_id),
+                    screening_model_version=obs.get("screening_model_version"),
+                    acoustic_model_version=obs.get("acoustic_model_version"),
+                )
+            )
+        return records
+
+    def model_trust_snapshot(self) -> dict:
+        """The per-species accuracy table and per-model rollups, tagged inferred.
+
+        The primary read behind the Brain audit model-quality view and the report
+        snapshot. Species rows are sorted with the lowest accuracy first, so the
+        fine-tuning targets are at the top; each row and rollup carries the model
+        version it belongs to and the inference provenance tag. With no expert
+        reviews the snapshot is explicitly empty with a reason, never a table of
+        zeros. Accuracy is computed over the entire expert-reviewed record across
+        every station and is cumulative rather than limited to any date window,
+        because per-species precision is a property of a model, not of a range.
+        """
+        from audtheia.analysis.model_trust import accuracy_table, model_rollups
+
+        records = self.reviewed_detection_records()
+        base = {
+            "provenance": "inferred",
+            "note": (
+                "per-species precision judged by expert review; inferred, keyed to a "
+                "model version, and never written into the measured record"
+            ),
+            "scope": "all expert-reviewed detections across every station, cumulative",
+        }
+        if not records:
+            base.update({
+                "empty": True,
+                "reason": "no expert reviews yet, so no model accuracy can be computed",
+                "species": [],
+                "models": {},
+            })
+            return base
+        table = accuracy_table(records)
+        base.update({
+            "empty": False,
+            "species": table,
+            "models": model_rollups(table),
+        })
+        return base
+
+    def event_trust_index(self) -> dict:
+        """A (model_version, species_key) -> accuracy map for Event Trust lookup.
+
+        Internal read used to attach Event Trust to an observation. Keyed by a
+        tuple, so it is not JSON itself; the caller multiplies an accuracy by the
+        event's detection evidence to form the trust value it returns. A pair
+        absent from the map has no expert reviews, so that event's trust is not
+        computable and is shown as such rather than as a number.
+        """
+        from audtheia.analysis.model_trust import accuracy_index, accuracy_table
+
+        return accuracy_index(accuracy_table(self.reviewed_detection_records()))
+
     # -- per-frame review (desktop-owned) --------------------------------
 
     def add_frame_review(

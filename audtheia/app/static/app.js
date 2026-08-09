@@ -1364,6 +1364,47 @@
     return rowEl;
   }
 
+  // Event Trust, an inferred reliability score for a single detection. It is the
+  // detection evidence D (the same quantity salience uses) times the model's
+  // expert-judged accuracy for the species it called. It is never a measurement,
+  // so it is always shown labelled as inference and tagged with the model it
+  // belongs to. When the species has no expert reviews under that model it is not
+  // computable, and it says "not yet rated" rather than showing a false number.
+  function eventTrustText(et) {
+    if (!et) { return null; }
+    if (et.computable) {
+      return fmtNum(et.value, 2) + "  = detection evidence " + fmtNum(et.detection_evidence, 2) +
+        " × accuracy " + fmtNum(et.accuracy, 2) + " for " + (et.species_label || "this species") +
+        "  (model " + (et.model_version || "version not recorded") + ", inferred)";
+    }
+    return "not yet rated  (" + (et.reason || "not computable") + ", inferred)";
+  }
+
+  function eventTrustAuditRow(et) {
+    if (!et) { return null; }
+    return el("div", { class: "audit-row" }, [
+      el("span", { class: "audit-k", text: "Event trust" }),
+      el("span", { class: "audit-v", text: eventTrustText(et) })
+    ]);
+  }
+
+  // The compact chip shown on a Detections or Audio card. Computable trust reads
+  // as a value; an unrated event reads plainly as such, muted, never as a zero.
+  // The full derivation is carried in the title so a hover discloses the model.
+  function eventTrustChip(et) {
+    if (!et) { return null; }
+    if (et.computable) {
+      var chip = el("span", { class: "trust-chip", text: "event trust " + fmtNum(et.value, 2) });
+      chip.title = "Inferred: detection evidence " + fmtNum(et.detection_evidence, 2) +
+        " × accuracy " + fmtNum(et.accuracy, 2) + " for " + (et.species_label || "this species") +
+        " under model " + (et.model_version || "version not recorded");
+      return chip;
+    }
+    var muted = el("span", { class: "trust-chip muted", text: "event trust: not yet rated" });
+    muted.title = et.reason || "not yet computable";
+    return muted;
+  }
+
   function auditDerivation(obs, frames) {
     var wrap = el("div", { class: "audit-derivation" });
     var n = frames.length;
@@ -1389,8 +1430,10 @@
     }
     wrap.appendChild(row("Salience", fmtNum(obs.salience_provisional, 2) +
       "  = D · (0.5·N + 0.5·R), Shannon-surprisal novelty & rarity (docs/salience.md)"));
+    var etRow = eventTrustAuditRow(obs.event_trust);
+    if (etRow) { wrap.appendChild(etRow); }
     wrap.appendChild(el("p", { class: "form-hint", text:
-      "Each frame below is a saved detection with its own confidence and box, so the frame count and the true duration are directly verifiable. Confidence is the peak across frames; salience is computed from the whole record at capture." }));
+      "Each frame below is a saved detection with its own confidence and box, so the frame count and the true duration are directly verifiable. Confidence is the peak across frames; salience is computed from the whole record at capture. Event trust is inferred, not measured: it multiplies the detection evidence by this model's expert-judged accuracy for the species, and it never changes a stored value." }));
     return wrap;
   }
 
@@ -1744,6 +1787,8 @@
           "  ·  " + fmtNum(obs.duration, 1) + "s" +
           "  ·  " + displayConfidence(obs, obs.screening_confidence) +
           "  ·  salience " + fmtNum(obs.salience_provisional, 2) }));
+        var trustChip = eventTrustChip(obs.event_trust);
+        if (trustChip) { card.appendChild(el("div", { class: "card-trust" }, [trustChip])); }
         card.appendChild(el("div", { class: "badge-row" }, badges));
         grid.appendChild(card);
       });
@@ -1864,6 +1909,8 @@
           (a.audio_capped ? " (stored clip capped)" : "") +
           "  ·  " + displayConfidence(a, aPeak) +
           "  ·  salience " + fmtNum(a.salience_provisional, 2) }));
+        var audioTrustChip = eventTrustChip(a.event_trust);
+        if (audioTrustChip) { head.appendChild(el("div", { class: "card-trust" }, [audioTrustChip])); }
         head.appendChild(el("div", { class: "badge-row" }, badges));
         (function (obs) {
           head.addEventListener("click", function () { openAudioAudit(obs, ctx.reload); });
@@ -1956,8 +2003,10 @@
       : "not cleared, peak below the acoustic floor, so it shapes baselines but not the generative phase"));
     wrap.appendChild(row("Salience", fmtNum(obs.salience_provisional, 2) +
       "  = D · (0.5·N + 0.5·R), Shannon-surprisal novelty & rarity (docs/salience.md)"));
+    var etRow = eventTrustAuditRow(obs.event_trust);
+    if (etRow) { wrap.appendChild(etRow); }
     wrap.appendChild(el("p", { class: "form-hint", text:
-      "Each call below is a stored acoustic detection with its own confidence, so the count and the peak confidence are directly verifiable against the clip. Salience is computed from the whole record at capture." }));
+      "Each call below is a stored acoustic detection with its own confidence, so the count and the peak confidence are directly verifiable against the clip. Salience is computed from the whole record at capture. Event trust is inferred, not measured: it multiplies the detection evidence by this model's expert-judged accuracy for the species, and it never changes a stored value." }));
     return wrap;
   }
 
@@ -2842,6 +2891,13 @@
       host.appendChild(auditHost);
       auditHost.appendChild(auditView(audit, analytics));
 
+      // Per-species model accuracy sits directly above the retraining export it
+      // informs: the weakest species are the ones worth exporting and retraining.
+      host.appendChild(el("h3", { text: "Model accuracy by species" }));
+      var trustHost = el("div");
+      host.appendChild(trustHost);
+      renderModelTrust(trustHost, audit.model_trust);
+
       host.appendChild(el("h3", { text: "Retraining exports" }));
       var retrainHost = el("div");
       host.appendChild(retrainHost);
@@ -2861,6 +2917,7 @@
         ]).then(function (r2) {
           clear(dreamHost); paintDreamStatus(dreamHost, r2[0]);
           clear(auditHost); auditHost.appendChild(auditView(r2[3], r2[2]));
+          renderModelTrust(trustHost, r2[3].model_trust);
           paintPatterns(patternsHost, r2[1]);
         }).catch(function () { /* keep the run-now outcome visible on a refresh error */ });
       }
@@ -3125,6 +3182,100 @@
 
     if (audit.note) { wrap.appendChild(el("p", { class: "card-note", text: audit.note })); }
     return wrap;
+  }
+
+  // Per-species model accuracy: the inferred model-quality layer. Every value is
+  // derived from expert reviews and is tagged inference, keyed to a model
+  // version, and never written into the measured record. A low accuracy for a
+  // species is a fine-tuning target, so the table is sorted with the weakest
+  // species first, right beside the retraining export that acts on them.
+  function renderModelTrust(host, mt) {
+    clear(host);
+    var block = el("div", { class: "info-block" });
+    var head = el("div", { class: "card-title" }, [
+      el("span", { text: "Model accuracy by species" }),
+      badge("inferred", "source")
+    ]);
+    block.appendChild(head);
+    block.appendChild(el("p", { class: "settings-desc", text:
+      "How often each model was right about a species, judged by your own expert reviews. This is inferred, not measured: it is computed from confirmed, relabelled, and rejected detections and is never written back onto the record, and it changes no salience value or pass result. A low accuracy means the model is weak on that species, so the weakest species are listed first as fine-tuning targets. Every figure is tied to the model version that produced the call." }));
+
+    if (!mt || mt.empty) {
+      block.appendChild(el("p", { class: "card-note", text: (mt && mt.reason) ||
+        "No expert reviews yet, so no model accuracy can be computed. Confirm, relabel, or reject detections on Detections or Audio and this fills in." }));
+      host.appendChild(block);
+      return;
+    }
+
+    if (mt.scope) {
+      block.appendChild(el("p", { class: "form-hint", text: "Scope: " + mt.scope + "." }));
+    }
+
+    // Group the species rows by the model that produced them, so each model's
+    // rollups sit above only its own species. The rows arrive already sorted with
+    // the lowest accuracy first, and grouping preserves that order within a model.
+    var groups = {};
+    var order = [];
+    (mt.species || []).forEach(function (r) {
+      var key = r.model_version || "";
+      if (!groups[key]) { groups[key] = []; order.push(key); }
+      groups[key].push(r);
+    });
+
+    order.forEach(function (key) {
+      var rollup = (mt.models || {})[key] || {};
+      var modelLabel = rollup.model_version || key || "version not recorded";
+      var modelBlock = el("div", { class: "trust-model" });
+      modelBlock.appendChild(el("div", { class: "card-meta", text: "Model: " + modelLabel }));
+      modelBlock.appendChild(metricRow([
+        metricCard("Overall (micro)", rollup.micro == null ? "-" : fmtPct(rollup.micro)),
+        metricCard("Per-species (macro)", rollup.macro == null ? "-" : fmtPct(rollup.macro)),
+        metricCard("Species reviewed", fmtNum(rollup.species)),
+        metricCard("Reviews", fmtNum(rollup.reviewed))
+      ]));
+      modelBlock.appendChild(el("p", { class: "form-hint", text:
+        "Overall weights every reviewed detection equally; per-species averages the species so a weakness on a rarely-seen one is not hidden by a common one. A gap between them points to an uneven model." }));
+
+      var table = el("table", { class: "trust-table" });
+      var thead = el("thead");
+      thead.appendChild(el("tr", {}, [
+        el("th", { text: "Species" }),
+        el("th", { class: "num", text: "Reviews" }),
+        el("th", { class: "num", text: "Confirmed" }),
+        el("th", { class: "num", text: "Relabelled" }),
+        el("th", { class: "num", text: "Rejected" }),
+        el("th", { class: "num", text: "Accuracy" }),
+        el("th", { class: "num", text: "Cautious low" }),
+        el("th", { text: "Confused with" })
+      ]));
+      table.appendChild(thead);
+      var tbody = el("tbody");
+      groups[key].forEach(function (r) {
+        // Small-n rows are shown but de-emphasized: the prior tempers them, yet a
+        // handful of reviews is weaker evidence than many, and the eye should know.
+        var smallN = (r.reviewed || 0) < 5;
+        var confused = Object.keys(r.confused_with || {})
+          .map(function (name) { return name + " (" + r.confused_with[name] + ")"; })
+          .join(", ") || "-";
+        tbody.appendChild(el("tr", { class: smallN ? "muted-row" : "" }, [
+          el("td", { text: r.species_label || r.species_key }),
+          el("td", { class: "num", text: fmtNum(r.reviewed) }),
+          el("td", { class: "num", text: fmtNum(r.confirms) }),
+          el("td", { class: "num", text: fmtNum(r.relabels) }),
+          el("td", { class: "num", text: fmtNum(r.rejects) }),
+          el("td", { class: "num", text: r.accuracy == null ? "-" : fmtPct(r.accuracy) }),
+          el("td", { class: "num", text: r.wilson_lower == null ? "-" : fmtPct(r.wilson_lower) }),
+          el("td", { text: confused })
+        ]));
+      });
+      table.appendChild(tbody);
+      modelBlock.appendChild(table);
+      block.appendChild(modelBlock);
+    });
+
+    block.appendChild(el("p", { class: "form-hint", text:
+      "\"Accuracy\" is a Laplace-smoothed precision, so a single review reads as neither 0 nor 100 percent; \"Cautious low\" is a conservative lower bound for the same species. The species at the top are the fine-tuning targets: export the weak and disputed cases below and retrain to raise them, keyed to a model version so the improvement is provable." }));
+    host.appendChild(block);
   }
 
   // Turn a {label: count} map into sorted bar-chart rows. Fixed-order maps such

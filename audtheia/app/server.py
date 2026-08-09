@@ -526,7 +526,84 @@ def _compute_audit(db, *, station_id, since, until) -> dict:
         "confidence": {"by_modality": {k: _stats(v) for k, v in confidence.items()}, "buckets": buckets},
         "versions": versions,
         "trend": trend,
+        # The inferred model-trust layer: per-species accuracy and per-model
+        # rollups. Computed over the whole expert-reviewed record and clearly
+        # labelled inferred and cumulative, so it stands apart from the windowed,
+        # measured counts above and is never mistaken for one of them.
+        "model_trust": db.model_trust_snapshot(),
     }
+
+
+def _event_trust(obs: dict, children: list, index: dict) -> dict:
+    """Event Trust for one observation, an inferred value, or an honest absence.
+
+    Event Trust is ``D * Acc(s, M)``: how strongly the event was detected, times
+    how reliably the model that produced the headline call gets that species
+    right. ``D`` is salience's exact detection evidence, ``1 - (1 - C)(1 - A)``,
+    reused here so this never re-derives or alters it. ``C`` is the strongest
+    visual confidence in the event and ``A`` the strongest acoustic one, each 0
+    when that channel did not fire, so a single-modality event degrades to the
+    live channel and a corroborated one is scored higher.
+
+    The species and model are taken from the event's highest-confidence
+    identified detection, which is the call a card headlines and a reviewer
+    judges; its modality selects the screening or acoustic model version. When
+    the species has no expert reviews under that model, ``Acc`` is not
+    computable, so Event Trust is returned as not computable with its reason
+    rather than as a fabricated number. Every value carries the model tag and the
+    inference provenance.
+    """
+    from audtheia.analysis.model_trust import event_trust as _event_trust_value
+    from audtheia.pipeline.salience import detection_evidence as _detection_evidence
+
+    def _strongest(dets) -> float:
+        vals = [float(c["confidence"]) for c in dets if c.get("confidence") is not None]
+        return max(vals) if vals else 0.0
+
+    vision = [c for c in children if (c.get("modality") or "vision") == "vision"]
+    audio = [c for c in children if c.get("modality") == "audio"]
+    c_eff = _strongest(vision)
+    a_eff = _strongest(audio)
+    evidence = _detection_evidence(c_eff, a_eff)
+
+    identified = [c for c in children if (c.get("gbif_usage_key") or c.get("scientific_name"))]
+    if not identified:
+        return {
+            "computable": False,
+            "provenance": "inferred",
+            "reason": "this event has no identified species, so it cannot be scored",
+            "detection_evidence": evidence,
+            "c_eff": c_eff,
+            "a_eff": a_eff,
+        }
+
+    rep = max(identified, key=lambda c: (c.get("confidence") or 0.0))
+    modality = rep.get("modality") or "vision"
+    model_version = (
+        obs.get("acoustic_model_version") if modality == "audio"
+        else obs.get("screening_model_version")
+    )
+    species_key = rep.get("gbif_usage_key") or rep.get("scientific_name")
+    species_label = rep.get("scientific_name") or rep.get("common_name") or species_key
+    accuracy = index.get((model_version, species_key))
+
+    result = {
+        "provenance": "inferred",
+        "model_version": model_version,
+        "species_key": species_key,
+        "species_label": species_label,
+        "detection_evidence": evidence,
+        "c_eff": c_eff,
+        "a_eff": a_eff,
+    }
+    if accuracy is None:
+        result["computable"] = False
+        result["reason"] = "no expert reviews yet for this species under this model"
+        return result
+    result["computable"] = True
+    result["accuracy"] = accuracy
+    result["value"] = _event_trust_value(c_eff, a_eff, accuracy)
+    return result
 
 
 def _llm_directory(settings) -> Path:
@@ -1806,15 +1883,23 @@ def create_app(settings, database):
         total = db.count_observations(station_id=station_id, since=since, until=until, species=sp, trigger="vision")
         rows = db.list_observations(station_id=station_id, since=since, until=until, species=sp,
                                     trigger="vision", limit=limit, offset=offset)
+        # Built once per request, not per card: the accuracy lookup Event Trust
+        # needs is derived from the whole reviewed record and is the same for
+        # every event in the page.
+        trust_index = db.event_trust_index()
         out = []
         for obs in rows:
             item = dict(obs)
-            item["vision_detections"] = [c for c in db.list_child_detections(obs["id"]) if c.get("modality") == "vision"]
+            children = db.list_child_detections(obs["id"])
+            item["vision_detections"] = [c for c in children if c.get("modality") == "vision"]
             item["verification"] = db.get_observation_verification(obs["id"])
             # The expert's current position on this event, so a card can show a
             # reviewed identification instead of a model percentage without a
             # second request per card.
             item["correction"] = db.latest_correction(obs["id"])
+            # Event Trust for the card chip: shown only when computable, otherwise
+            # a clear "not yet rated" carrying its reason. Inference, model-tagged.
+            item["event_trust"] = _event_trust(obs, children, trust_index)
             out.append(item)
         return {"items": out, "total": total, "limit": limit, "offset": offset}
 
@@ -1873,6 +1958,11 @@ def create_app(settings, database):
             "verification": db.get_observation_verification(observation_id),
             "interpretations": db.list_interpretations(observation_id),
             "skill_flags": db.list_skill_flags(observation_id),
+            # Event Trust for the modal's "how these numbers were derived" block,
+            # shown beside salience and labelled inference. The detection evidence
+            # here is salience's own D; the accuracy is the per-species figure for
+            # the model that produced the headline call.
+            "event_trust": _event_trust(obs, children, db.event_trust_index()),
         }
 
     def _event_frames_on_disk(obs):
@@ -2402,12 +2492,15 @@ def create_app(settings, database):
         total = db.count_observations(station_id=station_id, since=since, until=until, species=sp, trigger="audio")
         rows = db.list_observations(station_id=station_id, since=since, until=until, species=sp,
                                     trigger="audio", limit=limit, offset=offset)
+        trust_index = db.event_trust_index()
         out = []
         for obs in rows:
             item = dict(obs)
-            item["audio_detections"] = [c for c in db.list_child_detections(obs["id"]) if c.get("modality") == "audio"]
+            children = db.list_child_detections(obs["id"])
+            item["audio_detections"] = [c for c in children if c.get("modality") == "audio"]
             item["verification"] = db.get_observation_verification(obs["id"])
             item["correction"] = db.latest_correction(obs["id"])
+            item["event_trust"] = _event_trust(obs, children, trust_index)
             out.append(item)
         return {"items": out, "total": total, "limit": limit, "offset": offset}
 
@@ -2682,6 +2775,19 @@ def create_app(settings, database):
     def brain_audit(station_id=Query(default=None), since=Query(default=None), until=Query(default=None)):
         """Evidence of how the system behaved, derived from the stored record."""
         return _compute_audit(db, station_id=station_id, since=since, until=until)
+
+    @app.get(f"{API_PREFIX}/brain/model-trust")
+    def brain_model_trust():
+        """Per-species model accuracy and per-model rollups, an inferred layer.
+
+        A read-only sibling to the audit endpoint for callers that want only the
+        model-trust snapshot: the per-species accuracy table sorted with the
+        fine-tuning targets first, the micro and macro rollups per model, and the
+        confusion counts, each keyed to a model version and tagged inference. With
+        no expert reviews it returns an explicit empty-with-reason shape, not a
+        table of zeros. Nothing here is written or alters a measurement.
+        """
+        return db.model_trust_snapshot()
 
     @app.get(f"{API_PREFIX}/brain/skills")
     def brain_skills(tier=Query(default=None)):

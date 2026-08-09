@@ -197,6 +197,10 @@ class ReportModel:
     species_reference: list[dict] = field(default_factory=list)
     analytics: dict = field(default_factory=dict)
     provenance: dict = field(default_factory=dict)
+    # The inferred per-species model-accuracy snapshot. It is derived from expert
+    # review, keyed to a model version, and never a measurement, so the report
+    # renders it apart from the measured record and always labelled as inference.
+    model_trust: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -278,6 +282,20 @@ def _num(value: Any, digits: int = 3) -> str:
             text = text.rstrip("0").rstrip(".")
         return text or "0"
     return str(value)
+
+
+def _pct(value: Any) -> str:
+    """Format a 0-to-1 fraction as a percentage, or say plainly when there is none.
+
+    Used for the inferred accuracy figures, where a missing value means "not yet
+    computable" (no expert reviews) and must never read as 0 percent.
+    """
+    if value is None:
+        return "not computable"
+    try:
+        return f"{float(value) * 100:.1f}%"
+    except (TypeError, ValueError):
+        return "not computable"
 
 
 def _source_label(data_source: Optional[str]) -> str:
@@ -475,6 +493,10 @@ class ReportGenerator:
 
         analytics = _compute_analytics(records, telemetry)
         provenance = _collect_provenance(records, patterns, species_reference)
+        # Per-species model accuracy is a property of a model over the whole
+        # reviewed record, not of this report's window, so it is read as its own
+        # cumulative snapshot and labelled as such where it is shown.
+        model_trust = db.model_trust_snapshot()
 
         return ReportModel(
             generated_at_utc=generated_at,
@@ -490,6 +512,7 @@ class ReportGenerator:
             species_reference=species_reference,
             analytics=analytics,
             provenance=provenance,
+            model_trust=model_trust,
         )
 
     def _gather_patterns(self, *, station_id, start, end, in_scope_ids) -> list[PatternRecord]:
@@ -739,6 +762,8 @@ def write_csv_bundle(model: ReportModel, csv_dir: str | Path) -> list[Path]:
     written.append(_write_csv(out_dir / "patterns.csv", _PATTERN_HEADER, _rows_patterns(model)))
     written.append(_write_csv(out_dir / "pattern_observations.csv", _PATTERN_OBS_HEADER, _rows_pattern_obs(model)))
     written.append(_write_csv(out_dir / "analytics.csv", _ANALYTICS_HEADER, _rows_analytics(model)))
+    written.append(_write_csv(out_dir / "model_accuracy.csv", _MODEL_ACCURACY_HEADER, _rows_model_accuracy(model)))
+    written.append(_write_csv(out_dir / "model_accuracy_rollups.csv", _MODEL_ROLLUP_HEADER, _rows_model_rollups(model)))
     written.append(_write_csv(out_dir / "telemetry.csv", _TELEMETRY_HEADER, _rows_telemetry(model)))
     written.append(_write_csv(out_dir / "species_reference.csv", _SPECIES_HEADER, _rows_species(model)))
     written.append(_write_csv(out_dir / "provenance.csv", _PROVENANCE_HEADER, _rows_provenance(model)))
@@ -948,6 +973,47 @@ def _rows_analytics(model: ReportModel):
     for sid, bucket in sorted(a.get("effort", {}).items()):
         for key, value in sorted(bucket.items()):
             yield ["effort", f"{sid}:{key}", _num(value), "derived from measured telemetry"]
+
+
+# Per-species model accuracy: an inferred, model-keyed table. Every row is a
+# derived value, marked so in its own provenance column, and is never a
+# measurement. Accuracy and the Wilson lower bound are on a 0-to-1 scale.
+_MODEL_ACCURACY_HEADER = [
+    "model_version", "species_key", "species_label", "reviews_n",
+    "confirmed", "relabelled", "rejected", "accuracy", "wilson_lower",
+    "confused_with", "provenance",
+]
+
+
+def _rows_model_accuracy(model: ReportModel):
+    mt = model.model_trust or {}
+    for row in mt.get("species", []):
+        confused = "; ".join(
+            f"{name} ({count})" for name, count in (row.get("confused_with") or {}).items()
+        )
+        yield [
+            row.get("model_version"), row.get("species_key"), row.get("species_label"),
+            row.get("reviewed"), row.get("confirms"), row.get("relabels"), row.get("rejects"),
+            row.get("accuracy"), row.get("wilson_lower"), confused,
+            row.get("provenance") or "inferred",
+        ]
+
+
+_MODEL_ROLLUP_HEADER = [
+    "model_version", "micro_overall", "macro_per_species",
+    "species_reviewed", "reviews_n", "provenance",
+]
+
+
+def _rows_model_rollups(model: ReportModel):
+    mt = model.model_trust or {}
+    models = mt.get("models") or {}
+    for key in sorted(models):
+        r = models[key]
+        yield [
+            r.get("model_version"), r.get("micro"), r.get("macro"),
+            r.get("species"), r.get("reviewed"), r.get("provenance") or "inferred",
+        ]
 
 
 _TELEMETRY_HEADER = [
@@ -1187,6 +1253,7 @@ class _ReportPdf:
         self._audio_section()
         self._environment_section()
         self._analytics_section()
+        self._model_trust_section()
         self._patterns_section()
         self._provenance_section()
 
@@ -1428,6 +1495,78 @@ class _ReportPdf:
                     f"frames processed {_num(bucket.get('frames_processed'))}, "
                     f"NPU active {_num(bucket.get('npu_active_seconds'))} s",
                     color=_COLOR_DERIVED, style="I")
+
+    def _model_trust_section(self) -> None:
+        """Per-species model accuracy, an inferred model-quality layer.
+
+        Every figure here is derived from expert review and is not a measurement,
+        so the whole section is set in the inferred style and keyed to a model
+        version. A low accuracy for a species marks it as a fine-tuning target.
+        The numbers are cumulative over the whole reviewed record, not limited to
+        this report's window, because per-species precision is a property of a
+        model rather than of a date range.
+        """
+        self._section("Model accuracy by species")
+        mt = self.model.model_trust or {}
+        self._para(
+            "How often each model was right about a species, judged by expert "
+            "review. This is inferred, not measured, and is never written back "
+            "onto the record; it changes no salience value or pass result. A low "
+            "accuracy means the model is weak on that species, so the weakest are "
+            "listed first as fine-tuning targets. Every figure is tied to the "
+            "model version that produced the call.", color=_COLOR_MUTED)
+
+        if not mt or mt.get("empty"):
+            self._para(mt.get("reason") if mt else
+                       "No expert reviews yet, so no model accuracy can be computed.",
+                       color=_COLOR_MUTED, style="I")
+            return
+
+        if mt.get("scope"):
+            self._para("Scope: " + str(mt["scope"]) + ".", color=_COLOR_MUTED, style="I")
+        self._gap(1)
+
+        # Group the already-sorted species rows by model, preserving the
+        # lowest-accuracy-first order within each model.
+        groups: dict = {}
+        order: list = []
+        for row in mt.get("species", []):
+            key = row.get("model_version") or ""
+            if key not in groups:
+                groups[key] = []
+                order.append(key)
+            groups[key].append(row)
+
+        models = mt.get("models") or {}
+        for key in order:
+            rollup = models.get(key, {})
+            label = rollup.get("model_version") or key or "version not recorded"
+            self._subhead("Model: " + _pdf_safe(label))
+            self._kv("Overall (micro)", _pct(rollup.get("micro")), inferred=True)
+            self._kv("Per-species (macro)", _pct(rollup.get("macro")), inferred=True)
+            self._kv("Species reviewed / reviews",
+                     f"{_num(rollup.get('species'))} / {_num(rollup.get('reviewed'))}", inferred=True)
+            self._gap(1)
+            for row in groups[key]:
+                confused = ", ".join(
+                    f"{name} ({count})" for name, count in (row.get("confused_with") or {}).items()
+                )
+                line = (f"{row.get('species_label') or row.get('species_key')} "
+                        f"(n={_num(row.get('reviewed'))}): accuracy {_pct(row.get('accuracy'))}, "
+                        f"confirmed {_num(row.get('confirms'))}, "
+                        f"relabelled {_num(row.get('relabels'))}, "
+                        f"rejected {_num(row.get('rejects'))}")
+                if confused:
+                    line += f"; confused with {confused}"
+                self._bullet(line, color=_COLOR_INFERRED, style="I")
+            self._gap(1)
+
+        self._para(
+            "Accuracy is a Laplace-smoothed precision, so a single review reads as "
+            "neither 0 nor 100 percent. The species at the top are the fine-tuning "
+            "targets: export the weak and disputed cases and retrain to raise them, "
+            "keyed to a model version so the improvement is provable.",
+            color=_COLOR_MUTED)
 
     def _patterns_section(self) -> None:
         self._section("Candidate hypotheses from the longitudinal pass")
