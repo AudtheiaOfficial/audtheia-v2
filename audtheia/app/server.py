@@ -553,7 +553,10 @@ def _event_trust(obs: dict, children: list, index: dict) -> dict:
     rather than as a fabricated number. Every value carries the model tag and the
     inference provenance.
     """
-    from audtheia.analysis.model_trust import event_trust as _event_trust_value
+    from audtheia.analysis.model_trust import (
+        distinct_species as _distinct_species,
+        event_trust as _event_trust_value,
+    )
     from audtheia.pipeline.salience import detection_evidence as _detection_evidence
 
     def _strongest(dets) -> float:
@@ -578,6 +581,23 @@ def _event_trust(obs: dict, children: list, index: dict) -> dict:
             "computable": False,
             "provenance": "inferred",
             "reason": "this event has no identified species, so it cannot be scored",
+            "detection_evidence": evidence,
+            "c_eff": c_eff,
+            "a_eff": a_eff,
+        }
+
+    # A multi-species event is its own state, distinct from an unreviewed one. Model
+    # trust is a per-species score, so an event carrying more than one taxon cannot
+    # be reduced to a single number without misrepresenting the others. It is shown
+    # as "multiple species" rather than a value or a bare "not yet rated".
+    species = _distinct_species(children)
+    if len(species) > 1:
+        return {
+            "computable": False,
+            "provenance": "inferred",
+            "multiple_species": True,
+            "reason": "this event carries more than one species, so a single model-trust score would represent only one of them; review each species to rate them",
+            "species_labels": [s["label"] for s in species],
             "detection_evidence": evidence,
             "c_eff": c_eff,
             "a_eff": a_eff,

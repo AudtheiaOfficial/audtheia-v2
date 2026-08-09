@@ -1375,6 +1375,11 @@
   // is still named event_trust internally.)
   function eventTrustText(et) {
     if (!et) { return null; }
+    if (et.multiple_species) {
+      var names = (et.species_labels || []).join(", ");
+      return "multiple species" + (names ? " (" + names + ")" : "") +
+        "  -  a single score would represent only one; review each species to rate them (inferred)";
+    }
     if (et.computable) {
       return fmtNum(et.value, 2) + "  = detection evidence " + fmtNum(et.detection_evidence, 2) +
         " × accuracy " + fmtNum(et.accuracy, 2) + " for " + (et.species_label || "this species") +
@@ -1396,6 +1401,11 @@
   // The full derivation is carried in the title so a hover discloses the model.
   function eventTrustChip(et) {
     if (!et) { return null; }
+    if (et.multiple_species) {
+      var multi = el("span", { class: "trust-chip muted", text: "model trust: multiple species" });
+      multi.title = et.reason || "more than one species in this event";
+      return multi;
+    }
     if (et.computable) {
       var chip = el("span", { class: "trust-chip", text: "model trust " + fmtNum(et.value, 2) });
       chip.title = "Inferred: detection evidence " + fmtNum(et.detection_evidence, 2) +

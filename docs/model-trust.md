@@ -109,6 +109,13 @@ highest-confidence identified detection, which is the call a card headlines and 
 reviewer judges. `C` is the strongest visual confidence in the event and `A` the
 strongest acoustic one.
 
+An event that carries more than one distinct species is its own state. Model trust
+is a per-species score, so a multi-species event cannot be reduced to a single
+number without misrepresenting the others; it is shown as "multiple species"
+rather than a value or a bare "not yet rated". This is the display counterpart of
+the attribution rule above: a whole-event verdict on a multi-species event is not
+attributed to any one species.
+
 ## Where each value appears
 
 Per-species accuracy, the two rollups, and the confusion view are shown under

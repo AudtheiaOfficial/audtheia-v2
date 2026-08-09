@@ -39,6 +39,7 @@ sys.path.insert(0, str(REPO))
 from audtheia.analysis.model_trust import (  # noqa: E402
     accuracy_index,
     accuracy_table,
+    distinct_species,
     event_review_records,
     event_trust,
     laplace_accuracy,
@@ -291,6 +292,37 @@ def test_latest_verdicts() -> None:
           latest[None]["verdict"] == "relabel")
 
 
+def test_distinct_species() -> None:
+    print("\nDistinct species tells a single-species event from a multi-species one")
+    single = [{"gbif_usage_key": "card", "scientific_name": "Cardinalis cardinalis"}]
+    check("one taxon reads as one species", len(distinct_species(single)) == 1)
+
+    # A track that carries the same taxon in two detections is still one species.
+    same = [
+        {"gbif_usage_key": "card", "scientific_name": "Cardinalis cardinalis"},
+        {"gbif_usage_key": "card", "scientific_name": "Cardinalis cardinalis"},
+    ]
+    check("the same taxon twice is still one species", len(distinct_species(same)) == 1)
+
+    # Two genuinely different taxa are a multi-species event.
+    multi = [
+        {"gbif_usage_key": "card", "scientific_name": "Cardinalis cardinalis"},
+        {"gbif_usage_key": "pyrr", "scientific_name": "Cardinalis sinuatus"},
+    ]
+    ds = distinct_species(multi)
+    check("two taxa read as two species", len(ds) == 2)
+    check("each carries a display label",
+          ds[0]["label"] == "Cardinalis cardinalis" and ds[1]["label"] == "Cardinalis sinuatus")
+
+    # Class-label-only taxa are distinguished by their class label.
+    labels = [{"common_name": "northern-cardinal"}, {"common_name": "indigo-bunting"}]
+    check("class-label-only taxa are still two species", len(distinct_species(labels)) == 2)
+
+    # A detection with no species contributes nothing to the count.
+    check("a detection with no species is not a species",
+          distinct_species([{"gbif_usage_key": None, "scientific_name": None}]) == [])
+
+
 def main() -> int:
     print("=" * 72)
     print("Model accuracy and model trust")
@@ -302,6 +334,7 @@ def main() -> int:
     test_rollups_micro_vs_macro()
     test_accuracy_index()
     test_event_review_mapping()
+    test_distinct_species()
     test_latest_verdicts()
     print("\n" + "=" * 72)
     print(f"RESULT: {CHECKS['passed']} passed, {CHECKS['failed']} failed")

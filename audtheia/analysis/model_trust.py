@@ -308,6 +308,29 @@ def latest_verdicts(corrections: Iterable[dict]) -> dict:
     return latest
 
 
+def distinct_species(child_detections: Iterable[dict]) -> list[dict]:
+    """The distinct taxa in one event, each as ``{"key", "label"}``, in first-seen
+    order.
+
+    A taxon is identified the same way the accuracy layer keys it: the backbone
+    key, then the scientific name, then the model's class label. A detection with
+    no species is ignored. This is what tells a single-species event, which can
+    carry one model-trust score, apart from a multi-species event, which cannot be
+    reduced to a single score because the score is per species and the event has
+    more than one.
+    """
+    labels: dict = {}
+    order: list = []
+    for det in child_detections:
+        key = det.get("gbif_usage_key") or det.get("scientific_name") or det.get("common_name")
+        if key in (None, ""):
+            continue
+        if key not in labels:
+            labels[key] = det.get("scientific_name") or det.get("common_name") or key
+            order.append(key)
+    return [{"key": k, "label": labels[k]} for k in order]
+
+
 def event_review_records(
     child_detections: Iterable[dict],
     corrections: Iterable[dict],
