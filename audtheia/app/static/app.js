@@ -1364,12 +1364,15 @@
     return rowEl;
   }
 
-  // Event Trust, an inferred reliability score for a single detection. It is the
+  // Model trust, an inferred reliability score for a single detection. It is the
   // detection evidence D (the same quantity salience uses) times the model's
-  // expert-judged accuracy for the species it called. It is never a measurement,
-  // so it is always shown labelled as inference and tagged with the model it
-  // belongs to. When the species has no expert reviews under that model it is not
-  // computable, and it says "not yet rated" rather than showing a false number.
+  // expert-judged accuracy for the species it called. It is distinct from the
+  // per-frame "Event trust" in the curation view below, which is the share of
+  // frames kept after review. It is never a measurement, so it is always shown
+  // labelled as inference and tagged with the model it belongs to. When the
+  // species has no expert reviews under that model it is not computable, and it
+  // says "not yet rated" rather than showing a false number. (The response field
+  // is still named event_trust internally.)
   function eventTrustText(et) {
     if (!et) { return null; }
     if (et.computable) {
@@ -1383,7 +1386,7 @@
   function eventTrustAuditRow(et) {
     if (!et) { return null; }
     return el("div", { class: "audit-row" }, [
-      el("span", { class: "audit-k", text: "Event trust" }),
+      el("span", { class: "audit-k", text: "Model trust" }),
       el("span", { class: "audit-v", text: eventTrustText(et) })
     ]);
   }
@@ -1394,13 +1397,13 @@
   function eventTrustChip(et) {
     if (!et) { return null; }
     if (et.computable) {
-      var chip = el("span", { class: "trust-chip", text: "event trust " + fmtNum(et.value, 2) });
+      var chip = el("span", { class: "trust-chip", text: "model trust " + fmtNum(et.value, 2) });
       chip.title = "Inferred: detection evidence " + fmtNum(et.detection_evidence, 2) +
         " × accuracy " + fmtNum(et.accuracy, 2) + " for " + (et.species_label || "this species") +
         " under model " + (et.model_version || "version not recorded");
       return chip;
     }
-    var muted = el("span", { class: "trust-chip muted", text: "event trust: not yet rated" });
+    var muted = el("span", { class: "trust-chip muted", text: "model trust: not yet rated" });
     muted.title = et.reason || "not yet computable";
     return muted;
   }
@@ -1433,7 +1436,7 @@
     var etRow = eventTrustAuditRow(obs.event_trust);
     if (etRow) { wrap.appendChild(etRow); }
     wrap.appendChild(el("p", { class: "form-hint", text:
-      "Each frame below is a saved detection with its own confidence and box, so the frame count and the true duration are directly verifiable. Confidence is the peak across frames; salience is computed from the whole record at capture. Event trust is inferred, not measured: it multiplies the detection evidence by this model's expert-judged accuracy for the species, and it never changes a stored value." }));
+      "Each frame below is a saved detection with its own confidence and box, so the frame count and the true duration are directly verifiable. Confidence is the peak across frames; salience is computed from the whole record at capture. Model trust is inferred, not measured: it multiplies the detection evidence by this model's expert-judged accuracy for the species, and it never changes a stored value. It is a different quantity from the per-frame Event trust in the curation section." }));
     return wrap;
   }
 
@@ -2006,7 +2009,7 @@
     var etRow = eventTrustAuditRow(obs.event_trust);
     if (etRow) { wrap.appendChild(etRow); }
     wrap.appendChild(el("p", { class: "form-hint", text:
-      "Each call below is a stored acoustic detection with its own confidence, so the count and the peak confidence are directly verifiable against the clip. Salience is computed from the whole record at capture. Event trust is inferred, not measured: it multiplies the detection evidence by this model's expert-judged accuracy for the species, and it never changes a stored value." }));
+      "Each call below is a stored acoustic detection with its own confidence, so the count and the peak confidence are directly verifiable against the clip. Salience is computed from the whole record at capture. Model trust is inferred, not measured: it multiplies the detection evidence by this model's expert-judged accuracy for the species, and it never changes a stored value. It is a different quantity from the per-frame Event trust in the curation section." }));
     return wrap;
   }
 

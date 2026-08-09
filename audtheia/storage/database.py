@@ -1613,7 +1613,7 @@ class Database:
         counts["total"] = sum(counts[v] for v in ("confirm", "relabel", "reject"))
         return counts
 
-    # -- model trust: per-species accuracy and Event Trust (inferred) -----
+    # -- model trust: per-species accuracy and Model trust (inferred) -----
     #
     # These reads produce the derived, inferred model-trust layer. Every value
     # they return is an inference computed from measured confidences and human
@@ -1705,9 +1705,9 @@ class Database:
         return base
 
     def event_trust_index(self) -> dict:
-        """A (model_version, species_key) -> accuracy map for Event Trust lookup.
+        """A (model_version, species_key) -> accuracy map for Model trust lookup.
 
-        Internal read used to attach Event Trust to an observation. Keyed by a
+        Internal read used to attach Model trust to an observation. Keyed by a
         tuple, so it is not JSON itself; the caller multiplies an accuracy by the
         event's detection evidence to form the trust value it returns. A pair
         absent from the map has no expert reviews, so that event's trust is not

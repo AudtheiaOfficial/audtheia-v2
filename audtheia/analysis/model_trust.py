@@ -1,4 +1,4 @@
-"""Per-species model accuracy and Event Trust.
+"""Per-species model accuracy and Model trust.
 
 Path: audtheia/analysis/model_trust.py
 
@@ -29,7 +29,7 @@ The mathematics, settled with the platform's author:
   never a false zero. A Wilson lower bound of c / n is offered as an optional,
   conservative secondary figure, never the primary number.
 
-  Event Trust, per event. For an event that model M labelled species s, with
+  Model trust, per event. For an event that model M labelled species s, with
   visual confidence C and acoustic confidence A (0 when that channel did not
   fire):
 
@@ -63,7 +63,7 @@ from __future__ import annotations
 import math
 from typing import Iterable, Optional
 
-# D is imported, not re-derived, so Event Trust shares salience's exact detection
+# D is imported, not re-derived, so Model trust shares salience's exact detection
 # evidence and this module can never drift from it.
 from audtheia.pipeline.salience import detection_evidence
 
@@ -122,12 +122,12 @@ def wilson_lower_bound(confirms: int, reviewed: int, z: float = 1.96) -> Optiona
 
 
 def event_trust(c_eff: float, a_eff: float, accuracy: Optional[float]) -> Optional[float]:
-    """Return Event Trust ``D * Acc(s, M)`` in [0, 1], or None when not computable.
+    """Return Model trust ``D * Acc(s, M)`` in [0, 1], or None when not computable.
 
     ``c_eff`` and ``a_eff`` are the visual and acoustic detection confidences, each
     0 when that modality did not fire. ``accuracy`` is Acc(s, M) for the species
     this event was labelled and the model that labelled it. When ``accuracy`` is
-    None (no expert reviews for that species under that model) Event Trust is not
+    None (no expert reviews for that species under that model) Model trust is not
     computable and this returns None, never a fabricated number.
     """
     if accuracy is None:
@@ -279,11 +279,11 @@ def model_rollups(table: Iterable[dict]) -> dict:
 
 
 def accuracy_index(table: Iterable[dict]) -> dict:
-    """Map (model_version, species_key) to its accuracy, for Event Trust lookup.
+    """Map (model_version, species_key) to its accuracy, for Model trust lookup.
 
-    Event Trust for a detection needs Acc(s, M) for that detection's species and
+    Model trust for a detection needs Acc(s, M) for that detection's species and
     model. This turns the accuracy table into that lookup. A pair absent from the
-    index has no expert reviews, so its Event Trust is not computable.
+    index has no expert reviews, so its Model trust is not computable.
     """
     index: dict = {}
     for row in table:

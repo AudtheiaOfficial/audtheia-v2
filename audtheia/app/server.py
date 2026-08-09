@@ -535,9 +535,9 @@ def _compute_audit(db, *, station_id, since, until) -> dict:
 
 
 def _event_trust(obs: dict, children: list, index: dict) -> dict:
-    """Event Trust for one observation, an inferred value, or an honest absence.
+    """Model trust for one observation, an inferred value, or an honest absence.
 
-    Event Trust is ``D * Acc(s, M)``: how strongly the event was detected, times
+    Model trust is ``D * Acc(s, M)``: how strongly the event was detected, times
     how reliably the model that produced the headline call gets that species
     right. ``D`` is salience's exact detection evidence, ``1 - (1 - C)(1 - A)``,
     reused here so this never re-derives or alters it. ``C`` is the strongest
@@ -549,7 +549,7 @@ def _event_trust(obs: dict, children: list, index: dict) -> dict:
     identified detection, which is the call a card headlines and a reviewer
     judges; its modality selects the screening or acoustic model version. When
     the species has no expert reviews under that model, ``Acc`` is not
-    computable, so Event Trust is returned as not computable with its reason
+    computable, so Model trust is returned as not computable with its reason
     rather than as a fabricated number. Every value carries the model tag and the
     inference provenance.
     """
@@ -1889,7 +1889,7 @@ def create_app(settings, database):
         total = db.count_observations(station_id=station_id, since=since, until=until, species=sp, trigger="vision")
         rows = db.list_observations(station_id=station_id, since=since, until=until, species=sp,
                                     trigger="vision", limit=limit, offset=offset)
-        # Built once per request, not per card: the accuracy lookup Event Trust
+        # Built once per request, not per card: the accuracy lookup Model trust
         # needs is derived from the whole reviewed record and is the same for
         # every event in the page.
         trust_index = db.event_trust_index()
@@ -1903,7 +1903,7 @@ def create_app(settings, database):
             # reviewed identification instead of a model percentage without a
             # second request per card.
             item["correction"] = db.latest_correction(obs["id"])
-            # Event Trust for the card chip: shown only when computable, otherwise
+            # Model trust for the card chip: shown only when computable, otherwise
             # a clear "not yet rated" carrying its reason. Inference, model-tagged.
             item["event_trust"] = _event_trust(obs, children, trust_index)
             out.append(item)
@@ -1964,7 +1964,7 @@ def create_app(settings, database):
             "verification": db.get_observation_verification(observation_id),
             "interpretations": db.list_interpretations(observation_id),
             "skill_flags": db.list_skill_flags(observation_id),
-            # Event Trust for the modal's "how these numbers were derived" block,
+            # Model trust for the modal's "how these numbers were derived" block,
             # shown beside salience and labelled inference. The detection evidence
             # here is salience's own D; the accuracy is the per-species figure for
             # the model that produced the headline call.

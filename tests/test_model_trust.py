@@ -1,4 +1,4 @@
-"""Verification for per-species model accuracy and Event Trust.
+"""Verification for per-species model accuracy and model trust.
 
 Path: tests/test_model_trust.py
 
@@ -10,7 +10,7 @@ depends on:
     number at n = 0 but an explicit "not computable",
   - the Wilson lower bound is a conservative secondary figure and is also not
     computable at n = 0,
-  - Event Trust is D * Acc, is naturally multimodal through D, degrades to a
+  - model trust is D * Acc, is naturally multimodal through D, degrades to a
     single modality, and is not computable when Acc is not,
   - the per-species table counts confirms, relabels and rejects correctly, keys
     each species to its model version, records what a relabel confused it with,
@@ -86,7 +86,7 @@ def test_wilson_lower_bound() -> None:
 
 
 def test_event_trust() -> None:
-    print("\nEvent Trust is D times accuracy, multimodal, and honestly missing")
+    print("\nmodel trust is D times accuracy, multimodal, and honestly missing")
     # Both channels fired: D = 1 - (1 - 0.8)(1 - 0.5) = 0.9, so ET = 0.9 * 0.9.
     both = event_trust(0.8, 0.5, 0.9)
     check("both modalities corroborate through D", _close(both, 0.81))
@@ -186,12 +186,12 @@ def test_rollups_micro_vs_macro() -> None:
 
 
 def test_accuracy_index() -> None:
-    print("\nThe accuracy index feeds Event Trust by model and species")
+    print("\nThe accuracy index feeds model trust by model and species")
     table = accuracy_table(_records())
     index = accuracy_index(table)
     check("a reviewed pair resolves to its accuracy",
           _close(index[("screen-v1", "gray")], 4 / 6))
-    check("an unreviewed pair is absent, so its Event Trust is not computable",
+    check("an unreviewed pair is absent, so its model trust is not computable",
           ("screen-v1", "never-seen") not in index)
 
 
@@ -293,7 +293,7 @@ def test_latest_verdicts() -> None:
 
 def main() -> int:
     print("=" * 72)
-    print("Model trust: per-species accuracy and Event Trust")
+    print("Model accuracy and model trust")
     print("=" * 72)
     test_laplace_accuracy()
     test_wilson_lower_bound()

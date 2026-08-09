@@ -1,4 +1,4 @@
-# Model trust: per-species accuracy and Event Trust
+# Model accuracy and model trust
 
 This document is the authoritative definition of two derived quantities that
 answer a question salience and the longitudinal pass do not: how good is a given
@@ -12,9 +12,9 @@ clearly inferred layer on top of it.
 ## What they are, and are not
 
 Two questions are kept separate. Salience asks how much an observation matters
-(importance). Event Trust asks how much a detection should be believed
+(importance). Model trust asks how much a detection should be believed
 (reliability of the model that produced it). They share the measured detection
-evidence `D` but are orthogonal, so Event Trust is a new parallel quantity and
+evidence `D` but are orthogonal, so Model trust is a new parallel quantity and
 does not touch salience.
 
 Every value defined here is **derived and inferred**, not a measurement. It is
@@ -80,7 +80,13 @@ equally, so it exposes a model that is weak on a rare species it seldom predicts
 Both are reported. From the relabel targets, a small confusion view records which
 species `M` is confused with when it calls `s`.
 
-## Event Trust
+## Model trust
+
+Model trust is distinct from the per-frame "Event trust" shown in a detection's
+frame-curation view, which is the share of an event's frames kept after per-frame
+review. That is a curation weight over frames; model trust is a reliability score
+for the model's identification. They are deliberately named apart. In the stored
+response the model-trust value travels under the field name `event_trust`.
 
 For an event that model `M` labelled species `s`, with visual confidence `C` and
 acoustic confidence `A` (each 0 when that channel did not fire):
@@ -92,13 +98,13 @@ ET = D * Acc(s, M)                     in [0, 1]
 
 Read plainly: how strongly it was detected, times how reliably this model gets
 this species right. `D` is the exact detection evidence salience uses, imported
-rather than re-derived, so Event Trust is consistent with salience without
+rather than re-derived, so Model trust is consistent with salience without
 altering it. It is naturally multimodal, since visual and acoustic corroborate
 through `D`, and it degrades gracefully to a single modality. When `Acc(s, M)` is
-not computable (no expert reviews for that species under that model), Event Trust
+not computable (no expert reviews for that species under that model), Model trust
 is not computable either and is shown as "not yet rated", never as a number.
 
-The species and model for an event's Event Trust are taken from the event's
+The species and model for an event's Model trust are taken from the event's
 highest-confidence identified detection, which is the call a card headlines and a
 reviewer judges. `C` is the strongest visual confidence in the event and `A` the
 strongest acoustic one.
@@ -107,7 +113,7 @@ strongest acoustic one.
 
 Per-species accuracy, the two rollups, and the confusion view are shown under
 Brain, in the Learning and Auditing surface, beside the retraining export they
-inform, with the lowest-accuracy species first. Event Trust appears on each
+inform, with the lowest-accuracy species first. Model trust appears on each
 Detections and Audio card as a compact chip, and in a detection's derivation
 panel beside salience, always labelled as inference and tagged with the model.
 The generated report carries a per-species accuracy section (a CSV table with a
@@ -117,7 +123,7 @@ window.
 
 ## Rules that make it defensible
 
-Every accuracy, Event Trust, and rollup is keyed to a specific model version and
+Every accuracy, Model trust, and rollup is keyed to a specific model version and
 displays that model as a provenance tag; a different model yields different
 numbers, and no trust figure is ever shown without saying which model it belongs
 to. Every value is derived and inferred, tagged as such, and never written into
@@ -127,9 +133,9 @@ not-computable state, not a zero.
 ## Roadmap
 
 Two refinements are deliberately deferred so the first build stays simple and
-defensible. Desktop verification agreement may later feed Event Trust, either by
+defensible. Desktop verification agreement may later feed Model trust, either by
 substituting the verifier's confidence for `C` on a verified event or by
-multiplying Event Trust by an agreement factor. A fuller recall and
+multiplying Model trust by an agreement factor. A fuller recall and
 confusion-matrix view may be added; the current build ships precision plus the
 relabel confusion counts, because recall needs reviews of events the model called
 something else.
