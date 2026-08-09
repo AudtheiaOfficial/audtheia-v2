@@ -2081,6 +2081,14 @@ textarea:hover {
   pointer-events: none;
 }
 
+/* A standalone action button should not hug the descriptive text above or below
+   it (the Brain and Species-data panels place a note, then a button, then a hint).
+   Give a comfortable gap on whichever side a note sits against a button. */
+.card-note + .btn,
+.form-hint + .btn { margin-top: var(--space-4); }
+.btn + .card-note,
+.btn + .form-hint { margin-top: var(--space-4); }
+
 /* Visual detections: the stored frame on a card, a full-size lightbox, the audio
    clip player, and the desktop capture Start and Stop control. */
 /* The frame is shown at its true aspect so a stored detection box, recorded in

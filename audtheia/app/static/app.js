@@ -892,7 +892,20 @@
     return [Math.round((r + m) * 255), Math.round((g + m) * 255), Math.round((b + m) * 255)];
   }
 
+  // Colour is deterministic first (a species tends to the same hue from its name
+  // hash), then de-collided: if a new species would land within a small angle of a
+  // hue already in use, it is stepped by the golden angle until it is clear, so no
+  // two species on screen ever share a near-identical colour.
   var _speciesColorCache = {};
+  var _usedHues = [];
+  function _hueClear(hue) {
+    for (var k = 0; k < _usedHues.length; k++) {
+      var d = Math.abs(hue - _usedHues[k]) % 360;
+      if (d > 180) { d = 360 - d; }
+      if (d < 28) { return false; }
+    }
+    return true;
+  }
   function speciesColor(name) {
     name = String(name == null ? "unknown" : name);
     if (_speciesColorCache[name]) { return _speciesColorCache[name]; }
@@ -902,8 +915,11 @@
       h = (h * 16777619) >>> 0;
     }
     var hue = h % 360;
-    var sat = 0.60 + ((h >>> 9) % 1000) / 1000 * 0.18;   // 0.60–0.78
-    var light = 0.50 + ((h >>> 17) % 1000) / 1000 * 0.08; // 0.50–0.58
+    var guard = 0;
+    while (!_hueClear(hue) && guard < 24) { hue = (hue + 137.508) % 360; guard++; }
+    _usedHues.push(hue);
+    var sat = 0.60 + ((h >>> 9) % 1000) / 1000 * 0.18;
+    var light = 0.50 + ((h >>> 17) % 1000) / 1000 * 0.08;
     var rgb = _hslToRgb(hue, sat, light);
     var lum = 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
     var pair = { bg: "rgb(" + rgb[0] + "," + rgb[1] + "," + rgb[2] + ")", fg: lum > 150 ? "#0b1f18" : "#ffffff" };
@@ -2798,6 +2814,8 @@
       clear(host);
 
       host.appendChild(el("h3", { text: "Longitudinal pass" }));
+      host.appendChild(el("p", { class: "card-note", text:
+        "It reads the whole verified record for patterns, each offered as a candidate hypothesis. The trend and correlation detectors work on environmental sensor readings, so a station with sensors gives the pass its fullest picture; species co-occurrence and the site baseline still build without them." }));
       var dreamHost = el("div");
       host.appendChild(dreamHost);
       paintDreamStatus(dreamHost, status);
