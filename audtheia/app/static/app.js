@@ -1305,24 +1305,33 @@
     }
     if (summary && summary.multiple_candidates) {
       wrap.appendChild(el("p", { class: "form-hint", text:
-        "This track was read as more than one species across its frames. If it is one organism the model second-guessed, relabel the whole event above and mark the wrong frames Inaccurate; if two organisms really were present, mark each frame accordingly." }));
+        "This track was read as more than one species across its frames. If it is one organism the model second-guessed, relabel the whole event above and mark the wrong frames Imprecise; if two organisms really were present, mark each frame accordingly." }));
     }
     if (summary) {
       var total = summary.total_frames || 0;
       var kept = summary.curated_frame_count != null ? summary.curated_frame_count : total;
-      var trust = summary.trust != null ? Math.round(summary.trust * 100) + "%" : "not reviewed";
+      // Frame precision is the standard precision of the per-frame review: of the
+      // frames an expert has actually judged, the share marked precise, that is
+      // precise / (precise + imprecise). It is left uncomputed until at least one
+      // frame is judged, rather than shown as a share of frames that includes the
+      // unreviewed ones, so it reads as a real precision and not a curation ratio.
+      var precise = summary.accurate || 0;
+      var imprecise = summary.inaccurate || 0;
+      var judged = precise + imprecise;
+      var precision = judged > 0 ? Math.round((precise / judged) * 100) + "%" : "not reviewed";
       wrap.appendChild(el("div", { class: "audit-row" }, [
         el("span", { class: "audit-k", text: "Expert-curated" }),
         el("span", { class: "audit-v", text: kept + " of " + total + " frames kept  (" +
-          (summary.inaccurate || 0) + " marked inaccurate, " + (summary.accurate || 0) + " confirmed accurate)" })
+          imprecise + " marked imprecise, " + precise + " confirmed precise)" })
       ]));
       wrap.appendChild(el("div", { class: "audit-row" }, [
-        el("span", { class: "audit-k", text: "Event trust" }),
-        el("span", { class: "audit-v", text: trust })
+        el("span", { class: "audit-k", text: "Frame precision" }),
+        el("span", { class: "audit-v", text: precision +
+          (judged > 0 ? "  = " + precise + " precise / " + judged + " reviewed frames" : "") })
       ]));
     }
     wrap.appendChild(el("p", { class: "form-hint", text:
-      "Marking a frame Inaccurate subtracts it from this curated view and from the frame count the longitudinal pass and analytics trust; an event whose every frame is Inaccurate, or one you reject above, is left out of the pass entirely. The measured numbers above never change, so what the model did stays on the record." }));
+      "Frame precision is the precision of the per-frame review: of the frames an expert judged, the share marked precise. Marking a frame Imprecise subtracts it from this curated view and from the frame count the longitudinal pass and analytics trust; an event whose every frame is Imprecise, or one you reject above, is left out of the pass entirely. The measured numbers above never change, so what the model did stays on the record." }));
     return wrap;
   }
 
@@ -1331,8 +1340,8 @@
   // record. The measured frame is never altered; this only appends a verdict.
   function frameReviewButtons(f, obsId, cell, onReviewed, painters) {
     var rowEl = el("div", { class: "frame-review" });
-    var accBtn = el("button", { type: "button", class: "frame-review-btn acc", text: "Accurate" });
-    var badBtn = el("button", { type: "button", class: "frame-review-btn bad", text: "Inaccurate" });
+    var accBtn = el("button", { type: "button", class: "frame-review-btn acc", text: "Precise" });
+    var badBtn = el("button", { type: "button", class: "frame-review-btn bad", text: "Imprecise" });
     function paint() {
       accBtn.classList.toggle("is-on", f.review === "accurate");
       badBtn.classList.toggle("is-on", f.review === "inaccurate");
@@ -1367,8 +1376,8 @@
   // Model trust, an inferred reliability score for a single detection. It is the
   // detection evidence D (the same quantity salience uses) times the model's
   // expert-judged accuracy for the species it called. It is distinct from the
-  // per-frame "Event trust" in the curation view below, which is the share of
-  // frames kept after review. It is never a measurement, so it is always shown
+  // per-frame "Frame precision" in the curation view below, which is the share of
+  // reviewed frames marked precise. It is never a measurement, so it is always shown
   // labelled as inference and tagged with the model it belongs to. When the
   // species has no expert reviews under that model it is not computable, and it
   // says "not yet rated" rather than showing a false number. (The response field
@@ -1446,25 +1455,25 @@
     var etRow = eventTrustAuditRow(obs.event_trust);
     if (etRow) { wrap.appendChild(etRow); }
     wrap.appendChild(el("p", { class: "form-hint", text:
-      "Each frame below is a saved detection with its own confidence and box, so the frame count and the true duration are directly verifiable. Confidence is the peak across frames; salience is computed from the whole record at capture. Model trust is inferred, not measured: it multiplies the detection evidence by this model's expert-judged accuracy for the species, and it never changes a stored value. It is a different quantity from the per-frame Event trust in the curation section." }));
+      "Each frame below is a saved detection with its own confidence and box, so the frame count and the true duration are directly verifiable. Confidence is the peak across frames; salience is computed from the whole record at capture. Model trust is inferred, not measured: it multiplies the detection evidence by this model's expert-judged accuracy for the species, and it never changes a stored value. It is a different quantity from the per-frame Frame precision in the curation section." }));
     return wrap;
   }
 
   function auditFrameStrip(frames, caption, obsId, onReviewed) {
     var wrap = el("div", { class: "audit-strip-wrap" });
     var painters = [];
-    // The caption doubles as a control: a "mark all Accurate" link lets a
+    // The caption doubles as a control: a "mark all Precise" link lets a
     // reviewer accept the whole event at once and then only mark the few wrong
-    // frames Inaccurate (a later per-frame verdict wins). It reads as plain text
+    // frames Imprecise (a later per-frame verdict wins). It reads as plain text
     // set apart from the buttons, per the review layout.
     var cap = el("div", { class: "card-note" }, [
-      el("span", { text: frames.length + " frames · scroll to review · click a frame to enlarge · mark each Accurate or Inaccurate · " })
+      el("span", { text: frames.length + " frames · scroll to review · click a frame to enlarge · mark each Precise or Imprecise · " })
     ]);
-    var markAll = el("span", { class: "link-inline", text: "mark all Accurate", role: "button", tabindex: "0" });
+    var markAll = el("span", { class: "link-inline", text: "mark all Precise", role: "button", tabindex: "0" });
     function doMarkAll() {
       if (!obsId || !frames.length) { return; }
-      if (!window.confirm("Mark all " + frames.length + " frames as accurate? You can still mark individual frames Inaccurate afterward.")) { return; }
-      markAll.textContent = "marking all accurate...";
+      if (!window.confirm("Mark all " + frames.length + " frames as precise? You can still mark individual frames Imprecise afterward.")) { return; }
+      markAll.textContent = "marking all precise...";
       apiSend("/detections/" + encodeURIComponent(obsId) + "/frames/review-all", "POST", { verdict: "accurate" })
         .then(function (res) {
           painters.forEach(function (fn) { fn(); });
@@ -2019,7 +2028,7 @@
     var etRow = eventTrustAuditRow(obs.event_trust);
     if (etRow) { wrap.appendChild(etRow); }
     wrap.appendChild(el("p", { class: "form-hint", text:
-      "Each call below is a stored acoustic detection with its own confidence, so the count and the peak confidence are directly verifiable against the clip. Salience is computed from the whole record at capture. Model trust is inferred, not measured: it multiplies the detection evidence by this model's expert-judged accuracy for the species, and it never changes a stored value. It is a different quantity from the per-frame Event trust in the curation section." }));
+      "Each call below is a stored acoustic detection with its own confidence, so the count and the peak confidence are directly verifiable against the clip. Salience is computed from the whole record at capture. Model trust is inferred, not measured: it multiplies the detection evidence by this model's expert-judged accuracy for the species, and it never changes a stored value. It is a different quantity from the per-frame Frame precision in the curation section." }));
     return wrap;
   }
 
