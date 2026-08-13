@@ -3794,6 +3794,40 @@ def create_app(settings, database):
             state = "failed"
         return {"state": state, "returncode": returncode, "started": job.get("started"), "log": log_text}
 
+    @app.post(f"{API_PREFIX}/stations/{{station_id}}/sync")
+    def sync_station_now(station_id):
+        """Pull this station's records and media to the desktop now, in the background.
+
+        The desktop drives the append-only station-to-desktop sync over ssh: the
+        station exports its unconfirmed rows, the desktop imports them and fetches
+        the frames and clips they reference, and the station marks them confirmed.
+        The pull runs in a worker thread; the interface polls the status below.
+        """
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="syncing runs from the desktop; this node is not the desktop.")
+        station = _require_station(station_id)
+        if not (station.get("provisioning") or {}).get("host"):
+            raise HTTPException(status_code=409, detail="this station's Pi has not been connected yet; use Connect Pi in Settings first.")
+
+        def _target(update):
+            update(message="pulling the station's records and media")
+            from audtheia import sync as sync_mod  # noqa: PLC0415 - deferred so import is cheap
+            return sync_mod.sync_station(settings, db, station)
+
+        if not _start_background_job("station_sync_" + station_id, _target):
+            raise HTTPException(status_code=409, detail="a sync is already running for this station")
+        return {"state": "running", "note": "pulling the station's records and media; poll the sync status."}
+
+    @app.get(f"{API_PREFIX}/stations/{{station_id}}/sync")
+    def sync_station_status(station_id):
+        """The status of the most recent sync for a station, and the desktop backlog."""
+        status = _job_snapshot("station_sync_" + station_id)
+        try:
+            status["unsynced_on_desktop"] = db.count_unsynced()
+        except Exception:  # noqa: BLE001 - a store without the syncable tables reports none
+            status["unsynced_on_desktop"] = {}
+        return status
+
     # -- desktop capture control (start and stop the live loop) -----------
 
     @app.post(f"{API_PREFIX}/capture/{{station_id}}/start")

@@ -3512,6 +3512,35 @@
       }).catch(function (e) { btn.disabled = false; msg.textContent = "Could not read push status: " + e.message; });
     }
 
+    // Poll a station sync until it finishes, then report what was pulled. The
+    // background job stores its result, so this reads the same status the
+    // automatic loop and any other caller would see.
+    function pollSync(sid, btn, msg) {
+      apiGet("/stations/" + encodeURIComponent(sid) + "/sync").then(function (s) {
+        if (s.status === "running") {
+          if (stillHere(msg)) {
+            msg.textContent = s.message || "Pulling the station's records.";
+            window.setTimeout(function () { pollSync(sid, btn, msg); }, 1500);
+          }
+          return;
+        }
+        btn.disabled = false;
+        if (s.status === "error") {
+          msg.textContent = "Sync did not finish: " + (s.error || "unknown") + ". It is safe to try again.";
+          return;
+        }
+        var r = s.result || {};
+        if (r.skipped) { msg.textContent = r.reason || "Nothing to sync."; return; }
+        var conf = r.confirmed || {};
+        var obs = conf.observations || 0;
+        var media = r.media || {};
+        var line = "Synced " + obs + " event" + (obs === 1 ? "" : "s");
+        if (media.fetched) { line += ", " + media.fetched + " media file" + (media.fetched === 1 ? "" : "s"); }
+        if (media.failed) { line += " (" + media.failed + " media not fetched)"; }
+        msg.textContent = line + ".";
+      }).catch(function (e) { btn.disabled = false; msg.textContent = "Could not read sync status: " + e.message; });
+    }
+
     // The target-species editor: add or remove the species each station is
     // looking for. The reference fetch covers these and the field model is
     // trained on them, so this is where a person declares them without editing a
@@ -3577,6 +3606,22 @@
           });
           body.appendChild(el("div", { class: "control-row" }, [push]));
           body.appendChild(pushMsg);
+
+          // Pull this field station's captured records and media to the desktop
+          // now. A connected station is also pulled automatically whenever it is
+          // reachable; this is the manual trigger and a place to watch progress.
+          var syncMsg = el("p", { class: "form-hint", text:
+            "Pull this station's captured records and media to the desktop. A connected station is pulled automatically when reachable; use this to pull now. A station whose Pi has not been connected yet will say so." });
+          var syncBtn = el("button", { type: "button", class: "btn btn-small", text: "Sync now" });
+          syncBtn.addEventListener("click", function () {
+            syncBtn.disabled = true;
+            syncMsg.textContent = "Pulling the station's records and media.";
+            apiSend("/stations/" + encodeURIComponent(sid) + "/sync", "POST", {})
+              .then(function () { pollSync(sid, syncBtn, syncMsg); })
+              .catch(function (e) { syncBtn.disabled = false; syncMsg.textContent = e.message; });
+          });
+          body.appendChild(el("div", { class: "control-row" }, [syncBtn]));
+          body.appendChild(syncMsg);
 
           // Cards start folded, so a long station list opens as a compact,
           // scannable set of one-line summaries; a person opens the one they

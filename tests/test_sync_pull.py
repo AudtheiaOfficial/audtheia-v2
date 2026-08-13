@@ -27,8 +27,10 @@ Run: python tests/test_sync_pull.py
 
 from __future__ import annotations
 
+import shutil
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -43,7 +45,16 @@ from audtheia.storage.database import (  # noqa: E402
     new_id,
     utc_now_iso,
 )
-from audtheia.sync import SyncTransportError, do_confirm, do_export, pull_all, pull_once  # noqa: E402
+from audtheia.sync import (  # noqa: E402
+    SyncTransportError,
+    do_confirm,
+    do_export,
+    pull_all,
+    pull_media,
+    pull_once,
+    run_sync_loop,
+    sync_reachable_stations,
+)
 
 SCHEMA = REPO / "audtheia" / "storage" / "schema.sql"
 CHECKS = {"passed": 0, "failed": 0}
@@ -189,6 +200,122 @@ def test_transport_failure() -> None:
         check("nothing was imported on a failed pull", len(desktop.list_observations()) == 0)
 
 
+class FakeFetcher:
+    """A MediaFetcher that copies from a local station tree to a desktop tree,
+    mirroring what scp does across the network."""
+
+    def __init__(self, pi_root: Path, desktop_root: Path) -> None:
+        self.pi_root = Path(pi_root)
+        self.desktop_root = Path(desktop_root)
+
+    def fetch(self, remote_rel, local_abs, *, is_dir):
+        src = self.pi_root / remote_rel
+        dst = Path(local_abs)
+        if is_dir:
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+        else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+
+class FakeSettings:
+    def __init__(self, stations, repo_root):
+        self._stations = stations
+        self.repo_root = repo_root
+
+    def stations(self):
+        return self._stations
+
+
+def test_media_pull() -> None:
+    print("\nMedia pull brings an event's frames and clip to the desktop")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        pi, desk = root / "pi", root / "desk"
+        event_rel = "data/detections/visual/EVENT1"
+        (pi / event_rel).mkdir(parents=True)
+        (pi / event_rel / "frame_000.jpg").write_bytes(b"jpegdata")
+        (pi / event_rel / "annotations.jsonl").write_text("{}", encoding="utf-8")
+        clip_rel = "data/detections/audio/EVENT1.wav"
+        (pi / clip_rel).parent.mkdir(parents=True)
+        (pi / clip_rel).write_bytes(b"wavdata")
+
+        obs = [{"representative_frame": event_rel + "/frame_000.jpg", "audio_clip_path": clip_rel}]
+        res = pull_media(obs, fetcher=FakeFetcher(pi, desk), repo_root=str(desk))
+        check("the whole event directory arrived",
+              (desk / event_rel / "frame_000.jpg").exists() and (desk / event_rel / "annotations.jsonl").exists())
+        check("the audio clip arrived", (desk / clip_rel).exists())
+        check("both fetches counted, none failed", res["fetched"] == 2 and res["failed"] == 0)
+
+        # A missing source is a counted failure, never a raise.
+        missing = pull_media([{"representative_frame": "data/detections/visual/GONE/f.jpg"}],
+                             fetcher=FakeFetcher(pi, desk), repo_root=str(desk))
+        check("a missing media file is a soft failure", missing["failed"] == 1)
+
+
+def test_reachable_stations() -> None:
+    print("\nSyncing reachable stations honours targets and reachability")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        station = _make_db(root / "station.db")
+        desktop = _make_db(root / "desktop.db")
+        sid = new_id()
+        _register_station(station, sid)
+        _register_station(desktop, sid)
+        _seed_station_events(station, sid, 2)
+
+        stations = [
+            {"station_id": sid, "provisioning": {"host": "10.0.0.5", "user": "pi", "port": 22}},
+            {"station_id": new_id()},  # no connection target: skipped
+        ]
+        settings = FakeSettings(stations, str(root))
+        results = sync_reachable_stations(
+            settings, desktop,
+            runner_factory=lambda s: LocalRunner(station),
+            fetcher_factory=lambda s: None,
+            reachable=lambda s: True,
+        )
+        check("the connected station synced", results.get(sid, {}).get("confirmed", {}).get("observations") == 2)
+        check("a station with no target is not synced", len(results) == 1)
+        check("the station was drained", station.count_unsynced()["observations"] == 0)
+
+        # An unreachable station is skipped with a reason, not an error.
+        station2 = _make_db(root / "station2.db")
+        _register_station(station2, sid)
+        _seed_station_events(station2, sid, 1)
+        skipped = sync_reachable_stations(
+            settings, desktop,
+            runner_factory=lambda s: LocalRunner(station2),
+            fetcher_factory=lambda s: None,
+            reachable=lambda s: False,
+        )
+        check("an unreachable station is skipped", skipped.get(sid, {}).get("skipped") is True)
+
+
+def test_sync_loop() -> None:
+    print("\nThe automatic loop runs a pass and stops cleanly")
+    calls = []
+    stop = threading.Event()
+
+    def one_pass(_s, _d):
+        calls.append(1)
+        stop.set()  # ask the loop to stop after this pass
+
+    run_sync_loop(None, None, stop, interval=0.01, sync=one_pass)
+    check("the loop ran at least one pass", len(calls) >= 1)
+
+    stop2 = threading.Event()
+    n = [0]
+
+    def failing_pass(_s, _d):
+        n[0] += 1
+        stop2.set()
+        raise RuntimeError("transient")
+
+    run_sync_loop(None, None, stop2, interval=0.01, sync=failing_pass)
+    check("a failing pass is caught and the loop still stops", n[0] >= 1)
+
+
 def test_empty_station() -> None:
     print("\nAn empty station is a clean no-op")
     with tempfile.TemporaryDirectory() as tmp:
@@ -215,6 +342,9 @@ def main() -> int:
     test_paging_and_idempotency()
     test_import_is_idempotent()
     test_transport_failure()
+    test_media_pull()
+    test_reachable_stations()
+    test_sync_loop()
     test_empty_station()
     print("\n" + "=" * 72)
     print(f"RESULT: {CHECKS['passed']} passed, {CHECKS['failed']} failed")

@@ -461,6 +461,13 @@ class DesktopStation:
         )
         scheduler.start()
 
+        # Automatically pull reachable field stations, so a station's captured
+        # record reaches the desktop with no manual step. The loop does nothing
+        # when there are no connected stations, and stops with the server. It is
+        # gated on the buffer's auto-sync setting inside start_sync_loop.
+        from audtheia.sync import start_sync_loop
+        sync_stop = start_sync_loop(self._settings, self._db)
+
         from audtheia.app.server import create_app
         import uvicorn
 
@@ -474,6 +481,8 @@ class DesktopStation:
             uvicorn.run(app, host=host, port=port, log_level="info")
         finally:
             stop.set()
+            if sync_stop is not None:
+                sync_stop.set()
             monitor.stop()
             scheduler.join(timeout=5.0)
 
