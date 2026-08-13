@@ -48,9 +48,14 @@ supervision==0.29.0
 #                                 through the system site packages.
 #   tflite-runtime or tensorflow  the acoustic model runtime for BirdNET or the
 #                                 marine model.
-#   sounddevice or PyAudio        audio capture from a hydrophone or microphone.
+#   sounddevice or PyAudio        audio capture from a hydrophone or microphone
+#                                 (sounddevice needs the libportaudio2 apt package).
+#   smbus2                        the I2C bus for the environmental sensor bank.
 #   pyserial or gpsd-py3          the GPS receiver.
 #
-# When a driver is built, pin its packages here against a live check, with a note
-# on any aarch64 constraint, the same way the analysis libraries above are
-# pinned.
+# The field drivers that use these are now implemented in
+# audtheia/pipeline/field_drivers.py (and the accelerator detector in
+# audtheia/pipeline/drivers.py); their install commands and the on-device
+# validation checklist are in docs/field-drivers.md. They remain documented rather
+# than pinned here, so a manifest never pins a version for hardware it cannot see;
+# pin each against a live check when a station's specific hardware is validated.

@@ -1,0 +1,35 @@
+name: tests
+
+# Run the full test suite on every push and pull request. The suite runs entirely
+# on mocked hardware, so no camera, accelerator, or field device is needed; the
+# one detection-loop check that needs the object-tracker package is skipped when
+# that optional package is absent, which is a clean pass.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the test libraries
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy fpdf2 fastapi "httpx<0.28" uvicorn
+
+      - name: Run the suite
+        run: python tests/run_all.py

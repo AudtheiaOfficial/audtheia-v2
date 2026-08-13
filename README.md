@@ -46,6 +46,14 @@ Audtheia runs the same pipeline in two deployments. Choose the one that fits wha
 
 In both modes, detection triggers a complete multimodal observation, quality control finalizes it, the desktop verifies and runs a longitudinal analysis over the record, and reports are generated with every value labeled by its provenance. The field station simply adds real sensors and real, unattended deployment.
 
+## Project status
+
+Audtheia V2 is released as a research preview, and it is honest about what is proven and what is being validated.
+
+**Working now, on any computer.** The desktop hardware-free mode captures live from a webcam, a network or web-page stream, or a video file, and runs the full pipeline: detection, object tracking, one-event-per-observation capture, desktop verification, quality control, the longitudinal pass, expert review, and provenance-labeled PDF and CSV reports. This path is covered by the automated test suite.
+
+**Implemented, validating on hardware.** The field-station capture layer, live audio from a microphone or hydrophone, an I2C environmental sensor bank, a satellite receiver, and on-accelerator detection on the Hailo NPU, is fully implemented against the documented device protocols and unit-tested against scripted hardware backends. It is now entering on-device validation on physical Raspberry Pi 5 and AI HAT+ 2 hardware. Until that validation completes, treat the field-station capture path as functionally complete but not yet field-proven. Field trials and contributions are warmly welcome; see [Contributing to the field station](#contributing-to-the-field-station) and [`docs/field-drivers.md`](docs/field-drivers.md).
+
 ## Why it exists
 
 Some of the ecosystems most worth protecting are the hardest to observe. Traditional field surveys are limited by what a person can see and how long they can stay: many species are cryptic, nocturnal, or rare; dense habitats and low light conceal them; skilled fieldwork is costly and hard to sustain; and even careful observers introduce bias. Continuous audio-visual monitoring closes those gaps, watching quietly around the clock and hearing what cannot be seen, catching the crepuscular and nocturnal activity that timed surveys miss, so that even elusive species are detected and counted more reliably, and without the disturbance a human presence brings. Audtheia was built to put that capability in the hands of a single researcher, a classroom, a small organization, or a protected-area manager, work that would otherwise take a full team on site.
@@ -73,6 +81,10 @@ Typical uses include coral-reef and benthic monitoring, marine megafauna and fis
 - one provenance-tagged, multimodal observation is written to the local database.
 
 The desktop hub does the heavy, high-accuracy work: it re-verifies every detection with a second, larger model (RF-DETR through ONNX Runtime), owns all ecological interpretation, runs a longitudinal pattern-discovery pass over the verified record, generates reports, and holds the authoritative database. **Only reports and the pattern pass run on a schedule;** everything else is driven by what actually happens in front of the sensor.
+
+## Learning the subfields of AI by using them
+
+Audtheia is also a way to understand what artificial intelligence actually is by watching it work, part by part. The platform makes three distinct **subfields of AI** tangible and, crucially, keeps them separable and labeled: **computer vision** (the detection and verification models that find and identify organisms in images and video), **bioacoustics and audio recognition** (the acoustic models that identify species by sound), and a **language model** that, by deliberate design, only reads, summarizes, and explains the results already measured and stored in the record, and is constrained never to generate new facts or invent data. Seeing these subfields operate side by side, each one bounded and each one shown with its provenance, is meant to demystify AI for students, educators, and scientists: to replace misconception with understanding, to make plain where a model measures and where a person judges, and to show AI's genuine, beneficial use in the service of science and conservation. Helping people learn to use these tools well, for the good of present and future generations, is part of why Audtheia is open.
 
 ## The scientific guarantee
 
@@ -206,7 +218,9 @@ Once the hardware is assembled:
 
    Add `--dry-run` to preview every action without contacting a Pi.
 
-This sends the code, the station's configuration and models, and its network settings to the Pi, sets up its environment, initializes its local store, brings up its Wi-Fi hotspot, and installs the service that keeps it running across reboots. From then on the station operates independently. In the field with no internet, it broadcasts its own network named after the station; connect a phone or laptop to that network and open the station's local address to see live detections, sensor readings, storage status, and settings. Back within range of your computer, the desktop connects and pulls new records automatically.
+This sends the code, the station's configuration and models, and its network settings to the Pi, sets up its environment, initializes its local store, brings up its Wi-Fi hotspot for local access, and installs the service that keeps it running across reboots. From then on the station operates independently, capturing to its own local store. In the field with no internet, it broadcasts its own network named after the station. Back within range of your computer, the desktop connects and pulls new records automatically, and you review everything, the detections, audio, sensors, GPS, and reports, in the desktop application.
+
+A station-local live interface served over that hotspot, so you can open the station's own address from a phone or laptop in the field and watch live detections and sensor readings, is part of the field-station work now entering on-device validation (see [Project status](#project-status)). Today the desktop application is where a station's record is reviewed.
 
 ## Setting up species names and conservation status
 
@@ -293,6 +307,18 @@ Because it turns continuous observation into a structured, provenance-labeled re
 ## Relationship to Audtheia V1
 
 Audtheia V2 builds on the earlier Audtheia monitoring platform, [Audtheia V1](https://audtheiaofficial.github.io/audtheia-environmental-monitoring/index.html), which remains available and unchanged. V1 is a cloud-connected system that processes video in real time while specialized AI agents perform deep ecological analysis in parallel, storing research-grade observations and generating professional PDF reports; its [website](https://audtheiaofficial.github.io/audtheia-environmental-monitoring/index.html) hosts a live demo, a researcher dashboard, and full documentation. V2 is a fresh, fully offline redesign in its own repository. The marine-sponge detection model from V1, the [Official Porifera Classifier](https://universe.roboflow.com/marine-sciences-research-station/official-porifera-classifier-ju8er) on Roboflow Universe, carries forward here as the default desktop verification model, so earlier work continues to apply.
+
+## Contributing to the field station
+
+Audtheia's field-station architecture is complete and the desktop platform is ready to pair with it; what remains is validating the hardware driver layer on physical devices and running real deployments. If you work with the Raspberry Pi 5 and the AI HAT+ 2, with environmental sensors, hydrophones, or GPS receivers, or you are planning a marine, terrestrial, estuarine, or freshwater deployment, your help would be genuinely valuable and gratefully credited.
+
+Especially welcome:
+
+- **On-device validation of the field drivers.** The live audio source, the I2C environmental sensor bank, the NMEA satellite receiver, and the Hailo accelerator detector each plug into a stable seam and need confirming against real hardware. The drivers and a step-by-step validation checklist are in [`docs/field-drivers.md`](docs/field-drivers.md); the code is [`audtheia/pipeline/field_drivers.py`](audtheia/pipeline/field_drivers.py).
+- **Building and compiling a detector to the accelerator**, following the [custom models guide](docs/custom-models.md), on the [reference hardware](docs/hardware.md).
+- **Real field trials and the notes that come out of them**, following the [field deployment checklist](docs/field-deployment-checklist.md).
+
+The best place to start is a [GitHub issue or discussion](https://github.com/AudtheiaOfficial/audtheia-v2/issues): say hello, and we will find the right first step together. Please also read [`CONTRIBUTING.md`](CONTRIBUTING.md) for the design rules a contribution keeps.
 
 ## Citation
 
