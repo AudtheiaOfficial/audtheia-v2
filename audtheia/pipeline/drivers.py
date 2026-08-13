@@ -53,6 +53,13 @@ __all__ = [
     "DEFAULT_CONFIDENCE",
     "DEFAULT_NMS_IOU",
     "LETTERBOX_FILL",
+    # Field-station hardware builders, re-exported so a station's optional drivers
+    # module (this module) exposes them where the field runner looks. Their heavy
+    # hardware libraries are imported lazily inside the builders, so importing this
+    # module never needs a Raspberry Pi.
+    "build_audio_source",
+    "build_sensor_bank",
+    "build_gps_source",
 ]
 
 # Fallbacks for a model whose input size or activation floor cannot be read from
@@ -685,19 +692,311 @@ def _class_names_from_config(entry: dict, model_path: Path) -> dict:
     return {}
 
 
-def build_detector(settings, station: dict):
-    """Load the station's desktop screening model into an ONNX Runtime detector.
+# ===========================================================================
+# Detector: a YOLO model run on the Hailo accelerator (field station)
+#
+# PENDING ON-DEVICE VALIDATION. This is the field-station analogue of the desktop
+# ONNX detector: the same screening role, run from a compiled .hef on the Hailo
+# accelerator instead of ONNX on the CPU. The heavy runtime (HailoRT) is imported
+# lazily inside the backend, and the backend is injected, so the detector's
+# preprocessing and decoding are exercised against a scripted output with no
+# accelerator present; only the thin HailoRT wrapper is hardware-specific.
+# ===========================================================================
 
-    The model may be a YOLO or an RF-DETR export; the loader detects which and
-    returns the matching detector, so a station screens with whatever ONNX
-    classifier is placed for it.
+
+def _nms_indices(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float) -> list:
+    """Greedy non-maximum suppression, returning the kept row indices.
+
+    Mirrors the desktop YOLO detector's suppression exactly; kept separate so the
+    accelerator's raw-tensor path reduces boxes identically to the desktop path.
     """
-    entry = settings.desktop_visual_model(station)
+    if boxes.shape[0] == 0:
+        return []
+    x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+    areas = np.clip(x2 - x1, 0, None) * np.clip(y2 - y1, 0, None)
+    order = scores.argsort()[::-1]
+    keep: list = []
+    while order.size > 0:
+        i = int(order[0])
+        keep.append(i)
+        if order.size == 1:
+            break
+        rest = order[1:]
+        xx1 = np.maximum(x1[i], x1[rest])
+        yy1 = np.maximum(y1[i], y1[rest])
+        xx2 = np.minimum(x2[i], x2[rest])
+        yy2 = np.minimum(y2[i], y2[rest])
+        inter = np.clip(xx2 - xx1, 0, None) * np.clip(yy2 - yy1, 0, None)
+        iou = inter / (areas[i] + areas[rest] - inter + 1e-9)
+        order = rest[iou <= iou_threshold]
+    return keep
+
+
+def _yolo_raw_to_detections(output, scale, pad, orig_w, orig_h, class_names, conf, iou) -> list:
+    """Decode a raw YOLO output tensor to detections in original-frame pixels.
+
+    This mirrors the desktop YOLO detector's decode so a .hef that outputs raw
+    tensors is screened identically to the desktop model. A .hef compiled with
+    on-chip non-maximum suppression takes the decoded path instead.
+    """
+    pred = np.asarray(output, dtype=np.float32)
+    if pred.ndim == 3:
+        pred = pred[0]
+    if pred.shape[0] < pred.shape[1]:
+        pred = pred.T
+    if pred.shape[0] == 0 or pred.shape[1] < 5:
+        return []
+    boxes = pred[:, :4]
+    class_scores = pred[:, 4:]
+    class_ids = np.argmax(class_scores, axis=1)
+    confidences = class_scores[np.arange(class_scores.shape[0]), class_ids]
+    keep = confidences >= conf
+    if not np.any(keep):
+        return []
+    boxes, class_ids, confidences = boxes[keep], class_ids[keep], confidences[keep]
+    pad_x, pad_y = pad
+    cx, cy, bw, bh = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+    x1 = np.clip((cx - bw / 2 - pad_x) / scale, 0, orig_w)
+    y1 = np.clip((cy - bh / 2 - pad_y) / scale, 0, orig_h)
+    x2 = np.clip((cx + bw / 2 - pad_x) / scale, 0, orig_w)
+    y2 = np.clip((cy + bh / 2 - pad_y) / scale, 0, orig_h)
+    xyxy = np.stack([x1, y1, x2, y2], axis=1)
+    out = []
+    for i in _nms_indices(xyxy, confidences, iou):
+        cid = int(class_ids[i])
+        out.append(RawDetection(
+            x1=float(x1[i]), y1=float(y1[i]), x2=float(x2[i]), y2=float(y2[i]),
+            confidence=float(confidences[i]), class_id=cid,
+            class_name=class_names.get(cid, str(cid)),
+        ))
+    return out
+
+
+def _map_box(x1, y1, x2, y2, scale, pad, orig_w, orig_h):
+    """Map a box from letterboxed-input pixels back to original-frame pixels."""
+    pad_x, pad_y = pad
+    return (
+        float(np.clip((x1 - pad_x) / scale, 0, orig_w)),
+        float(np.clip((y1 - pad_y) / scale, 0, orig_h)),
+        float(np.clip((x2 - pad_x) / scale, 0, orig_w)),
+        float(np.clip((y2 - pad_y) / scale, 0, orig_h)),
+    )
+
+
+def _single_output(outputs):
+    """Coerce a backend's outputs to a single ndarray, or None for a per-class list.
+
+    A raw-tensor .hef returns one tensor (sometimes wrapped in a length-one list or
+    a name-keyed dict); an NMS .hef returns a per-class list of boxes. This returns
+    the single tensor when there is one, and None to signal the decoded-NMS path.
+    """
+    arr = outputs
+    if isinstance(arr, dict):
+        values = list(arr.values())
+        arr = values[0] if len(values) == 1 else values
+    if isinstance(arr, (list, tuple)):
+        if len(arr) == 1:
+            arr = arr[0]
+        else:
+            return None
+    try:
+        return np.asarray(arr, dtype=np.float32)
+    except (ValueError, TypeError):
+        return None
+
+
+def _looks_like_raw_yolo(arr, num_classes: int) -> bool:
+    """Whether an output tensor is a raw YOLO prediction rather than decoded boxes.
+
+    A raw YOLO tensor carries, per candidate box, four box values plus one score
+    per class, so one of its axes is 4 + num_classes and the other is the (large)
+    candidate count. Decoded detections instead have a small last axis (5 or 6).
+    """
+    if arr is None:
+        return False
+    a = arr[0] if arr.ndim == 3 else arr
+    if a.ndim != 2:
+        return False
+    expected = 4 + int(num_classes)
+    return expected >= 5 and expected in a.shape and max(a.shape) > expected
+
+
+def _hailo_nms_to_detections(outputs, scale, pad, orig_w, orig_h, in_w, in_h, class_names, conf) -> list:
+    """Decode a Hailo on-chip-NMS output to detections in original-frame pixels.
+
+    Handles the shapes HailoRT's NMS postprocess produces: a per-class list whose
+    element c holds that class's boxes as rows of [y_min, x_min, y_max, x_max,
+    score] normalized to [0, 1], and, as a fallback, a flat array of rows
+    [x_min, y_min, x_max, y_max, score, class] in input pixels. Normalized boxes
+    are scaled to the letterboxed input, then both are mapped back out of the
+    letterbox to original-frame pixels.
+    """
+    out = []
+
+    def _emit(cid, x1, y1, x2, y2, score):
+        if score < conf:
+            return
+        mx1, my1, mx2, my2 = _map_box(x1, y1, x2, y2, scale, pad, orig_w, orig_h)
+        out.append(RawDetection(x1=mx1, y1=my1, x2=mx2, y2=my2, confidence=float(score),
+                                class_id=int(cid), class_name=class_names.get(int(cid), str(int(cid)))))
+
+    if isinstance(outputs, (list, tuple)):
+        for cid, rows in enumerate(outputs):
+            rows = np.asarray(rows, dtype=np.float32)
+            if rows.size == 0 or rows.ndim != 2 or rows.shape[1] < 5:
+                continue
+            for r in rows:
+                ymin, xmin, ymax, xmax, score = r[0], r[1], r[2], r[3], r[4]
+                _emit(cid, xmin * in_w, ymin * in_h, xmax * in_w, ymax * in_h, score)
+        return out
+
+    arr = np.asarray(outputs, dtype=np.float32)
+    if arr.ndim == 3:
+        arr = arr[0]
+    if arr.ndim == 2 and arr.shape[1] >= 6:
+        for r in arr:
+            _emit(r[5], r[0], r[1], r[2], r[3], r[4])
+    return out
+
+
+class HailoYoloDetector:
+    """A per-frame YOLO detector that runs on the Hailo accelerator. PENDING
+    ON-DEVICE VALIDATION.
+
+    The backend is any object with ``infer(blob) -> outputs`` and ``close()``; the
+    real one wraps HailoRT, a test one scripts the outputs. The frame is
+    letterboxed to the model's square input as uint8 in the channel-last layout the
+    accelerator reads. The decode auto-detects what the .hef returns: a raw YOLO
+    tensor is decoded on the host exactly as the desktop detector does, and an
+    on-chip-NMS output of already-decoded boxes is mapped straight through, so
+    either compile choice works with no code change.
+    """
+
+    def __init__(self, backend, *, class_names: dict, input_size: tuple = DEFAULT_INPUT_SIZE,
+                 conf_threshold: float = DEFAULT_CONFIDENCE, iou_threshold: float = DEFAULT_NMS_IOU) -> None:
+        self._backend = backend
+        self._class_names = {int(k): str(v) for k, v in dict(class_names).items()}
+        self._in_w = int(input_size[0])
+        self._in_h = int(input_size[1])
+        self._conf = float(conf_threshold)
+        self._iou = float(iou_threshold)
+
+    @property
+    def class_names(self) -> dict:
+        return dict(self._class_names)
+
+    def detect(self, frame: Frame) -> list:
+        blob, scale, pad = self._preprocess(frame.image)
+        outputs = self._backend.infer(blob)
+        return self._postprocess(outputs, scale, pad, frame.image.shape[1], frame.image.shape[0])
+
+    def close(self) -> None:
+        try:
+            self._backend.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _preprocess(self, image_rgb: np.ndarray):
+        cv2 = _import_cv2()
+        h0, w0 = image_rgb.shape[:2]
+        scale = min(self._in_w / w0, self._in_h / h0)
+        new_w, new_h = int(round(w0 * scale)), int(round(h0 * scale))
+        resized = cv2.resize(image_rgb, (new_w, new_h))
+        canvas = np.full((self._in_h, self._in_w, 3), LETTERBOX_FILL, dtype=np.uint8)
+        pad_x = (self._in_w - new_w) // 2
+        pad_y = (self._in_h - new_h) // 2
+        canvas[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = resized
+        # The accelerator reads uint8 in channel-last (NHWC) layout.
+        blob = np.ascontiguousarray(canvas[np.newaxis, ...], dtype=np.uint8)
+        return blob, scale, (pad_x, pad_y)
+
+    def _postprocess(self, outputs, scale, pad, orig_w, orig_h) -> list:
+        single = _single_output(outputs)
+        if _looks_like_raw_yolo(single, len(self._class_names)):
+            return _yolo_raw_to_detections(single, scale, pad, orig_w, orig_h,
+                                           self._class_names, self._conf, self._iou)
+        return _hailo_nms_to_detections(outputs, scale, pad, orig_w, orig_h,
+                                        self._in_w, self._in_h, self._class_names, self._conf)
+
+
+class HailoRtBackend:
+    """A HailoRT inference backend for a compiled .hef. PENDING ON-DEVICE VALIDATION.
+
+    Targets the HailoRT InferModel API used by the Raspberry Pi AI HAT+ 2 stack
+    (HailoRT 4.17 and newer). It loads the .hef onto a virtual device once and runs
+    one frame per ``infer`` call, returning the raw output the detector then
+    decodes. The library is imported lazily, so importing this module never needs
+    HailoRT. This thin wrapper is the one part that must be confirmed against the
+    HailoRT version installed on the station; the detector's preprocess and decode
+    are validated on their own.
+    """
+
+    def __init__(self, hef_path, *, input_size: Optional[tuple] = None) -> None:
+        try:
+            from hailo_platform import HEF, VDevice  # noqa: PLC0415 - optional, station only
+        except ImportError as exc:
+            raise CaptureDependencyError(
+                "running a .hef on the accelerator needs HailoRT (the 'hailo_platform' "
+                "package from the Raspberry Pi AI HAT+ 2 stack). Install it on the "
+                "station, or place an ONNX model for a desktop capture."
+            ) from exc
+        self._hef = HEF(str(hef_path))
+        self._vdevice = VDevice()
+        self._infer_model = self._vdevice.create_infer_model(str(hef_path))
+        self._configured = self._infer_model.configure()
+        self._input_size = input_size
+        try:
+            shape = self._hef.get_input_vstream_infos()[0].shape  # (height, width, channels)
+            self._input_size = (int(shape[1]), int(shape[0]))
+        except Exception:  # noqa: BLE001 - fall back to the configured/default size
+            pass
+
+    def input_size(self) -> Optional[tuple]:
+        return self._input_size
+
+    def infer(self, blob):
+        bindings = self._configured.create_bindings()
+        bindings.input().set_buffer(np.ascontiguousarray(blob[0]))
+        self._configured.run([bindings], timeout=10000)
+        return bindings.output().get_buffer()
+
+    def close(self) -> None:
+        try:
+            self._vdevice.release()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _screening_entry(settings, station: dict) -> dict:
+    """The station's screening-model entry for the node it is running on.
+
+    A field station (node role 'pi') screens on the accelerator from its compiled
+    model at models.visual_pi; the desktop screens on ONNX from models.visual_desktop.
+    Choosing by node role means each node loads the model its own runtime can run,
+    and the desktop path is exactly as before.
+    """
+    if settings.node_role == "pi":
+        pi = station.get("models", {}).get("visual_pi", {}) or {}
+        if pi.get("path"):
+            return dict(pi)
+    return settings.desktop_visual_model(station)
+
+
+def build_detector(settings, station: dict):
+    """Load the station's screening model into the detector its runtime can run.
+
+    On the desktop this is a YOLO or RF-DETR ONNX export through ONNX Runtime; on a
+    field station it is a compiled .hef on the Hailo accelerator. The model file's
+    extension selects the runtime, so a station screens with whatever model is
+    placed for it.
+    """
+    entry = _screening_entry(settings, station)
     path = entry.get("path")
     if not path:
         raise CaptureConfigError(
-            "this station has no models.visual_desktop.path configured; a desktop "
-            "capture needs an ONNX detection model to screen frames."
+            "this station has no screening model configured; a field station needs "
+            "models.visual_pi.path (a compiled .hef) and a desktop capture needs "
+            "models.visual_desktop.path (an ONNX model)."
         )
 
     model_path = Path(path)
@@ -705,9 +1004,32 @@ def build_detector(settings, station: dict):
         model_path = Path(settings.repo_root) / model_path
     if not model_path.exists():
         raise CaptureConfigError(
-            f"the desktop detection model was not found at {model_path}. Run setup "
-            f"to download it, or place your own ONNX model there."
+            f"the screening model was not found at {model_path}. Run setup to "
+            f"download it, or place your own model there."
         )
+
+    # A compiled .hef screens on the accelerator; every other extension is an ONNX
+    # model that screens through ONNX Runtime on the CPU.
+    if model_path.suffix.lower() == ".hef":
+        class_names = _class_names_from_config(entry, model_path)
+        if not class_names:
+            logger.warning(
+                "the accelerator model at %s has no labels file beside it, so "
+                "detections will be labelled by their numeric class index. Add names "
+                "inline on the model's settings entry (class_names) or place "
+                "'%s.labels.json' next to the model.",
+                model_path, model_path.stem,
+            )
+        in_w, in_h = DEFAULT_INPUT_SIZE
+        size = entry.get("input_size")
+        if isinstance(size, (list, tuple)) and len(size) == 2:
+            in_w, in_h = int(size[0]), int(size[1])
+        conf = float(station.get("capture", {}).get("bytetrack", {}).get("track_activation_threshold", DEFAULT_CONFIDENCE))
+        backend = HailoRtBackend(model_path, input_size=(in_w, in_h))
+        reported = backend.input_size()
+        if reported:
+            in_w, in_h = reported
+        return HailoYoloDetector(backend, class_names=class_names, input_size=(in_w, in_h), conf_threshold=conf)
 
     ort = _import_onnxruntime()
     session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
@@ -754,3 +1076,21 @@ def build_detector(settings, station: dict):
         input_size=(in_w, in_h),
         conf_threshold=conf,
     )
+
+
+# ===========================================================================
+# Field-station hardware builders
+#
+# Re-exported from the field drivers module so a station's optional drivers
+# module (this module) exposes the live audio, sensor, and GPS builders where the
+# field runner looks for them. The import is placed at the end so this module is
+# fully defined first; the field drivers import only the pipeline's shared types,
+# never this module, so there is no import cycle, and their hardware libraries are
+# imported lazily inside the builders.
+# ===========================================================================
+
+from audtheia.pipeline.field_drivers import (  # noqa: E402
+    build_audio_source,
+    build_gps_source,
+    build_sensor_bank,
+)
