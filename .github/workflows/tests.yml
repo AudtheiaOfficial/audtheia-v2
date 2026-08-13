@@ -29,7 +29,11 @@ jobs:
       - name: Install the test libraries
         run: |
           python -m pip install --upgrade pip
-          pip install numpy fpdf2 fastapi "httpx<0.28" uvicorn
+          pip install numpy fpdf2 fastapi "httpx<0.28" uvicorn opencv-python-headless
 
       - name: Run the suite
-        run: python tests/run_all.py
+        # A fresh, empty TMPDIR each run, as the suite's own guidance advises, so
+        # temp-database churn never produces a phantom failure.
+        run: |
+          mkdir -p "${RUNNER_TEMP}/audtheia-tests"
+          TMPDIR="${RUNNER_TEMP}/audtheia-tests" python tests/run_all.py
