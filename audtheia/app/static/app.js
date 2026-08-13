@@ -1214,9 +1214,71 @@
   // panel deriving the card's numbers (frame count, duration, confidence,
   // salience) from those frames, so a scientist can verify the stats rather than
   // trust them.
+  // A short playback of an event, reconstructed from the frames it already saved.
+  // No new storage and no continuous video: the event's saved detection frames are
+  // shown in sequence with the detection box, which is the platform's
+  // event-driven, bounded-storage design in action rather than hoarding video.
+  // Returns { el, stop }; the caller stops it when the modal closes so no timer
+  // leaks. The box drawer is the same one the card and strip use, so a frame in
+  // the clip is drawn identically, coloured and labelled by species.
+  var CLIP_FPS = 5;
+  function detectionClip(frames) {
+    if (!frames || !frames.length) { return null; }
+    var ordered = frames.slice().sort(function (a, b) { return (a.index || 0) - (b.index || 0); });
+    var wrap = el("div", { class: "detection-clip" });
+    var stage = el("div", { class: "detection-frame-wrap clip-stage" });
+    var img = el("img", { class: "detection-frame clip-img", alt: "event playback" });
+    stage.appendChild(img);
+    wrap.appendChild(stage);
+
+    var i = 0, timer = null, boxes = [];
+    var counter = el("span", { class: "clip-counter" });
+    var playBtn = el("button", { type: "button", class: "btn btn-small", text: "Pause" });
+
+    function boxFor(f) {
+      if (f.bbox_x == null || f.bbox_w == null) { return []; }
+      // common_name carries the per-frame class label so the shared drawer names
+      // and colours the box exactly as the card and strip do.
+      return [{ bbox_x: f.bbox_x, bbox_y: f.bbox_y, bbox_w: f.bbox_w, bbox_h: f.bbox_h,
+                confidence: f.confidence, common_name: f.class_name }];
+    }
+    img.addEventListener("load", function () { drawBoxes(stage, img, boxes); });
+    function show(k) {
+      i = ((k % ordered.length) + ordered.length) % ordered.length;
+      var f = ordered[i];
+      boxes = boxFor(f);
+      img.src = API + "/media" + query({ path: f.path });
+      counter.textContent = (i + 1) + " / " + ordered.length;
+      if (img.complete && img.naturalWidth) { drawBoxes(stage, img, boxes); }
+    }
+    function stop() {
+      if (timer) { clearInterval(timer); timer = null; }
+      playBtn.textContent = "Play";
+    }
+    function start() {
+      if (timer || ordered.length < 2) { return; }
+      timer = setInterval(function () { show(i + 1); }, Math.round(1000 / CLIP_FPS));
+      playBtn.textContent = "Pause";
+    }
+    playBtn.addEventListener("click", function () { timer ? stop() : start(); });
+    img.addEventListener("click", function () { timer ? stop() : start(); });
+
+    show(0);
+    if (ordered.length > 1) {
+      wrap.appendChild(el("div", { class: "clip-controls" }, [
+        playBtn, counter,
+        el("span", { class: "clip-hint", text: "reconstructed from this event's saved frames" })
+      ]));
+      start();
+    }
+    return { el: wrap, stop: stop };
+  }
+
   function openFrameAudit(obs, onCorrected) {
     var overlay = el("div", { class: "audit-modal" });
+    var clipController = null;
     function close() {
+      if (clipController) { clipController.stop(); }
       if (overlay.parentNode) { overlay.parentNode.removeChild(overlay); }
       document.removeEventListener("keydown", onKey);
     }
@@ -1235,6 +1297,12 @@
     panel.appendChild(el("div", { class: "card-meta", text: obs.event_name || obs.id }));
 
     var body = el("div", { class: "audit-body" });
+    // The event playback sits at the very top, directly under the title, so a
+    // reviewer sees how the event looked before judging it. It is reconstructed
+    // from the event's saved frames, so it adds no storage.
+    var clipHost = el("div", { class: "clip-host" });
+    clipHost.appendChild(el("p", { class: "card-note", text: "Loading clip." }));
+    body.appendChild(clipHost);
     // The review controls sit above the frames, because the question the modal
     // exists to answer is whether the call was right, not what the numbers were.
     body.appendChild(correctionPanel(obs, "vision", function () {
@@ -1253,6 +1321,14 @@
     apiGet("/detections/" + encodeURIComponent(obs.id) + "/frames").then(function (data) {
       clear(framesHost);
       var frames = data.frames || [];
+      // Fill the playback band from the same frames the strip uses.
+      clear(clipHost);
+      clipController = detectionClip(frames);
+      if (clipController) {
+        clipHost.appendChild(clipController.el);
+      } else {
+        clipHost.appendChild(el("p", { class: "card-note", text: "No stored frames to play for this event." }));
+      }
       framesHost.appendChild(auditDerivation(obs, frames));
       // Any field-skill flags that fired on this event, shown as derived
       // readings that stand beside the measurement, never as a correction to it.
@@ -1282,6 +1358,7 @@
         framesHost.appendChild(auditFrameStrip(frames, species, obs.id, paintCuration));
       }
     }).catch(function (e) {
+      clear(clipHost);
       clear(framesHost);
       framesHost.appendChild(el("p", { class: "empty-state", text: "Could not load frames: " + e.message }));
     });

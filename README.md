@@ -90,6 +90,14 @@ Audtheia is also a way to understand what artificial intelligence actually is by
 
 Trust in a dataset comes from knowing where every number came from, and Audtheia keeps that record for you, at the database level, rather than leaving it to good intentions. Every value the system stores carries a provenance tag and a quality-control status. A number a sensor measured, a value looked up from a reference database, a model's classification, an interpretation inferred downstream, and a candidate pattern proposed by the longitudinal pass all remain permanently distinguishable. The database makes it structurally impossible to blur measured fact with inference. Marine sensor channels additionally carry a QARTOD quality flag, the standard oceanographic scale of pass, not evaluated, suspect, fail, or missing, so a questionable reading is marked as such rather than trusted silently. Interpretation and pattern discovery live on the far side of that firewall, always labeled, always traceable back to the confirmed detections that produced them. The goal is a research-grade, FAIR-defensible record a scientist can stand behind.
 
+## Energy-proportional, event-driven capture
+
+Audtheia is deliberately modeled on the efficiency of a living brain. A brain does not record everything it sees at full fidelity, forever; it spends energy only when something happens, and it keeps compact memories of the moments that mattered rather than a continuous tape. Audtheia works the same way, and this is a founding design principle, not an optimization added later.
+
+Nothing is captured on a timer. The camera streams into the detection model, and only a detection, or an acoustic onset, spends the energy to write an observation; between events the system stays quiet. When an event does occur, what the station keeps is the set of salient frames the model actually detected, not continuous video. Those frames are the memory, and the detection view reconstructs a short clip of the event by replaying them, the same way a memory is replayed from its key moments rather than from an unbroken recording.
+
+The payoff is threefold, and each is a defensible point for a field study. Energy scales with events, not with time, so a station lasts far longer on the same solar and battery budget in a remote place. Storage stays bounded, so a station does not fill its disk recording an empty reef or a quiet forest, and the platform's memory footprint grows only with what actually happened. And the record stays legible, because every stored frame is a real detection carrying its own provenance rather than a haystack of footage to search. Continuous video would sacrifice all three at once, which is why Audtheia keeps the frames and reconstructs the motion. For students and future builders, that is the lesson worth taking: the most sustainable system is often the one that, like the brain, does the least work necessary to remember what matters.
+
 ---
 
 ## System requirements
@@ -218,7 +226,9 @@ Once the hardware is assembled:
 
    Add `--dry-run` to preview every action without contacting a Pi.
 
-This sends the code, the station's configuration and models, and its network settings to the Pi, sets up its environment, initializes its local store, brings up its Wi-Fi hotspot for local access, and installs the service that keeps it running across reboots. From then on the station operates independently, capturing to its own local store. In the field with no internet, it broadcasts its own network named after the station. Back within range of your computer, the desktop connects and pulls new records automatically, and you review everything, the detections, audio, sensors, GPS, and reports, in the desktop application.
+This sends the code, the station's configuration and models, and its network settings to the Pi, sets up its environment, initializes its local store, brings up its Wi-Fi hotspot for local access, and installs the service that keeps it running across reboots. From then on the station operates independently, capturing to its own local store. In the field with no internet, it broadcasts its own network named after the station.
+
+Bringing a station's captured record across to the desktop for review uses the append-only station-to-desktop sync. Its core is implemented and tested (a station exports its unsynced rows, the desktop imports them, and the station marks them confirmed, so a sync can never overwrite a desktop-owned value), and running it automatically whenever a station is reachable is part of the field-station work now in validation (see [Project status](#project-status)). Once a station's records are on the desktop, you review everything, the detections, audio, sensors, GPS, and reports, in the desktop application.
 
 A station-local live interface served over that hotspot, so you can open the station's own address from a phone or laptop in the field and watch live detections and sensor readings, is part of the field-station work now entering on-device validation (see [Project status](#project-status)). Today the desktop application is where a station's record is reviewed.
 
