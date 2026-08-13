@@ -36,6 +36,7 @@ sys.path.insert(0, str(REPO))
 import numpy as np  # noqa: E402
 
 from audtheia.pipeline.field_drivers import (  # noqa: E402
+    GpsdGpsSource,
     I2CSensorBank,
     LiveAudioSource,
     NmeaGpsSource,
@@ -235,6 +236,29 @@ def test_nmea_fix() -> None:
     check("an empty stream reports no fix", not NmeaGpsSource(FakePort([])).read().ok)
 
 
+class FakeGpsd:
+    def __init__(self, report):
+        self._report = report
+
+    def read_tpv(self):
+        return self._report
+
+    def close(self):
+        pass
+
+
+def test_gpsd() -> None:
+    print("\ngpsd source maps a TPV report and refuses a poor fix")
+    good = GpsdGpsSource(FakeGpsd({"class": "TPV", "mode": 3, "lat": 48.1173, "lon": 11.5167,
+                                   "alt": 12.5, "time": "2026-08-12T12:00:00.000Z"}))
+    r = good.read()
+    check("a 3D fix is ok", r.attempted and r.ok)
+    check("gpsd position is mapped", _close(r.latitude, 48.1173) and _close(r.longitude, 11.5167) and _close(r.elevation, 12.5))
+    check("gpsd time carries through", r.utc_time == "2026-08-12T12:00:00.000Z")
+    check("a no-fix mode is not-ok", not GpsdGpsSource(FakeGpsd({"mode": 1})).read().ok)
+    check("an empty report is not-ok", not GpsdGpsSource(FakeGpsd(None)).read().ok)
+
+
 # --- config helpers --------------------------------------------------------
 
 
@@ -323,6 +347,7 @@ def main() -> int:
     test_sensor_bank()
     test_nmea_helpers()
     test_nmea_fix()
+    test_gpsd()
     test_config_helpers()
     test_hailo_raw_path()
     test_hailo_nms_path()

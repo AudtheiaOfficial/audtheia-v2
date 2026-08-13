@@ -62,7 +62,7 @@ when a key is absent.
 {
   "sensors": {
     "audio": { "enabled": true, "driver": { "device": null, "channels": 1, "block_seconds": 1.0 } },
-    "gps":   { "enabled": true, "driver": { "port": "/dev/serial0", "baud": 9600 } },
+    "gps":   { "enabled": true, "driver": { "interface": "serial", "port": "/dev/serial0", "baud": 9600 } },
     "i2c":   { "bus": 1 }
   },
   "channels": [
@@ -79,7 +79,10 @@ when a key is absent.
 
 - Audio `device` is a sound-device index or name; `null` selects the system default
   input. `channels` and `block_seconds` shape each block.
-- GPS `port` and `baud` name the serial device and its speed.
+- GPS `interface` is `serial` (the default) or `gpsd`. A serial receiver names its
+  `port` and `baud`; a `gpsd` receiver names the daemon `host` and `port`
+  (defaulting to `127.0.0.1:2947`) and needs no Python serial package, only a
+  running gpsd.
 - The I2C `bus` is the Pi's user bus (1 by default). Each channel names its
   `address` and EZO `type`; `read_settle_seconds` is how long the circuit needs to
   take a reading before it is read back.

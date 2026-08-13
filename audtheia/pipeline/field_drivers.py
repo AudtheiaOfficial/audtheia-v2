@@ -57,6 +57,7 @@ __all__ = [
     "LiveAudioSource",
     "I2CSensorBank",
     "NmeaGpsSource",
+    "GpsdGpsSource",
     "build_audio_source",
     "build_sensor_bank",
     "build_gps_source",
@@ -541,28 +542,123 @@ class _SerialLines:
         self._serial.close()
 
 
+class GpsdGpsSource:
+    """A `GpsSource` that reads a fix from a running gpsd daemon.
+
+    gpsd already parses the receiver and serves a JSON TPV (time-position-velocity)
+    report. The backend is any object with ``read_tpv() -> dict`` and ``close()``;
+    the real one is a small socket client, a test one scripts the report. A gpsd
+    fix mode of 2 (2D) or 3 (3D) with a position is a fix; anything less is
+    reported as not-ok, so the location is recorded as not measured rather than
+    invented. This is the alternative to the serial NMEA source; the choice is a
+    configuration one.
+    """
+
+    def __init__(self, backend) -> None:
+        self._backend = backend
+
+    def read(self) -> GpsRead:
+        try:
+            report = self._backend.read_tpv()
+        except Exception as exc:  # noqa: BLE001 - a gpsd read error is reported, not raised
+            return GpsRead(attempted=True, ok=False, error=f"{type(exc).__name__}: {exc}")
+        if not report:
+            return GpsRead(attempted=True, ok=False, error="gpsd returned no position report")
+        lat, lon = report.get("lat"), report.get("lon")
+        mode = int(report.get("mode", 0) or 0)
+        ok = mode >= 2 and lat is not None and lon is not None
+        return GpsRead(
+            attempted=True, ok=ok,
+            latitude=lat if ok else None,
+            longitude=lon if ok else None,
+            elevation=report.get("alt") if ok else None,
+            utc_time=report.get("time") if ok else None,
+            error=None if ok else "no gpsd fix yet",
+        )
+
+    def close(self) -> None:
+        close = getattr(self._backend, "close", None)
+        if close:
+            try:
+                close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+class _GpsdBackend:
+    """A tiny gpsd client over a socket: connect, enable the watch, read one TPV.
+
+    Uses only the standard library, so gpsd support needs no extra Python package,
+    only the gpsd daemon running on the station.
+    """
+
+    def __init__(self, host: str, port: int) -> None:
+        import socket  # noqa: PLC0415 - stdlib
+
+        self._sock = socket.create_connection((host, int(port)), timeout=5.0)
+        self._sock.sendall(b'?WATCH={"enable":true,"json":true}\n')
+        self._buffer = b""
+
+    def read_tpv(self):
+        import json  # noqa: PLC0415 - stdlib
+
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            self._buffer += self._sock.recv(4096)
+            while b"\n" in self._buffer:
+                line, self._buffer = self._buffer.split(b"\n", 1)
+                try:
+                    obj = json.loads(line.decode("ascii", "ignore"))
+                except ValueError:
+                    continue
+                if obj.get("class") == "TPV":
+                    return obj
+        return None
+
+    def close(self) -> None:
+        try:
+            self._sock.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def build_gps_source(settings, station: dict):
     """Build the station's satellite receiver source, or nothing when it cannot.
 
-    Built only when the station has GPS switched on. When the serial library is
-    not installed, or the port will not open, this returns nothing and the field
-    runner falls back to the null source, so the station runs and records its
-    location as not measured (a station with fixed, surveyed coordinates still
-    carries them from configuration). The reason is logged. This builder never
-    raises, because the field runner reads GPS outside a guard.
+    Built only when the station has GPS switched on. The driver's ``interface``
+    selects the transport: ``serial`` (the default) reads NMEA from a serial
+    receiver at ``port``/``baud``, and ``gpsd`` reads from a gpsd daemon at
+    ``host``/``port`` (defaulting to localhost:2947). When the needed library is
+    absent or the receiver will not open, this returns nothing and the field runner
+    falls back to the null source, so the station runs and records its location as
+    not measured (a station with fixed, surveyed coordinates still carries them
+    from configuration). The reason is logged. This builder never raises, because
+    the field runner reads GPS outside a guard.
     """
     gps_cfg = (station.get("sensors", {}) or {}).get("gps", {}) or {}
     if not gps_cfg.get("enabled", False):
         return None
     driver = gps_cfg.get("driver", {}) or {}
+    interface = str(driver.get("interface", "serial")).lower()
+
+    if interface == "gpsd":
+        host = str(driver.get("host", "127.0.0.1"))
+        port = int(driver.get("port", 2947))
+        try:
+            return GpsdGpsSource(_GpsdBackend(host, port))
+        except Exception as exc:  # noqa: BLE001 - an unreachable daemon leaves the station running without GPS
+            logger.warning("gpsd at %s:%s could not be reached (%s: %s); the receiver will not be read.",
+                           host, port, type(exc).__name__, exc)
+            return None
+
     port_name = str(driver.get("port", DEFAULT_GPS_PORT))
     baud = int(driver.get("baud", DEFAULT_GPS_BAUD))
     try:
-        import serial  # noqa: PLC0415 - optional, only on a station with a receiver
+        import serial  # noqa: PLC0415 - optional, only on a station with a serial receiver
     except ImportError:
         logger.warning(
-            "GPS is enabled but the 'pyserial' package is not installed, so the "
-            "receiver will not be read on this station."
+            "GPS is enabled with a serial receiver but the 'pyserial' package is "
+            "not installed, so the receiver will not be read on this station."
         )
         return None
     try:
