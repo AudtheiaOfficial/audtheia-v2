@@ -62,7 +62,7 @@ It does that without asking you to give up control of your data. Everything runs
 
 ## Who it is for
 
-Audtheia is built for people who need a defensible ecological record but do not have a data-engineering team behind them. Everything a study needs is reachable from the interface, so no programming is required to run it. It is also an accessible way for anyone curious about environmental monitoring in the age of edge AI to learn by doing, from a first detection to a finished, provenance-labeled report.
+Audtheia is built for people who need a defensible ecological record but do not have a data-engineering team behind them. Everything a study needs is reachable from the interface, so no programming is required to run it. It is also an accessible way for anyone curious about environmental monitoring in the age of edge AI to learn by doing, from a first detection to a finished, provenance-labeled report. The platform makes three distinct subfields of AI tangible and, crucially, keeps them separable and labeled: computer vision, bioacoustics and audio recognition, and a language model (LLM) that, by deliberate design, is constrained to never generate new facts or invent data.
 
 - **Field researchers and graduate students** running longitudinal studies at sites that are remote, hard to reach, or simply too demanding to watch by hand around the clock.
 - **Marine Protected Area managers** who need continuous, provenance-labeled evidence to support designation, evaluation, and reporting.
@@ -80,23 +80,13 @@ Typical uses include coral-reef and benthic monitoring, marine megafauna and fis
 - the event simultaneously captures audio, reads the GPS and every configured environmental sensor, and queries the offline GBIF taxonomic backbone;
 - one provenance-tagged, multimodal observation is written to the local database.
 
+To keep storage bounded and a station's power and memory footprint low, an event is saved as the salient frames the model detected rather than as continuous video, and the interface reconstructs a short clip of the event by replaying those frames.
+
 The desktop hub does the heavy, high-accuracy work: it re-verifies every detection with a second, larger model (RF-DETR through ONNX Runtime), owns all ecological interpretation, runs a longitudinal pattern-discovery pass over the verified record, generates reports, and holds the authoritative database. **Only reports and the pattern pass run on a schedule;** everything else is driven by what actually happens in front of the sensor.
-
-## Learning the subfields of AI by using them
-
-Audtheia is also a way to understand what artificial intelligence actually is by watching it work, part by part. The platform makes three distinct **subfields of AI** tangible and, crucially, keeps them separable and labeled: **computer vision** (the detection and verification models that find and identify organisms in images and video), **bioacoustics and audio recognition** (the acoustic models that identify species by sound), and a **language model** that, by deliberate design, only reads, summarizes, and explains the results already measured and stored in the record, and is constrained never to generate new facts or invent data. Seeing these subfields operate side by side, each one bounded and each one shown with its provenance, is meant to demystify AI for students, educators, and scientists: to replace misconception with understanding, to make plain where a model measures and where a person judges, and to show AI's genuine, beneficial use in the service of science and conservation. Helping people learn to use these tools well, for the good of present and future generations, is part of why Audtheia is open.
 
 ## The scientific guarantee
 
 Trust in a dataset comes from knowing where every number came from, and Audtheia keeps that record for you, at the database level, rather than leaving it to good intentions. Every value the system stores carries a provenance tag and a quality-control status. A number a sensor measured, a value looked up from a reference database, a model's classification, an interpretation inferred downstream, and a candidate pattern proposed by the longitudinal pass all remain permanently distinguishable. The database makes it structurally impossible to blur measured fact with inference. Marine sensor channels additionally carry a QARTOD quality flag, the standard oceanographic scale of pass, not evaluated, suspect, fail, or missing, so a questionable reading is marked as such rather than trusted silently. Interpretation and pattern discovery live on the far side of that firewall, always labeled, always traceable back to the confirmed detections that produced them. The goal is a research-grade, FAIR-defensible record a scientist can stand behind.
-
-## Energy-proportional, event-driven capture
-
-Audtheia is deliberately modeled on the efficiency of a living brain. A brain does not record everything it sees at full fidelity, forever; it spends energy only when something happens, and it keeps compact memories of the moments that mattered rather than a continuous tape. Audtheia works the same way, and this is a founding design principle, not an optimization added later.
-
-Nothing is captured on a timer. The camera streams into the detection model, and only a detection, or an acoustic onset, spends the energy to write an observation; between events the system stays quiet. When an event does occur, what the station keeps is the set of salient frames the model actually detected, not continuous video. Those frames are the memory, and the detection view reconstructs a short clip of the event by replaying them, the same way a memory is replayed from its key moments rather than from an unbroken recording.
-
-The payoff is threefold, and each is a defensible point for a field study. Energy scales with events, not with time, so a station lasts far longer on the same solar and battery budget in a remote place. Storage stays bounded, so a station does not fill its disk recording an empty reef or a quiet forest, and the platform's memory footprint grows only with what actually happened. And the record stays legible, because every stored frame is a real detection carrying its own provenance rather than a haystack of footage to search. Continuous video would sacrifice all three at once, which is why Audtheia keeps the frames and reconstructs the motion. For students and future builders, that is the lesson worth taking: the most sustainable system is often the one that, like the brain, does the least work necessary to remember what matters.
 
 ---
 
