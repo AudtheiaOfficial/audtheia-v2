@@ -48,33 +48,31 @@ In both modes, detection triggers a complete multimodal observation, quality con
 
 ## Project status
 
-Audtheia V2 is released as a research preview, and it is honest about what is proven and what is being validated.
-
 **Working now, on any computer.** The desktop hardware-free mode captures live from a webcam, a network or web-page stream, or a video file, and runs the full pipeline: detection, object tracking, one-event-per-observation capture, desktop verification, quality control, the longitudinal pass, expert review, and provenance-labeled PDF and CSV reports. This path is covered by the automated test suite.
 
-**Implemented, validating on hardware.** The field-station capture layer, live audio from a microphone or hydrophone, an I2C environmental sensor bank, a satellite receiver, and on-accelerator detection on the Hailo NPU, is fully implemented against the documented device protocols and unit-tested against scripted hardware backends. It is now entering on-device validation on physical Raspberry Pi 5 and AI HAT+ 2 hardware. Until that validation completes, treat the field-station capture path as functionally complete but not yet field-proven. Field trials and contributions are warmly welcome; see [Contributing to the field station](#contributing-to-the-field-station) and [`docs/field-drivers.md`](docs/field-drivers.md).
+**Next steps, validating on hardware.** As of today, the field-station capture layer, live audio from a microphone or hydrophone, an I2C environmental sensor bank, a satellite receiver, and on-accelerator detection on the Hailo NPU, are fully implemented against the documented device protocols and unit-tested for scripted hardware backends. It is now entering on-device validation on physical Raspberry Pi 5 and AI HAT+ 2 hardware. Until that validation completes, treat the field-station capture path as functionally complete but not yet field-proven. Field trials and contributions are warmly welcome; see [Contributing to the field station](#contributing-to-the-field-station) and [`docs/field-drivers.md`](docs/field-drivers.md).
 
 ## Why it exists
 
-Some of the ecosystems most worth protecting are the hardest to observe. Traditional field surveys are limited by what a person can see and how long they can stay: many species are cryptic, nocturnal, or rare; dense habitats and low light conceal them; skilled fieldwork is costly and hard to sustain; and even careful observers introduce bias. Continuous audio-visual monitoring closes those gaps, watching quietly around the clock and hearing what cannot be seen, catching the crepuscular and nocturnal activity that timed surveys miss, so that even elusive species are detected and counted more reliably, and without the disturbance a human presence brings. Audtheia was built to put that capability in the hands of a single researcher, a classroom, a small organization, or a protected-area manager, work that would otherwise take a full team on site.
+Many ecosystems most worth protecting are significantly challenging to observe. Traditional field surveys are limited by what a person can see and how long they can stay, for instance: many species are cryptic, nocturnal, or rare; dense habitats and low light conceal them; skilled fieldwork is costly and hard to sustain; and even careful observers introduce bias. Continuous audio-visual monitoring closes these gaps, watching field sites around the clock and listening to animal calls, catching the crepuscular and nocturnal activity that timed surveys miss, so that even elusive species are detected and counted more reliably, and without the disturbance a human presence might bring. Audtheia was built to put that capability in the hands of a single researcher, a classroom, a small organization, or a protected-area manager, work that would otherwise take a full team on site.
 
 It does that without asking you to give up control of your data. Everything runs on hardware you own. Observations live in a local database on your own computer; nothing is sent to a cloud service, and no credentials leave your machine. The detection code, the analysis code, the database schema, and the desktop application are released under the MIT license, so anyone can deploy it, adapt it to their own species and sites, or build on it.
 
-## Who it is for
+## Who Audtheia is for
 
-Audtheia is built for people who need a defensible ecological record but do not have a data-engineering team behind them. Everything a study needs is reachable from the interface, so no programming is required to run it. It is also an accessible way for anyone curious about environmental monitoring in the age of edge AI to learn by doing, from a first detection to a finished, provenance-labeled report. The platform makes three distinct subfields of AI tangible and, crucially, keeps them separable and labeled: computer vision, bioacoustics and audio recognition, and a language model (LLM) that, by deliberate design, is constrained to never generate new facts or invent data.
+Audtheia is built for people who need a defensible ecological record but may not have a data-engineering team behind them. Everything a study needs is reachable from the interface, so no programming is required to run it. It is also an accessible way for anyone curious about environmental monitoring in the age of edge AI to learn by doing, from a first detection to a finished, provenance-labeled report. The platform makes three distinct subfields of AI tangible and, crucially, keeps them separable and labeled: computer vision, bioacoustics and audio recognition, and a language model (LLM) that, by deliberate design, is constrained to never generate new facts or invent data.
 
-- **Field researchers and graduate students** running longitudinal studies at sites that are remote, hard to reach, or simply too demanding to watch by hand around the clock.
-- **Marine Protected Area managers** who need continuous, provenance-labeled evidence to support designation, evaluation, and reporting.
+- **Field researchers and graduate students** running longitudinal studies at sites that are remote, hard to reach, or simply too demanding to watch in person around the clock.
+- **Marine Protected Area managers** who need continuous, provenance-labeled evidence to support designation, evaluation, reporting, and habitat preservation.
 - **Small conservation organizations** that want research-grade monitoring without a cloud subscription or a standing compute budget.
-- **Educators and classrooms** using the desktop hardware-free mode to teach detection, verification, and the difference between a measurement and an inference.
+- **Educators and classrooms** using the desktop hardware-free mode to teach visual and acoustic detection, data evaluation, ethical AI practices, and environmental monitoring practices.
 - **Anyone re-analyzing recorded footage**, comparing methods, or building a baseline before committing to field hardware.
 
 Typical uses include coral-reef and benthic monitoring, marine megafauna and fish surveys, bird phenology and acoustic monitoring, estuarine and freshwater biodiversity work, and endangered-species presence tracking with conservation status attached to each observation.
 
 ## How it works
 
-**Detection is the trigger for everything.** A camera streams continuously into a detection model, which screens every frame it can. Nothing is captured on a timer. When the model sees something, or when the acoustic stream hears something, that moment becomes an **event**:
+**Detection is the trigger for everything.** A camera streams continuously into a computer vision model, which screens every frame it can. Nothing is captured on a timer. When the model sees something, or when the acoustic stream hears something, that moment becomes an **event**:
 
 - an object tracker collapses the detected animal across consecutive frames into one event, never one row per frame;
 - the event simultaneously captures audio, reads the GPS and every configured environmental sensor, and queries the offline GBIF taxonomic backbone;
@@ -86,13 +84,13 @@ The desktop hub does the heavy, high-accuracy work: it re-verifies every detecti
 
 ## The scientific guarantee
 
-Trust in a dataset comes from knowing where every number came from, and Audtheia keeps that record for you, at the database level, rather than leaving it to good intentions. Every value the system stores carries a provenance tag and a quality-control status. A number a sensor measured, a value looked up from a reference database, a model's classification, an interpretation inferred downstream, and a candidate pattern proposed by the longitudinal pass all remain permanently distinguishable. The database makes it structurally impossible to blur measured fact with inference. Marine sensor channels additionally carry a QARTOD quality flag, the standard oceanographic scale of pass, not evaluated, suspect, fail, or missing, so a questionable reading is marked as such rather than trusted silently. Interpretation and pattern discovery live on the far side of that firewall, always labeled, always traceable back to the confirmed detections that produced them. The goal is a research-grade, FAIR-defensible record a scientist can stand behind.
+Trust in a dataset comes from knowing where every number originated from, and Audtheia keeps that record for you. Every value the system stores carries a provenance tag and a quality-control status. A number a sensor measured, a value looked up from a reference database, a model's classification, an interpretation inferred downstream, and a candidate pattern proposed by the longitudinal pass all remain permanently distinguishable. The database makes it structurally impossible to blur measured fact with inference. Furthermore, marine sensor channels carry a QARTOD quality flag, the standard oceanographic scale of pass, not evaluated, suspect, fail, or missing, so a questionable reading is marked as such rather than trusted silently. Interpretation and pattern discovery live on the far side of that firewall, always labeled, always traceable back to the confirmed detections that produced them. The goal is a research-grade, FAIR-defensible record a scientist can stand behind.
 
 ---
 
 ## System requirements
 
-**Desktop hub (required).** Any reasonably modern computer running Windows, macOS, or Linux, with Python 3.11 or newer. No GPU is required: the desktop verifier runs on ONNX Runtime and works on the CPU, though a supported GPU speeds it up. Allow several gigabytes of free disk for the offline GBIF taxonomic backbone and the models, which setup downloads once. After setup, no internet connection is needed to run the platform; a network is used only to reach a field station and, at setup time, to fetch species reference data.
+**Desktop hub (required).** Any reasonably modern computer running Windows, macOS, or Linux, with Python 3.11 or newer. No GPU is required, the desktop verifier runs on ONNX Runtime and works on the CPU, though a supported GPU speeds it up. Allow several gigabytes of free disk for the offline GBIF taxonomic backbone and the models, which setup downloads once. After setup, no internet connection is needed to run the platform; a network is used only to reach a field station and, at setup time, to fetch species reference data.
 
 **Field station (optional).** A Raspberry Pi 5 running Raspberry Pi OS (64-bit, Bookworm or newer) with the Raspberry Pi AI HAT+ 2 and its Hailo accelerator, a camera, and, for underwater sites, a hydrophone, plus the environmental sensors your site needs. Field stations run on solar and battery, or on wall power near shore. The exact parts, reference builds, and the power-and-solar budget method are in the [hardware guide](docs/hardware.md).
 
@@ -247,7 +245,7 @@ The interface is a browser-based application served locally by the device, with 
   <p><em>A quick tour of the sidebar: detections, audio, the Brain, the map, analytics, reports, and settings.</em></p>
 </div>
 
-A sidebar organizes it:
+The sidebar keeps things organized:
 
 - **Detections**: the live feed and the browsable history, each observation shown as an event card with its frames, labels, audio, location, sensor readings, quality flags, and the desktop verification result.
 - **Audio**: acoustic detections and playable clips, with the active acoustic model shown.
@@ -302,7 +300,7 @@ Because it turns continuous observation into a structured, provenance-labeled re
 - **Marine Protected Area monitoring and compliance.** Continuous, defensible baselines and time series that support designation, evaluation, and reporting against conservation frameworks, with every figure traceable to the detections behind it.
 - **Research on elusive, nocturnal, and rare species.** Around-the-clock audio-visual capture surfaces the crepuscular and nocturnal activity and hard-to-see taxa that timed transects miss, and paired environmental sensors relate that activity to the conditions driving it.
 - **Education and edge-AI training.** A hands-on way to learn environmental monitoring and on-device AI from end to end, from a first detection to a finished report, with no programming required.
-- **Expert-in-the-loop science and FAIR data.** Reviewers confirm, reject, or relabel detections to fine-tune models and audit results; captured frames export as ready-to-correct training packages; and the record follows FAIR and comparable scientific guidelines, feeding both report generation and the longitudinal pass that surfaces trends, correlations, and co-occurrences across a site over time.
+- **Expert-in-the-loop science and FAIR data.** Reviewers confirm, reject, or relabel detections to fine-tune models and audit results; captured frames export as ready-to-correct training packages; and the record follows FAIR and comparable scientific guidelines (Findable, Accessible, Interoperable, and Reusable), feeding both report generation and the longitudinal pass that surfaces trends, correlations, and co-occurrences across a site over time.
 
 ## Relationship to Audtheia V1
 
