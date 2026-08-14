@@ -18,7 +18,7 @@
 
 <div align="center">
 
-<img src="assets/audtheia-logo.png" width="240" alt="Audtheia">
+<img src="assets/audtheia-demo.gif" width="820" alt="Audtheia V2 in action: the live Detections feed of Carolina Chickadee events, expert review, the acoustic audit, the Brain panel, and theme options">
 
 ### Fully offline environmental intelligence for the field
 
@@ -51,6 +51,8 @@ In both modes, detection triggers a complete multimodal observation, quality con
 **Working now, on any computer.** The desktop hardware-free mode captures live from a webcam, a network or web-page stream, or a video file, and runs the full pipeline: detection, object tracking, one-event-per-observation capture, desktop verification, quality control, the longitudinal pass, expert review, and provenance-labeled PDF and CSV reports. This path is covered by the automated test suite.
 
 **Next steps, validating on hardware.** As of today, the field-station capture layer, live audio from a microphone or hydrophone, an I2C environmental sensor bank, a satellite receiver, and on-accelerator detection on the Hailo NPU, are fully implemented against the documented device protocols and unit-tested for scripted hardware backends. It is now entering on-device validation on physical Raspberry Pi 5 and AI HAT+ 2 hardware. Until that validation completes, treat the field-station capture path as functionally complete but not yet field-proven. Field trials and contributions are warmly welcome; see [Contributing to the field station](#contributing-to-the-field-station) and [`docs/field-drivers.md`](docs/field-drivers.md).
+
+**A suggested direction.** Alexandra V. D. Pierre, PhD has suggested a future path toward open, multilingual models, so that reports and community-facing educational fact sheets can reach local communities in their own languages, such as Spanish and French, rather than in English alone.
 
 ## Why it exists
 
@@ -346,9 +348,11 @@ Audtheia V2 stands on open scientific data and open-source software.
 - **[RF-DETR](https://github.com/roboflow/rf-detr)** (Apache-2.0), the transformer detection architecture used for high-accuracy desktop verification through ONNX Runtime.
 - **[ONNX Runtime](https://onnxruntime.ai/)**, **[llama.cpp](https://github.com/ggml-org/llama.cpp)** for on-device language-model inference, and **[FastAPI](https://fastapi.tiangolo.com/)** and **[Uvicorn](https://www.uvicorn.org/)** for the local application server.
 
+**Advisory.** The direction of building Audtheia as a fully offline, freely usable educational tool was encouraged by the guidance of Alexandra V. D. Pierre, PhD, whose support is gratefully acknowledged.
+
 Thanks to the marine biology, acoustic monitoring, and conservation communities whose feedback shaped the platform.
 
-**Demo footage.** The desktop hardware-free demonstration uses *The Giant Barrel Sponge (Xestospongia muta) Spawning* by [Shane Wever](https://www.youtube.com/@shanewever), shown for illustration with gratitude for his contribution to marine science outreach.
+**Demo footage.** The wildlife footage in these demonstrations is shown for illustration, with gratitude to the videographers. The Carolina Chickadee footage in the overview animation is by [Navarre's Wild Shots](https://www.youtube.com/watch?v=I4OUdQR3oTQ); the desktop hardware-free demonstration uses *The Giant Barrel Sponge (Xestospongia muta) Spawning* by [Shane Wever](https://www.youtube.com/@shanewever).
 
 ## Contact
 

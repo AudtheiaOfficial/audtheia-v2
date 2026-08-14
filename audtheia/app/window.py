@@ -29,6 +29,7 @@ returns control cleanly.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import Optional
 
 # The window title and a comfortable default size for a data interface. These are
@@ -86,7 +87,17 @@ def open_window(url: str, *, width: int = DEFAULT_WIDTH, height: int = DEFAULT_H
         height=height,
         min_size=(MIN_WIDTH, MIN_HEIGHT),
     )
-    webview.start()
+
+    # Brand the window with the Audtheia mark rather than the interpreter's own
+    # icon. The icon ships next to this package, so it resolves the same way on
+    # every machine. pywebview added the start(icon=...) argument in a later
+    # release; on an older build that argument is absent, so fall back to a
+    # plain start() instead of failing to open the window at all.
+    icon_path = Path(__file__).resolve().parent / "static" / "favicon.png"
+    try:
+        webview.start(icon=str(icon_path))
+    except TypeError:
+        webview.start()
 
 
 def main(argv: Optional[list] = None) -> int:
@@ -97,7 +108,5 @@ def main(argv: Optional[list] = None) -> int:
 if __name__ == "__main__":
     # Allow running as a plain script from the repository root, not only as a
     # module, by making the package importable first.
-    from pathlib import Path
-
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
     raise SystemExit(main())
