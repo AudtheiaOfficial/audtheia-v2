@@ -4,6 +4,7 @@ Project documentation for deploying and extending Audtheia.
 
 | File | Role |
 |------|------|
+| glossary.md | An alphabetical dictionary of the terms used across the Audtheia master concept and platform, with each term's data provenance noted. |
 | hardware.md | The parts list including the hydrophone path, the reference builds, the solar and power duty-cycle budget method, and the camera anti-fouling plan. |
 | custom-models.md | How to train and prepare your own models: compiling a field detector to the accelerator, exporting the desktop RF-DETR verifier, and training the acoustic models. |
 | dream-pass.md | The longitudinal pattern-discovery pass explained for a research audience, including how candidate hypotheses are framed. |
