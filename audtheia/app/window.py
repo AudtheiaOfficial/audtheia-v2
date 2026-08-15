@@ -89,13 +89,26 @@ def open_window(url: str, *, width: int = DEFAULT_WIDTH, height: int = DEFAULT_H
     )
 
     # Brand the window with the Audtheia mark rather than the interpreter's own
-    # icon. The icon ships next to this package, so it resolves the same way on
-    # every machine. pywebview added the start(icon=...) argument in a later
-    # release; on an older build that argument is absent, so fall back to a
-    # plain start() instead of failing to open the window at all.
-    icon_path = Path(__file__).resolve().parent / "static" / "favicon.png"
+    # icon. The accepted image format differs by platform, so we pass the file
+    # that each backend can actually load, which avoids the earlier crash from
+    # handing Windows a .png it cannot read as an icon:
+    #   - Windows expects a .ico.
+    #   - Linux (GTK/QT) takes a .png.
+    #   - macOS sets its icon from an application bundle, not at runtime, so we
+    #     pass nothing there and the icon is supplied when the app is bundled.
+    # We only pass the argument when a matching file exists, and older pywebview
+    # builds predate start(icon=...), so a TypeError falls back to plain start().
+    static_dir = Path(__file__).resolve().parent / "static"
+    if sys.platform.startswith("win"):
+        icon_file = static_dir / "favicon.ico"
+    elif sys.platform == "darwin":
+        icon_file = None
+    else:
+        icon_file = static_dir / "favicon.png"
+
+    start_kwargs = {"icon": str(icon_file)} if icon_file and icon_file.exists() else {}
     try:
-        webview.start(icon=str(icon_path))
+        webview.start(**start_kwargs)
     except TypeError:
         webview.start()
 
