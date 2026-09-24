@@ -615,22 +615,115 @@
       '<path d="M21 12a9 9 0 1 1-3-6.7L21 8"></path><path d="M21 3v5h-5"></path></svg>';
   }
 
+  // The panel dock for the Detections and Audio toolbars. The toolbar row holds
+  // only buttons and never changes shape. Whatever a button opens (the capture
+  // source form, the capture panel, the delete panel) is mounted in one shared
+  // region directly beneath the row, which expands downward and collapses back
+  // up, so the buttons stay exactly where they are. Only one panel is open at a
+  // time: pressing another button collapses the open panel quickly and then
+  // expands the new one, and pressing the same button again collapses it. The
+  // motion itself is in the stylesheet (.toolbar-dock); the collapse wait below
+  // matches its closing transition.
+  var DOCK_COLLAPSE_MS = 150;
+  var DOCK_EXPAND_MS = 240;
+  var dockCount = 0;
+
+  function toolbarDock(toolbar) {
+    if (toolbar._dock) { return toolbar._dock; }
+    dockCount += 1;
+    var root = el("div", { class: "toolbar-dock", id: "toolbar-dock-" + dockCount });
+    var inner = el("div", { class: "toolbar-dock-inner" });
+    root.appendChild(inner);
+    toolbar.parentNode.insertBefore(root, toolbar.nextSibling);
+
+    var dock = { root: root, inner: inner, key: null, button: null, onClose: null,
+                 closing: false, pending: null, timer: null, settleTimer: null };
+
+    // A button announces which panel it controls and whether it is open. Only the
+    // button that owns the open panel reads as expanded.
+    dock.register = function (button) {
+      button.setAttribute("aria-controls", root.id);
+      button.setAttribute("aria-expanded", "false");
+    };
+
+    function render(req) {
+      clear(inner);
+      inner.appendChild(req.build());
+      dock.key = req.key;
+      dock.button = req.button;
+      dock.onClose = req.onClose || null;
+      if (req.button) { req.button.setAttribute("aria-expanded", "true"); }
+      // Let the collapsed size be laid out first so the expansion animates.
+      void root.offsetHeight;
+      root.classList.add("is-open");
+      // Once fully open, let shadows and focus rings draw outside the region.
+      clearTimeout(dock.settleTimer);
+      dock.settleTimer = setTimeout(function () {
+        if (dock.key === req.key) { root.classList.add("is-settled"); }
+      }, DOCK_EXPAND_MS);
+      if (req.onOpen) { req.onOpen(); }
+    }
+
+    function collapse() {
+      var onClose = dock.onClose;
+      if (dock.button) { dock.button.setAttribute("aria-expanded", "false"); }
+      dock.key = null;
+      dock.button = null;
+      dock.onClose = null;
+      dock.closing = true;
+      clearTimeout(dock.settleTimer);
+      root.classList.remove("is-settled");
+      root.classList.remove("is-open");
+      clearTimeout(dock.timer);
+      dock.timer = setTimeout(function () {
+        dock.closing = false;
+        clear(inner);
+        var next = dock.pending;
+        dock.pending = null;
+        if (next) { render(next); }
+      }, DOCK_COLLAPSE_MS);
+      if (onClose) { onClose(); }
+    }
+
+    // Open a panel: `build` returns its element, `onOpen` runs once it is on the
+    // page, and `onClose` runs whenever it closes for any reason.
+    dock.show = function (req) {
+      if (dock.key === req.key && !dock.closing) { dock.hide(); return; }
+      if (dock.pending && dock.pending.key === req.key) { dock.pending = null; return; }
+      if (dock.key !== null || dock.closing) {
+        dock.pending = req;
+        if (!dock.closing) { collapse(); }
+        return;
+      }
+      render(req);
+    };
+
+    dock.hide = function () {
+      dock.pending = null;
+      if (dock.key !== null && !dock.closing) { collapse(); }
+    };
+
+    toolbar._dock = dock;
+    return dock;
+  }
+
   // The add-a-source control for the Detections and Audio panels. A detection or
   // audio source on the desktop is a station's desktop capture source (a webcam,
   // stream, URL, or file), which is why this sets capture.source rather than any
   // physical sensor. Physical environmental sensors and GPS are Pi-side and are
   // configured per station under Sensors, so they are deliberately not here.
-  function captureSourceControl(kind, reload) {
+  function captureSourceControl(kind, reload, dock) {
     var wrap = el("div", { class: "source-control" });
     var btn = el("button", { type: "button", class: "btn", text: kind === "audio" ? "Set audio source" : "Set capture source" });
-    btn.addEventListener("click", function () { toggleSourceForm(wrap, kind, reload); });
+    dock.register(btn);
+    btn.addEventListener("click", function () {
+      dock.show({ key: "source", button: btn, build: function () { return buildSourceForm(kind, reload, dock); } });
+    });
     wrap.appendChild(btn);
     return wrap;
   }
 
-  function toggleSourceForm(wrap, kind, reload) {
-    var open = wrap.querySelector(".source-form");
-    if (open) { wrap.removeChild(open); return; }
+  function buildSourceForm(kind, reload, dock) {
     var form = el("div", { class: "source-form card" });
     var msg = el("p", { class: "form-message" });
     var stSel = el("select", { class: "form-input" });
@@ -654,10 +747,10 @@
       if (!sid) { msg.textContent = "Choose a station."; return; }
       save.disabled = true; msg.textContent = "Saving.";
       apiSend("/settings/update", "POST", { changes: [{ scope: "station", station_id: sid, field: field, value: srcIn.value.trim() || null }] })
-        .then(function () { if (wrap.contains(form)) { wrap.removeChild(form); } reload(); })
+        .then(function () { dock.hide(); reload(); })
         .catch(function (e) { save.disabled = false; msg.textContent = "Could not save: " + e.message; });
     });
-    var cancel = el("button", { type: "button", class: "btn", text: "Cancel", onclick: function () { wrap.removeChild(form); } });
+    var cancel = el("button", { type: "button", class: "btn", text: "Cancel", onclick: function () { dock.hide(); } });
     form.appendChild(el("div", { class: "card-title", text: kind === "audio" ? "Desktop audio source" : "Desktop capture source" }));
     form.appendChild(el("label", { class: "form-field" }, [el("span", { class: "form-label", text: "Station" }), stSel]));
     form.appendChild(el("label", { class: "form-field" }, [el("span", { class: "form-label", text: kind === "audio" ? "Audio source" : "Video source" }), srcIn]));
@@ -666,76 +759,79 @@
       : "This runs desktop capture without a Pi. Live detection also needs a desktop model; set its path under Settings, Model paths, and place the file under models/." }));
     form.appendChild(msg);
     form.appendChild(el("div", { class: "form-actions" }, [save, cancel]));
-    wrap.appendChild(form);
+    return form;
   }
 
   // Start and stop desktop capture from the interface, per station, so detection
   // runs without a terminal. `kind` is "video" (default) or "audio"; the audio
   // variant lists stations with an audio source and drives the acoustic endpoints.
-  function captureRunControl(kind, reload) {
+  function captureRunControl(kind, reload, dock) {
     kind = kind || "video";
     var wrap = el("div", { class: "capture-control" });
     var btn = el("button", { type: "button", class: "btn", text: "Capture" });
-    btn.addEventListener("click", function () { toggleCapturePanel(wrap, kind, reload); });
+    dock.register(btn);
+    btn.addEventListener("click", function () {
+      dock.show({ key: "capture", button: btn, build: function () { return buildCapturePanel(kind, reload); } });
+    });
     wrap.appendChild(btn);
     return wrap;
   }
 
-  function toggleCapturePanel(wrap, kind, reload) {
-    var open = wrap.querySelector(".capture-panel");
-    if (open) { wrap.removeChild(open); return; }
-    openCapturePanel(wrap, kind, reload);
-  }
-
-  function openCapturePanel(wrap, kind, reload) {
+  function buildCapturePanel(kind, reload) {
     kind = kind || "video";
     var isAudio = kind === "audio";
-    var existing = wrap.querySelector(".capture-panel");
-    if (existing) { wrap.removeChild(existing); }
     var panel = el("div", { class: "capture-panel card" });
     panel.appendChild(el("div", { class: "card-title", text: isAudio ? "Desktop audio capture" : "Desktop capture" }));
     var body = el("div");
     panel.appendChild(body);
-    body.appendChild(el("p", { class: "card-note", text: "Loading." }));
-    wrap.appendChild(panel);
-    Promise.all([apiGet("/settings"), apiGet("/capture/status")]).then(function (res) {
-      var cfg = res[0].config || {};
-      var running = (isAudio ? res[1].running_audio : res[1].running) || [];
-      clear(body);
-      var stations = cfg.stations || [];
-      if (!stations.length) {
-        body.appendChild(el("p", { class: "card-note", text: "No stations yet. Add one under Settings, Stations." }));
-        return;
-      }
-      // Every station is listed; one that has no source of this kind simply has
-      // its Start disabled with a hint, rather than being hidden, so any station
-      // can be seen and set up from here.
-      stations.forEach(function (st) {
-        var src = (st.capture && st.capture.source) || {};
-        var sourceVal = isAudio ? src.audio : src.video;
-        var isRun = running.indexOf(st.station_id) !== -1;
-        var toggle = el("button", { type: "button", class: "btn btn-small" + (isRun ? "" : " btn-primary"), text: isRun ? "Stop" : "Start" });
-        if (!sourceVal && !isRun) { toggle.disabled = true; }
-        toggle.addEventListener("click", function () {
-          toggle.disabled = true;
-          var url = "/capture/" + encodeURIComponent(st.station_id) + (isAudio ? "/audio" : "") + (isRun ? "/stop" : "/start");
-          apiSend(url, "POST").then(function (r) {
-            if (r && r.warning) { window.alert(r.warning); }
-            openCapturePanel(wrap, kind, reload);
-            reload();
-          }).catch(function (e) { toggle.disabled = false; window.alert("Could not " + (isRun ? "stop" : "start") + " capture: " + e.message); });
+
+    // Fill the station list. The first fill shows a loading note; a refresh after
+    // Start or Stop keeps the current rows on screen until the new ones arrive,
+    // so the panel does not collapse and re-expand while it updates.
+    function load(showLoading) {
+      if (showLoading) { clear(body); body.appendChild(el("p", { class: "card-note", text: "Loading." })); }
+      Promise.all([apiGet("/settings"), apiGet("/capture/status")]).then(function (res) {
+        var cfg = res[0].config || {};
+        var running = (isAudio ? res[1].running_audio : res[1].running) || [];
+        clear(body);
+        var stations = cfg.stations || [];
+        if (!stations.length) {
+          body.appendChild(el("p", { class: "card-note", text: "No stations yet. Add one under Settings, Stations." }));
+          return;
+        }
+        // Every station is listed; one that has no source of this kind simply has
+        // its Start disabled with a hint, rather than being hidden, so any station
+        // can be seen and set up from here.
+        stations.forEach(function (st) {
+          var src = (st.capture && st.capture.source) || {};
+          var sourceVal = isAudio ? src.audio : src.video;
+          var isRun = running.indexOf(st.station_id) !== -1;
+          var toggle = el("button", { type: "button", class: "btn btn-small" + (isRun ? "" : " btn-primary"), text: isRun ? "Stop" : "Start" });
+          if (!sourceVal && !isRun) { toggle.disabled = true; }
+          toggle.addEventListener("click", function () {
+            toggle.disabled = true;
+            var url = "/capture/" + encodeURIComponent(st.station_id) + (isAudio ? "/audio" : "") + (isRun ? "/stop" : "/start");
+            apiSend(url, "POST").then(function (r) {
+              if (r && r.warning) { window.alert(r.warning); }
+              load(false);
+              reload();
+            }).catch(function (e) { toggle.disabled = false; window.alert("Could not " + (isRun ? "stop" : "start") + " capture: " + e.message); });
+          });
+          var hint = isAudio ? "no audio source, use Set audio source" : "no video source, use Set capture source";
+          body.appendChild(el("div", { class: "capture-row" }, [
+            el("span", { class: "capture-row-name", text: (st.station_name || st.station_id) + " . " + (sourceVal || hint) }),
+            isRun ? badge(isAudio ? "listening" : "capturing", "source") : null,
+            toggle
+          ]));
         });
-        var hint = isAudio ? "no audio source, use Set audio source" : "no video source, use Set capture source";
-        body.appendChild(el("div", { class: "capture-row" }, [
-          el("span", { class: "capture-row-name", text: (st.station_name || st.station_id) + " . " + (sourceVal || hint) }),
-          isRun ? badge(isAudio ? "listening" : "capturing", "source") : null,
-          toggle
-        ]));
-      });
-      body.appendChild(el("p", { class: "form-hint", text: isAudio
-        ? "Start opens the audio source and runs this station's acoustic model; detections appear below as sounds are recognized. The model must be placed under models/acoustic/ and set on the station, with its labels file."
-        : "Start opens the source and runs detection; detections appear below as they are found. A desktop model must be set for anything to be detected." }));
-    }).catch(function (e) { clear(body); body.appendChild(el("p", { class: "card-note", text: "Could not load capture: " + e.message })); });
+        body.appendChild(el("p", { class: "form-hint", text: isAudio
+          ? "Start opens the audio source and runs this station's acoustic model; detections appear below as sounds are recognized. The model must be placed under models/acoustic/ and set on the station, with its labels file."
+          : "Start opens the source and runs detection; detections appear below as they are found. A desktop model must be set for anything to be detected." }));
+      }).catch(function (e) { clear(body); body.appendChild(el("p", { class: "card-note", text: "Could not load capture: " + e.message })); });
+    }
+
+    load(true);
+    return panel;
   }
 
   // Refill the species dropdown from the names present in the current load,
@@ -760,36 +856,44 @@
     }
   }
 
-  // The Delete control: a button that turns the detections grid into a selection
-  // mode, and a panel (opened like the capture panel) with Select all, a live
-  // count, and Delete selected. Nothing is removed until Delete selected is
-  // confirmed, so entering the mode is always safe.
-  function deleteControl(ctx) {
+  // The Delete control: a button that turns the grid into a selection mode, and a
+  // panel (opened in the dock like the others) with Select all, a live count, and
+  // Delete selected. Nothing is removed until Delete selected is confirmed, so
+  // entering the mode is always safe. Closing the panel for any reason, including
+  // opening a different toolbar panel, leaves selection mode and clears the ticks.
+  function deleteControl(ctx, dock) {
     var wrap = el("div", { class: "delete-control" });
     var btn = el("button", { type: "button", class: "btn", text: "Delete" });
-    btn.addEventListener("click", function () { toggleDeleteMode(wrap, ctx); });
+    dock.register(btn);
+
+    function setMode(on) {
+      btn.textContent = on ? "Cancel" : "Delete";
+      btn.classList.toggle("btn-danger", on);
+    }
+
+    btn.addEventListener("click", function () {
+      dock.show({
+        key: "delete",
+        button: btn,
+        build: function () { return buildDeletePanel(ctx, dock); },
+        onOpen: function () {
+          ctx.selecting = true;
+          setMode(true);
+          ctx.reload();
+        },
+        onClose: function () {
+          ctx.selecting = false;
+          ctx.selection = {};
+          setMode(false);
+          ctx.reload();
+        }
+      });
+    });
     wrap.appendChild(btn);
     return wrap;
   }
 
-  function toggleDeleteMode(wrap, ctx) {
-    ctx.selecting = !ctx.selecting;
-    if (!ctx.selecting) { ctx.selection = {}; }
-    var btn = wrap.querySelector(".btn");
-    if (btn) {
-      btn.textContent = ctx.selecting ? "Cancel" : "Delete";
-      btn.classList.toggle("btn-danger", ctx.selecting);
-    }
-    var panel = wrap.querySelector(".delete-panel");
-    if (ctx.selecting && !panel) {
-      wrap.appendChild(buildDeletePanel(wrap, ctx));
-    } else if (!ctx.selecting && panel) {
-      wrap.removeChild(panel);
-    }
-    ctx.reload();
-  }
-
-  function buildDeletePanel(wrap, ctx) {
+  function buildDeletePanel(ctx, dock) {
     var unit = ctx.unit || "detection";
     var panel = el("div", { class: "delete-panel card" });
     panel.appendChild(el("div", { class: "card-title", text: "Delete " + unit + "s" }));
@@ -814,13 +918,8 @@
         " and their stored media? This cannot be undone.")) { return; }
       del.disabled = true;
       apiSend(ctx.deleteEndpoint, "POST", { ids: ids }).then(function () {
-        ctx.selection = {};
-        ctx.selecting = false;
-        var b = wrap.querySelector(".btn");
-        if (b) { b.textContent = "Delete"; b.classList.remove("btn-danger"); }
-        var p = wrap.querySelector(".delete-panel");
-        if (p) { wrap.removeChild(p); }
-        ctx.reload();
+        // Closing the panel leaves selection mode, clears the ticks, and reloads.
+        dock.hide();
       }).catch(function (e) { del.disabled = false; window.alert("Could not delete: " + e.message); });
     });
 
@@ -1822,10 +1921,11 @@
     var host = region("detections-list");
     var filters = region("detections-filters");
     if (filters && !filters.hasChildNodes()) {
+      var dock = toolbarDock(filters);
       filters.appendChild(filterBar(loaders.detections, { species: true, ctx: ctx }));
-      filters.appendChild(captureSourceControl("video", loaders.detections));
-      filters.appendChild(captureRunControl("video", loaders.detections));
-      filters.appendChild(deleteControl(ctx));
+      filters.appendChild(captureSourceControl("video", loaders.detections, dock));
+      filters.appendChild(captureRunControl("video", loaders.detections, dock));
+      filters.appendChild(deleteControl(ctx, dock));
     }
     // Reset to the first page whenever the station, species, or page size
     // changes; a plain page turn (prev/next) keeps the same signature.
@@ -1950,10 +2050,11 @@
     var host = region("audio-list");
     var filters = region("audio-filters");
     if (filters && !filters.hasChildNodes()) {
+      var dock = toolbarDock(filters);
       filters.appendChild(filterBar(loaders.audio, { species: true, ctx: ctx }));
-      filters.appendChild(captureSourceControl("audio", loaders.audio));
-      filters.appendChild(captureRunControl("audio", loaders.audio));
-      filters.appendChild(deleteControl(ctx));
+      filters.appendChild(captureSourceControl("audio", loaders.audio, dock));
+      filters.appendChild(captureRunControl("audio", loaders.audio, dock));
+      filters.appendChild(deleteControl(ctx, dock));
     }
     var sig = ctx.stationId + "|" + ctx.speciesFilter + "|" + ctx.pageSize;
     if (sig !== ctx.sig) { ctx.pageOffset = 0; ctx.sig = sig; }

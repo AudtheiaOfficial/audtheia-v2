@@ -2574,27 +2574,49 @@ textarea:hover {
   gap: var(--space-2);
 }
 
-/* The pop-open panels (Set capture source, Capture, Delete) ease in rather than
-   appearing in one hard jump, so the content settling below them reads as a
-   deliberate motion. Kept short (under a fifth of a second) so it never feels
-   slow, and disabled for anyone who prefers reduced motion. */
-@keyframes panel-open {
-  from { opacity: 0; transform: translateY(-8px); }
-  to   { opacity: 1; transform: translateY(0); }
+/* The panel dock: one shared region directly beneath the Detections and Audio
+   toolbars. The toolbar row holds only buttons and never changes shape; the
+   panel a button opens (Set capture source, Capture, Delete) is mounted here and
+   expands smoothly downward, so the content below simply moves down with it.
+   The height animates through a grid track (0fr to 1fr), which follows the
+   panel's own height with no measuring. Only one panel is open at a time; the
+   open one collapses quickly, on the fast transition, before the next expands.
+   The expand time matches DOCK_EXPAND_MS in app.js. Reduced-motion users get no
+   animation from the global rule above. */
+.toolbar-dock {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows var(--transition-fast), opacity var(--transition-fast);
 }
 
-.source-form,
-.capture-panel,
-.delete-panel {
-  animation: panel-open 170ms ease-out;
+.toolbar-dock.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition: grid-template-rows var(--transition-base), opacity var(--transition-base);
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .source-form,
-  .capture-panel,
-  .delete-panel {
-    animation: none;
-  }
+.toolbar-dock-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Once fully open, panel shadows and focus rings may draw outside the region. */
+.toolbar-dock.is-settled .toolbar-dock-inner {
+  overflow: visible;
+}
+
+/* The gap between an open panel and the grid below it lives on the panel's own
+   margin, so a collapsed dock takes no space at all. */
+.toolbar-dock-inner > * {
+  margin-bottom: var(--space-4);
+}
+
+/* The toolbar button that owns the open panel reads as active. Only the border
+   colour changes, so the button never changes size. */
+.btn[aria-expanded="true"]:not(.btn-danger) {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* The delete selection panel, opened from the Delete button like the capture
