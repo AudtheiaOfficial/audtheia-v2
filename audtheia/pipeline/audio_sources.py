@@ -184,9 +184,10 @@ def _fetch_url_to_wav(url: str, target_rate: int) -> Path:
     try:
         from yt_dlp import YoutubeDL  # noqa: PLC0415 - optional, only for URL audio
     except ImportError as exc:
+        from audtheia.pipeline.ytdlp_support import missing_package_message  # noqa: PLC0415
+
         raise ValueError(
-            "reading audio from a URL needs yt-dlp. Install yt-dlp, or use a local "
-            ".wav file."
+            missing_package_message("audio from a web address") + " Or use a local .wav file."
         ) from exc
     out_dir = Path(tempfile.mkdtemp(prefix="audtheia-audio-"))
     opts = {
@@ -196,8 +197,13 @@ def _fetch_url_to_wav(url: str, target_rate: int) -> Path:
         "no_warnings": True,
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "wav"}],
     }
-    with YoutubeDL(opts) as ydl:
-        ydl.download([url])
+    try:
+        with YoutubeDL(opts) as ydl:
+            ydl.download([url])
+    except Exception as exc:  # noqa: BLE001 - any extractor failure is reported with its cause
+        from audtheia.pipeline.ytdlp_support import describe_failure  # noqa: PLC0415
+
+        raise ValueError(describe_failure(exc, url, what="audio")) from exc
     wavs = list(out_dir.glob("*.wav"))
     if not wavs:
         raise ValueError(f"could not extract an audio track from {url!r}")

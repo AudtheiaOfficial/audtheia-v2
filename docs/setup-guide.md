@@ -86,7 +86,7 @@ Tell a station where its video comes from. You can set this in the app under **D
 
 - `webcam:0` for a connected camera (use `webcam:1` for a second one);
 - `url:rtsp://...` or `url:https://...m3u8` for a direct camera or streaming address;
-- `stream:https://...` for a public web-page live stream, such as a wildlife camera page, found automatically;
+- `stream:https://...` for a public web-page live stream, such as a wildlife camera page, found automatically. A YouTube link pasted on its own works the same way;
 - `file:/path/to/clip.mp4` for a video file on your computer.
 
 The reference setup ships a station already set to `webcam:0`, so you can start right away.
@@ -172,5 +172,12 @@ Everything that varies between deployments lives in `config/settings.json`, neve
 - **Setup stops on a package.** The message names the package and the reason. The most common cause is an older Python; Audtheia needs 3.11 or newer. Install a current Python and run setup again.
 - **The generative model did not install.** This is not fatal. The desktop still runs, and the longitudinal pass still discovers and records its patterns; the language model only adds richer interpretation and can be installed later.
 - **The desktop mode records no detections.** Confirm a detection model is present at the path the station's desktop model setting names, and that the capture source opens (a wrong camera index, stream address, or file path is the usual cause). The [custom models guide](custom-models.md) covers obtaining a model.
+- **A YouTube or web-page link will not open.** The error names the cause. YouTube links are read by `yt-dlp`, which needs its YouTube components (installed by setup) and a recent release, because YouTube changes often and an old release stops working. To update it, run this from the Audtheia folder (on macOS or Linux use `./.venv/bin/python`):
+
+  ```
+  .\.venv\Scripts\python.exe -m pip install -U "yt-dlp[default,deno]"
+  ```
+
+  A private, age-restricted, region-locked, or sign-in-only video cannot be read either way.
 - **A field station is not reachable.** Confirm it is on the same network, that SSH was enabled when you flashed it, and that the address and user you passed are correct. Use `--dry-run` to check the steps without contacting the Pi.
 - **A named time zone does not resolve on Windows.** Windows does not ship the time-zone database; install it with `pip install tzdata`, or leave the time zone set to automatic, which needs nothing.

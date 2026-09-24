@@ -41,7 +41,12 @@ from audtheia.pipeline.drivers import (
     _parse_video_spec,
     _resolve_stream_url,
     _best_stream_url,
+    build_frame_source,
+    CaptureError,
+    CaptureResolveError,
 )
+import audtheia.pipeline.drivers as drivers_module
+from audtheia.pipeline import ytdlp_support
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +194,152 @@ def test_stream_resolution_and_best_url():
     assert resolved == "https://cdn.example/stream"
 
 
+def test_best_stream_url_prefers_readable_h264():
+    # H.264 outranks a taller stream in a newer codec, because the decoder bundled
+    # with OpenCV reads it reliably; a fragment-manifest format has no single
+    # address to open and is never chosen.
+    info = {
+        "formats": [
+            {"url": "vp9-2160", "vcodec": "vp09.00.50.08", "height": 2160, "protocol": "https"},
+            {"url": "h264-720", "vcodec": "avc1.4d401f", "height": 720, "protocol": "https"},
+            {"url": "h264-1080", "vcodec": "avc1.640028", "height": 1080, "protocol": "https"},
+            {"url": "dash-1440", "vcodec": "avc1.640032", "height": 1440, "protocol": "http_dash_segments"},
+            {"url": "story", "vcodec": "none", "height": None, "protocol": "mhtml"},
+        ]
+    }
+    assert _best_stream_url(info) == "h264-1080"
+    # With no H.264 on offer, the highest resolution is still returned.
+    only_vp9 = {"formats": [
+        {"url": "a", "vcodec": "vp09", "height": 480, "protocol": "https"},
+        {"url": "b", "vcodec": "vp09", "height": 1080, "protocol": "https"},
+    ]}
+    assert _best_stream_url(only_vp9) == "b"
+
+
+class _RaisingYDL(_FakeYDL):
+    """A stand-in extractor whose page cannot be read."""
+
+    def __init__(self, message):
+        self._message = message
+
+    def extract_info(self, url, download=False):
+        raise RuntimeError(self._message)
+
+
+def _resolve_failure_message(message, report):
+    """Resolve through a failing extractor while the environment report is fixed,
+    and return the message the person would see."""
+    original = ytdlp_support.environment_report
+    ytdlp_support.environment_report = lambda: report
+    try:
+        try:
+            _resolve_stream_url("https://youtu.be/example", ydl_factory=lambda: _RaisingYDL(message))
+        except CaptureResolveError as exc:
+            return str(exc)
+    finally:
+        ytdlp_support.environment_report = original
+    raise AssertionError("the failing extractor did not raise a CaptureResolveError")
+
+
+def test_resolution_failure_names_the_cause_and_fix():
+    fix = "pip install -U"
+
+    # yt-dlp present, but its YouTube solver and JavaScript runtime are absent.
+    msg = _resolve_failure_message(
+        "ERROR: [youtube] abc: Requested format is not available",
+        {"version": "2026.7.4", "solver": False, "runtime": False},
+    )
+    assert "yt-dlp-ejs" in msg and "JavaScript runtime" in msg, msg
+    assert fix in msg and ytdlp_support.INSTALL_SPEC in msg, msg
+    assert "Requested format is not available" in msg, msg
+    assert "ERROR:" not in msg, "the extractor's own prefix should be stripped"
+
+    # Everything present: the site has changed, so the fix is an update.
+    msg = _resolve_failure_message(
+        "Sign in to confirm you are not a bot",
+        {"version": "2026.8.19", "solver": True, "runtime": True},
+    )
+    assert "changed since this version" in msg and fix in msg, msg
+
+    # yt-dlp not installed at all.
+    msg = _resolve_failure_message(
+        "anything", {"version": None, "solver": False, "runtime": False}
+    )
+    assert "not installed" in msg and fix in msg, msg
+
+    # An address yt-dlp does not know is not an update problem; it points at url:.
+    msg = _resolve_failure_message(
+        "Unsupported URL: http://camera.local/mjpeg",
+        {"version": "2026.8.19", "solver": True, "runtime": True},
+    )
+    assert "url:" in msg and fix not in msg, msg
+
+    # yt-dlp's generic reader failing means an ordinary, unrecognised page, so it
+    # is likewise not an update problem.
+    msg = _resolve_failure_message(
+        "[generic] mjpeg: Unable to download webpage: HTTP Error 403: Forbidden",
+        {"version": "2026.8.19", "solver": True, "runtime": True},
+    )
+    assert "url:" in msg and fix not in msg, msg
+
+
+class _ClosedCapture:
+    def isOpened(self):  # noqa: N802 - OpenCV's own name
+        return False
+
+    def release(self):
+        pass
+
+
+class _FakeCv2:
+    CAP_PROP_FPS = 5
+    CAP_PROP_FRAME_COUNT = 7
+
+    @staticmethod
+    def VideoCapture(target):  # noqa: N802 - OpenCV's own name
+        return _ClosedCapture()
+
+
+class _FakeSettings:
+    def __init__(self, video):
+        self._video = video
+
+    def capture_source(self, station):
+        return {"video": self._video}
+
+
+def _open_failure(video, resolver):
+    original_cv2, original_resolver = drivers_module._import_cv2, drivers_module._resolve_stream_url
+    drivers_module._import_cv2 = lambda: _FakeCv2
+    drivers_module._resolve_stream_url = resolver
+    try:
+        try:
+            build_frame_source(_FakeSettings(video), {})
+        except CaptureError as exc:
+            return str(exc)
+    finally:
+        drivers_module._import_cv2, drivers_module._resolve_stream_url = original_cv2, original_resolver
+    raise AssertionError("an unopenable source did not raise a CaptureError")
+
+
+def test_unopenable_source_reports_the_real_reason():
+    def cannot_resolve(page_url, **kwargs):
+        raise CaptureResolveError("yt-dlp could not read the video address: SPECIFIC-CAUSE. Fix: SPECIFIC-FIX")
+
+    # A bare web link that does not open directly and cannot be resolved reports
+    # the resolver's own reason, not only the generic "could not open" text.
+    msg = _open_failure("https://youtu.be/example", cannot_resolve)
+    assert "SPECIFIC-CAUSE" in msg and "SPECIFIC-FIX" in msg, msg
+
+    # A page that resolves to a stream that will not open says so.
+    msg = _open_failure("https://youtu.be/example", lambda page_url, **kw: "https://cdn.example/other")
+    assert "resolved to a stream" in msg, msg
+
+    # An explicit direct address is never second-guessed, so it keeps the plain text.
+    msg = _open_failure("url:https://cdn.example/live.m3u8", cannot_resolve)
+    assert "could not open the video source" in msg and "SPECIFIC-CAUSE" not in msg, msg
+
+
 def test_frame_source_converts_bgr_and_ends():
     src = OpenCVFrameSource(
         ScriptedCapture([_red_frame_bgr(), _red_frame_bgr()]),
@@ -303,6 +454,9 @@ def main() -> int:
     checks = [
         test_parse_video_spec,
         test_stream_resolution_and_best_url,
+        test_best_stream_url_prefers_readable_h264,
+        test_resolution_failure_names_the_cause_and_fix,
+        test_unopenable_source_reports_the_real_reason,
         test_frame_source_converts_bgr_and_ends,
         test_detector_decodes_one_box,
         test_end_to_end_capture_to_qc,

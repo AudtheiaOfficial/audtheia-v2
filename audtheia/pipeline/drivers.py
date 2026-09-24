@@ -37,6 +37,7 @@ from typing import Optional
 import numpy as np
 
 from audtheia.pipeline.monitor import Frame, RawDetection, ISO_FORMAT
+from audtheia.pipeline.ytdlp_support import describe_failure, missing_package_message
 
 logger = logging.getLogger("audtheia.pipeline.drivers")
 
@@ -49,6 +50,7 @@ __all__ = [
     "CaptureError",
     "CaptureConfigError",
     "CaptureDependencyError",
+    "CaptureResolveError",
     "DEFAULT_INPUT_SIZE",
     "DEFAULT_CONFIDENCE",
     "DEFAULT_NMS_IOU",
@@ -83,6 +85,10 @@ class CaptureConfigError(CaptureError):
 
 class CaptureDependencyError(CaptureError):
     """A desktop capture needs a library that is not installed."""
+
+
+class CaptureResolveError(CaptureError):
+    """A web-page video address could not be resolved to a stream to open."""
 
 
 # ---------------------------------------------------------------------------
@@ -173,23 +179,44 @@ def _unquote_spec(text) -> str:
     return t
 
 
+# Stream delivery methods OpenCV can read directly. A format delivered as a
+# manifest of separately fetched fragments, or as storyboard images, has no
+# single address to open.
+_UNREADABLE_PROTOCOLS = ("http_dash_segments", "mhtml", "ism", "f4m", "rtmp")
+
+
+def _is_h264(fmt: dict) -> bool:
+    return str(fmt.get("vcodec") or "").lower().startswith(("avc1", "h264"))
+
+
 def _best_stream_url(info: dict) -> str:
     """Pick a directly-readable video stream address from yt-dlp's page info.
 
     yt-dlp returns either a single resolved address or a list of formats. A
-    format that carries video and has an address is preferred, choosing the
-    highest resolution, so the live feed OpenCV opens is the best one the page
-    offers rather than an audio-only or thumbnail track.
+    format that carries video and has an address is preferred. H.264 video is
+    ranked first because the video decoder bundled with OpenCV reads it reliably,
+    while the newest codecs that sites offer at the highest resolutions may open
+    but yield no frames. Within a codec, the highest resolution wins, so the feed
+    OpenCV opens is the best readable one the page offers rather than an
+    audio-only or thumbnail track.
     """
     if not info:
         raise CaptureError("the stream page returned no information to open")
     if info.get("url"):
         return info["url"]
     formats = info.get("formats") or []
-    candidates = [f for f in formats if f.get("url") and f.get("vcodec") not in (None, "none")]
+    candidates = [
+        f for f in formats
+        if f.get("url")
+        and f.get("vcodec") not in (None, "none")
+        and not str(f.get("protocol") or "").startswith(_UNREADABLE_PROTOCOLS)
+    ]
     if not candidates:
         raise CaptureError("the stream page offered no video stream to open")
-    candidates.sort(key=lambda f: (f.get("height") or 0, f.get("tbr") or 0), reverse=True)
+    candidates.sort(
+        key=lambda f: (_is_h264(f), f.get("height") or 0, f.get("tbr") or 0),
+        reverse=True,
+    )
     return candidates[0]["url"]
 
 
@@ -198,17 +225,19 @@ def _resolve_stream_url(page_url: str, *, ydl_factory=None) -> str:
 
     The extractor is created through a small factory so a test can supply its own
     without reaching the network. When yt-dlp is not installed, a clear message
-    names it; when the page cannot be resolved, the reason is reported rather than
-    failing obscurely deep inside OpenCV.
+    names it; when the page cannot be resolved, the message names the real cause
+    (a missing YouTube solver or JavaScript runtime, an address yt-dlp does not
+    know, or a yt-dlp that needs updating) and the command that fixes it, rather
+    than failing obscurely deep inside OpenCV.
     """
     if ydl_factory is None:
         try:
             from yt_dlp import YoutubeDL  # imported here so this module loads without yt-dlp
         except Exception as exc:  # noqa: BLE001
             raise CaptureDependencyError(
-                "yt-dlp is required to read a 'stream:' page address (for example a "
-                "YouTube or Pixcams live page), but it is not installed. Install yt-dlp, "
-                "or give a direct camera, file, or stream URL instead."
+                missing_package_message("a web-page video address (a YouTube or "
+                                        "live-camera page)")
+                + " Or give a direct camera, file, or stream URL instead."
             ) from exc
 
         def ydl_factory():  # noqa: E306 - a tiny default factory
@@ -220,7 +249,7 @@ def _resolve_stream_url(page_url: str, *, ydl_factory=None) -> str:
     except CaptureError:
         raise
     except Exception as exc:  # noqa: BLE001 - any extractor failure is reported plainly
-        raise CaptureError(f"yt-dlp could not resolve a stream from {page_url!r}: {exc}") from exc
+        raise CaptureResolveError(describe_failure(exc, page_url, what="video")) from exc
     return _best_stream_url(info)
 
 
@@ -286,10 +315,12 @@ def build_frame_source(settings, station: dict) -> OpenCVFrameSource:
     target, live = _parse_video_spec(video)
     low = video.strip().lower()
     cv2 = _import_cv2()
+    resolved_from_page = False
     if low.startswith("stream:"):
         # A page address (a YouTube or Pixcams live page) is not a media stream
         # OpenCV can open; yt-dlp resolves it to the direct stream first.
         target = _resolve_stream_url(target)
+        resolved_from_page = True
     capture = cv2.VideoCapture(target)
     # A plain web address pasted without a prefix may be a web *page* (a YouTube
     # link, a live-cam page) rather than a direct media stream. If such a source
@@ -297,16 +328,34 @@ def build_frame_source(settings, station: dict) -> OpenCVFrameSource:
     # webcam, a direct stream URL, a page link, or a file all work whether or not
     # the user prefixes them. An explicit 'url:' is honored as a direct address
     # and is never second-guessed; an explicit 'stream:' was already resolved.
+    resolve_error: Optional[CaptureError] = None
     if (not capture.isOpened()
             and not low.startswith(("url:", "stream:"))
             and low.startswith(("http://", "https://"))):
         try:
             resolved = _resolve_stream_url(target)
-        except Exception:  # noqa: BLE001 - yt-dlp missing or resolution failed
+        except CaptureError as exc:
+            # Keep the reason: it is what the person needs to see if the address
+            # still cannot be opened, so it is reported below rather than dropped.
+            resolve_error = exc
             resolved = None
         if resolved and resolved != target:
             capture = cv2.VideoCapture(resolved)
+            resolved_from_page = True
     if not capture.isOpened():
+        if resolve_error is not None:
+            raise CaptureError(
+                f"could not open the video source {video!r}. It did not open as a "
+                f"direct stream, and it could not be read as a web page either. "
+                f"{resolve_error}"
+            ) from resolve_error
+        if resolved_from_page:
+            raise CaptureError(
+                f"the page {video!r} resolved to a stream, but the stream could not "
+                f"be opened. It may be offline, may have ended, or may use a format "
+                f"the bundled video decoder cannot read. Try again in a moment, or "
+                f"use a different stream."
+            )
         raise CaptureError(
             f"could not open the video source {video!r}. Check the camera index, "
             f"the stream address, or the file path."

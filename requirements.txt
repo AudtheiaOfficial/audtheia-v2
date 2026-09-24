@@ -95,11 +95,21 @@ supervision==0.29.0
 # yt-dlp resolves a web-page video address (a YouTube or Pixcams live page, for
 # example) down to the direct stream address that OpenCV then reads, so a desktop
 # station can watch a public wildlife livestream with no field hardware. It is
-# used only for a source given as "stream:<page-address>"; a direct camera, file,
-# or stream URL never needs it. Pure Python, identical on both platforms. This is
-# the one dependency that benefits from periodic updates, since it tracks changes
-# on the sites it reads.
-yt-dlp==2026.7.4
+# used for a source given as "stream:<page-address>" or pasted as a bare web
+# link; a direct camera, file, or "url:" stream never needs it. Pure Python,
+# identical on both platforms.
+#
+# Two extras are required for YouTube, which yt-dlp can no longer read without
+# them: "default" adds the YouTube challenge solver (yt-dlp-ejs) and its network
+# libraries, and "deno" adds a pip-installable JavaScript runtime that yt-dlp
+# runs the solver in (a wheel for Windows, macOS, and Linux on x86-64 and ARM,
+# roughly 40 MB). This is a minimum version, not an exact pin, on purpose:
+# yt-dlp tracks changes on the sites it reads and an old release stops working
+# when a site changes, so it is the one dependency to keep current. To update an
+# existing install, run from the Audtheia folder:
+#   Windows:     .\.venv\Scripts\python.exe -m pip install -U "yt-dlp[default,deno]"
+#   macOS/Linux: ./.venv/bin/python -m pip install -U "yt-dlp[default,deno]"
+yt-dlp[default,deno]>=2026.8.19
 
 # tzdata: Windows does not ship the IANA time-zone database, so a station whose
 # display time zone is set to a named zone (for example "America/Puerto_Rico"
@@ -119,7 +129,7 @@ httpx2==2.5.0
 # current, lightweight TFLite runtime with wheels for Windows, macOS, and Linux,
 # so desktop audio capture (Audio tab) works with no extra setup. acoustic.py
 # prefers it, then tflite-runtime (the Pi field build), then tensorflow.lite. The
-# field station uses tflite-runtime instead — see requirements-pi.txt.
+# field station uses tflite-runtime instead - see requirements-pi.txt.
 ai-edge-litert==2.1.6
 
 # --- Anticipated, not yet pinned (added when the module that imports them is built) ---
