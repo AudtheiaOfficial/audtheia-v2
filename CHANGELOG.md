@@ -5,12 +5,23 @@ All notable changes to Audtheia V2 are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0] - Unreleased
+## [Unreleased]
+
+### Changed
+
+- **Per-frame review wording.** The two verdict buttons in the Detections frame
+  review now read Accurate and Inaccurate, and the matching summary, help text,
+  and "mark all" confirmation use the same words. The stored verdicts
+  (`accurate`, `inaccurate`, `cleared`) and every summary figure are unchanged,
+  so existing reviews read exactly as before. The summary metric keeps its
+  statistical name, Frame precision: the share of judged frames marked Accurate.
+
+## [2.0.0] - 2026-08-15
 
 Audtheia V2 is a fresh, fully offline redesign of the Audtheia platform in its own
 repository. Where V1 relied on cloud workflows and external services, V2 runs the
 entire pipeline on hardware the user owns, with no internet connection required at
-runtime. The date above is set when the first release is tagged.
+runtime.
 
 ### Added
 
