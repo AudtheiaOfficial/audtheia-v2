@@ -175,6 +175,34 @@ Each entry has a `path`, a `version` that is recorded with every result it
 produces so your data stays reproducible, and a `citation` so the model's
 authors are credited in your reports and publications.
 
+### training
+
+Everything the Train tab uses. Nothing here is needed to run a station.
+
+- `enabled`: turns the Train tab on or off.
+- `paths`: where prepared datasets, trained models and the separate training
+  environments are kept, relative to the repository unless absolute.
+- `dataset`: the rules for building a training set from your records. The
+  criteria a frame's event must meet by default, how many frames one event may
+  contribute, how near-duplicate frames are removed, how much background is
+  allowed, the smallest number of examples a class needs, and the split. The
+  split is by event, never by frame, with a fixed `seed` so the same records
+  always divide the same way. `acoustic` holds the equivalent rules for sound
+  windows.
+- `vision` and `acoustic`: the available base models and their sensible starting
+  values. The names are labels you can change without any code change.
+- `hardware`: the Full speed and Gentle profiles and the safety limits that pause
+  training when the computer is on low battery, running hot, or short of disk
+  space or memory. Gentle is the default on a computer without a dedicated
+  graphics card.
+- `evaluation`: how the held-out test figures are measured.
+- `install`: what the optional training install downloads. A location left as
+  `null` is refused at install time rather than guessed.
+- `sharing`: what the sharing export includes.
+
+All of these have working defaults. A settings file written before this block
+existed loads unchanged and simply gets the defaults.
+
 ### stations
 
 One entry per site. Each entry carries:

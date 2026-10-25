@@ -41,6 +41,18 @@ models/acoustic/birdnet/*
 # audtheia/resources/gbif_backbone rather than committed, so it is ignored.
 audtheia/resources/gbif_backbone/
 
+# Models a person trains on this computer with the Train tab. Each model lives in
+# its own folder under models/trained, holding weights, checkpoints, a label list
+# and a results file. They are generated from private field data and can be large,
+# so none of it is committed; only the folder and its explanation are kept. The
+# separate training environments are a few gigabytes of installed libraries and
+# are never source either.
+models/trained/**
+!models/trained/
+!models/trained/.gitkeep
+!models/trained/README.md
+.venv-train/
+
 # --- Secrets / credentials ---
 *.env
 .env.*

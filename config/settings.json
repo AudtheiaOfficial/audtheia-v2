@@ -1,5 +1,5 @@
 {
-  "settings_schema_version": "1.2.0",
+  "settings_schema_version": "1.3.0",
   "node": {
     "role": "desktop",
     "active_station_id": null
@@ -129,6 +129,125 @@
   },
   "secrets": {
     "path": "config/secrets.json"
+  },
+  "training": {
+    "enabled": true,
+    "paths": {
+      "datasets_dir": "exports/train",
+      "models_dir": "models/trained",
+      "envs_dir": ".venv-train"
+    },
+    "dataset": {
+      "default_required_criteria": ["expert_confirmed", "qc_passed", "verified"],
+      "model_labelled_max_fraction": 0.0,
+      "max_frames_per_event": 10,
+      "near_duplicate_hamming": 4,
+      "background_max_fraction": 0.10,
+      "min_examples_per_class": 5,
+      "under_threshold_default": "keep_with_warning",
+      "split": {
+        "mode": "event",
+        "seed": 20260101,
+        "fractions": { "train": 0.70, "validation": 0.15, "test": 0.15 },
+        "min_events_per_class_for_heldout": 3,
+        "time_block_days": null
+      },
+      "acoustic": {
+        "window_selection": "scored_with_energy_fallback",
+        "window_score_floor": 0.10,
+        "max_windows_per_clip": 3,
+        "noise_windows_per_rejected_clip": 1
+      }
+    },
+    "vision": {
+      "engine": "vision_detector",
+      "base_models": [
+        { "key": "nano", "label": "Nano", "resolution": 384 },
+        { "key": "small", "label": "Small", "resolution": 512 },
+        { "key": "medium", "label": "Medium", "resolution": 576 },
+        { "key": "large", "label": "Large", "resolution": 704 }
+      ],
+      "defaults": {
+        "epochs": 100,
+        "batch_size": 4,
+        "grad_accum_steps": 1,
+        "learning_rate": 0.0001,
+        "encoder_learning_rate": 0.00015,
+        "weight_decay": 0.0001,
+        "use_ema": true,
+        "early_stopping": true,
+        "early_stopping_patience": 10,
+        "early_stopping_min_delta": 0.001,
+        "checkpoint_interval": 10,
+        "best_metric": "map",
+        "score_threshold": 0.30
+      }
+    },
+    "acoustic": {
+      "engines": [
+        { "key": "acoustic_head_a", "label": "Terrestrial and avian", "sample_rate": 48000, "window_seconds": 3.0 },
+        { "key": "acoustic_head_b", "label": "Marine and general", "sample_rate": 32000, "window_seconds": 5.0 }
+      ],
+      "defaults": {
+        "epochs": 50,
+        "batch_size": 32,
+        "learning_rate": 0.001,
+        "early_stopping_patience": 8,
+        "dropout": 0.25,
+        "calibrate": true
+      },
+      "default_engine_by_environment": {
+        "marine": "acoustic_head_b",
+        "estuarine": "acoustic_head_b",
+        "freshwater": "acoustic_head_b",
+        "terrestrial": "acoustic_head_a",
+        "mixed": "acoustic_head_b"
+      }
+    },
+    "hardware": {
+      "full_speed": { "dataloader_workers": "auto", "cpu_threads": "auto", "gradient_checkpointing": false },
+      "gentle": {
+        "micro_batch": 1,
+        "dataloader_workers": 1,
+        "cpu_threads_fraction": 0.5,
+        "gradient_checkpointing": true,
+        "max_gpu_memory_fraction": 0.75
+      },
+      "limits": {
+        "require_ac_power": true,
+        "min_battery_percent": 30,
+        "min_free_disk_gb": 5.0,
+        "gpu_memory_headroom_fraction": 0.10,
+        "thermal_throttle_stop_seconds": 120,
+        "cpu_only_warn_hours": 6.0
+      },
+      "capture_contention": "warn"
+    },
+    "evaluation": {
+      "iou_thresholds": [0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95],
+      "max_detections": 100,
+      "report_confidence": 0.30,
+      "example_images_per_kind": 6,
+      "calibration_bins": 10,
+      "gentle_equivalence": { "min_margin": 0.02, "sigma_multiple": 2.0 }
+    },
+    "install": {
+      "torch_index_by_vendor": {
+        "nvidia": null,
+        "intel": null,
+        "cpu": null,
+        "apple": null,
+        "amd_linux": null
+      },
+      "packages": {
+        "vision": ["rfdetr[train,onnx]"],
+        "acoustic": ["perch-hoplite[tf]", "birdnet-analyzer"]
+      }
+    },
+    "sharing": {
+      "package_include_checkpoint": true,
+      "dataset_export_formats": ["coco", "yolo_txt"]
+    }
   },
   "desktop_models": {
     "visual_rfdetr": {

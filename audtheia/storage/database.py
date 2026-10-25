@@ -62,6 +62,12 @@ __all__ = [
     "DreamPass",
     "Pattern",
     "SiteBaseline",
+    "FrameBoxCorrection",
+    "TrainingRun",
+    "TrainedModel",
+    "ModelActivation",
+    "validate_model_user_name",
+    "format_model_name",
     "utc_now_iso",
     "new_id",
     "run_sync_round",
@@ -110,6 +116,46 @@ def utc_now_iso() -> str:
     caller, never invented here.
     """
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+# A trained model's name is also the name of its folder, so the part a person
+# chooses is held to what is safe as a file name on every supported system.
+# Windows reserves a handful of device names that cannot be used for a file or
+# folder whatever the extension, and it treats names without regard to case, so
+# the uniqueness check elsewhere compares lower-cased names.
+MODEL_USER_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$")
+_RESERVED_DEVICE_NAMES = frozenset(
+    ["con", "prn", "aux", "nul"]
+    + [f"com{i}" for i in range(1, 10)]
+    + [f"lpt{i}" for i in range(1, 10)]
+)
+
+
+def validate_model_user_name(name: str) -> str:
+    """Return the name chosen for a trained model, or raise ValueError saying why not.
+
+    Letters, digits, hyphen and underscore only, one to forty characters, starting
+    with a letter or digit, and not a name Windows reserves for a device. The
+    value is returned unchanged apart from surrounding whitespace, never
+    silently rewritten, so a person always knows exactly what the model is
+    called.
+    """
+    if not isinstance(name, str):
+        raise ValueError("the model name must be text")
+    cleaned = name.strip()
+    if not MODEL_USER_NAME_PATTERN.match(cleaned):
+        raise ValueError(
+            "a model name uses letters, digits, hyphens and underscores only,"
+            " starts with a letter or digit, and is 1 to 40 characters long"
+        )
+    if cleaned.lower() in _RESERVED_DEVICE_NAMES:
+        raise ValueError(f"{cleaned!r} is a reserved name on Windows and cannot be used for a model")
+    return cleaned
+
+
+def format_model_name(user_name: str, version_number: int) -> str:
+    """The registry name of one model version: Audtheia-<Name>-V<n>."""
+    return f"Audtheia-{user_name}-V{int(version_number)}"
 
 
 # ===========================================================================
@@ -349,6 +395,124 @@ class FrameReview:
 
 
 @dataclass
+class FrameBoxCorrection:
+    """One expert correction to one box on one saved frame, appended.
+
+    The measured annotation file and the model-owned child_detections rows are
+    never altered. A box lineage is the model's own box (box_key 'model') or one
+    box the expert added (a UUID); the newest row per (observation_id,
+    frame_index, box_key) is the current state of that box. 'adjust' replaces the
+    model's box with the expert's corners, 'add' supplies a box for an organism
+    the model missed together with its taxon, 'remove' drops a box, and
+    'cleared' retracts an earlier correction so the model's own box stands again.
+    """
+
+    id: str
+    observation_id: str
+    frame_index: int
+    box_key: str
+    action: str  # adjust / add / remove / cleared
+    corrector: str
+    corrected_at: str
+    created_at: str
+    data_source: str = "human_expert"
+    x1: Optional[float] = None
+    y1: Optional[float] = None
+    x2: Optional[float] = None
+    y2: Optional[float] = None
+    frame_width: Optional[int] = None
+    frame_height: Optional[int] = None
+    corrected_scientific_name: Optional[str] = None
+    corrected_gbif_usage_key: Optional[str] = None
+    gbif_snapshot_date: Optional[str] = None
+    reason: Optional[str] = None
+
+
+@dataclass
+class TrainingRun:
+    """One training attempt. A run is a model output, never a measurement.
+
+    The configuration, the hardware and the library versions are stored as JSON
+    text so a result can be reproduced and audited. Status and progress are
+    updated in place by the desktop only.
+    """
+
+    id: str
+    run_name: str
+    planned_model_name: str
+    modality: str  # vision / acoustic
+    engine: str
+    mode: str  # full_speed / gentle
+    status: str
+    dataset_signature: str
+    dataset_dir: str
+    run_dir: str
+    seed: int
+    base_label: str
+    config_json: str
+    created_by: str
+    created_at: str
+    data_source: str = "model"
+    stop_reason: Optional[str] = None
+    parent_model_id: Optional[str] = None
+    hardware_json: Optional[str] = None
+    software_json: Optional[str] = None
+    epochs_total: Optional[int] = None
+    epochs_done: int = 0
+    best_metric_name: Optional[str] = None
+    best_metric_value: Optional[float] = None
+    last_heartbeat_at: Optional[str] = None
+    started_at: Optional[str] = None
+    ended_at: Optional[str] = None
+
+
+@dataclass
+class TrainedModel:
+    """One issued model version in the registry. Immutable once written."""
+
+    id: str
+    name: str
+    name_key: str
+    user_name: str
+    version_number: int
+    modality: str
+    engine: str
+    run_id: str
+    folder: str
+    model_file: str
+    labels_file: str
+    base_label: str
+    metrics_json: str
+    dataset_signature: str
+    class_count: int
+    created_by: str
+    created_at: str
+    data_source: str = "model"
+    checkpoint_file: Optional[str] = None
+    license_spdx: Optional[str] = None
+    license_note: Optional[str] = None
+    base_license_note: Optional[str] = None
+
+
+@dataclass
+class ModelActivation:
+    """One activation or revert of a trained model into a configuration slot, appended."""
+
+    id: str
+    model_id: str
+    slot: str  # desktop_verifier / desktop_screening / station_acoustic
+    action: str  # activate / revert
+    previous_json: str
+    new_json: str
+    activated_by: str
+    activated_at: str
+    created_at: str
+    data_source: str = "human_expert"
+    station_id: Optional[str] = None
+    acknowledged_license: int = 0
+
+
+@dataclass
 class Interpretation:
     id: str
     observation_id: str
@@ -491,6 +655,10 @@ _TABLE_FOR_TYPE = {
     ObservationVerification: "observation_verification",
     ObservationCorrection: "observation_corrections",
     FrameReview: "frame_review",
+    FrameBoxCorrection: "frame_box_correction",
+    TrainingRun: "training_runs",
+    TrainedModel: "trained_models",
+    ModelActivation: "model_activation_log",
     Interpretation: "interpretations",
     SkillFlagRow: "skill_flags",
     StationTelemetry: "station_telemetry",
@@ -1835,6 +2003,340 @@ class Database:
             counts[row["verdict"]] = row["n"]
         counts["reviewed"] = counts["accurate"] + counts["inaccurate"]
         return counts
+
+    # -- per-frame box corrections (desktop-owned) -----------------------
+
+    def add_frame_box_correction(
+        self,
+        observation_id: str,
+        frame_index: int,
+        *,
+        action: str,
+        corrector: str,
+        box_key: Optional[str] = None,
+        x1: Optional[float] = None,
+        y1: Optional[float] = None,
+        x2: Optional[float] = None,
+        y2: Optional[float] = None,
+        frame_width: Optional[int] = None,
+        frame_height: Optional[int] = None,
+        corrected_scientific_name: Optional[str] = None,
+        corrected_gbif_usage_key: Optional[str] = None,
+        gbif_snapshot_date: Optional[str] = None,
+        reason: Optional[str] = None,
+    ) -> dict:
+        """Append one box correction and return the row as stored.
+
+        Nothing measured is modified. The frame's annotation file and the
+        model-owned detections stay exactly as captured; this appends a separate
+        human claim about one box. An added box with no box_key is given a fresh
+        identifier, which becomes its lineage; every other action defaults to the
+        model's own box. The table's CHECK constraints are the authority on the
+        action vocabulary and on the geometry, so this does not duplicate them.
+        """
+        if box_key is None:
+            box_key = new_id() if action == "add" else "model"
+        now = utc_now_iso()
+        row = FrameBoxCorrection(
+            id=new_id(),
+            observation_id=observation_id,
+            frame_index=int(frame_index),
+            box_key=box_key,
+            action=action,
+            corrector=corrector,
+            corrected_at=now,
+            created_at=now,
+            x1=x1,
+            y1=y1,
+            x2=x2,
+            y2=y2,
+            frame_width=frame_width,
+            frame_height=frame_height,
+            corrected_scientific_name=corrected_scientific_name,
+            corrected_gbif_usage_key=corrected_gbif_usage_key,
+            gbif_snapshot_date=gbif_snapshot_date,
+            reason=reason,
+        )
+        with self.connect() as conn:
+            self._insert_row(conn, row)
+            return self._one(conn, "SELECT * FROM frame_box_correction WHERE id = ?", (row.id,))
+
+    def frame_boxes_for_observation(self, observation_id: str) -> list[dict]:
+        """The current state of every corrected box on one event's frames.
+
+        One row per (frame_index, box_key), the most recent correction for that
+        box, in frame order. A box whose latest action is 'cleared' is returned as
+        such so a reader can tell a retraction from a box never corrected. Degrades
+        to an empty list on a database that predates the training tables, so an
+        unmigrated record reads as "no box corrections" rather than costing the
+        reader their frames.
+        """
+        with self.connect() as conn:
+            try:
+                return self._all(
+                    conn,
+                    "SELECT * FROM ("
+                    "  SELECT *, ROW_NUMBER() OVER ("
+                    "    PARTITION BY frame_index, box_key ORDER BY corrected_at DESC, rowid DESC) AS rn"
+                    "  FROM frame_box_correction WHERE observation_id = ?"
+                    ") WHERE rn = 1 ORDER BY frame_index, box_key",
+                    (observation_id,),
+                )
+            except sqlite3.OperationalError:
+                return []
+
+    # -- training runs (desktop-owned) -----------------------------------
+
+    # The fields of a run that change after it is created. Everything else about a
+    # run (its name, mode, dataset, configuration, seed, creator) is fixed at the
+    # start, so the record of what was asked for can never drift from what ran.
+    _TRAINING_RUN_MUTABLE = (
+        "status",
+        "stop_reason",
+        "epochs_total",
+        "epochs_done",
+        "best_metric_name",
+        "best_metric_value",
+        "last_heartbeat_at",
+        "started_at",
+        "ended_at",
+        "hardware_json",
+        "software_json",
+    )
+    # A finished or cancelled run is history and is never edited again.
+    _TRAINING_RUN_FINAL = ("completed", "cancelled")
+
+    def create_training_run(self, run: TrainingRun) -> dict:
+        """Record a new training run and return the row as stored."""
+        with self.connect() as conn:
+            self._insert_row(conn, run)
+            return self._one(conn, "SELECT * FROM training_runs WHERE id = ?", (run.id,))
+
+    def update_training_run(self, run_id: str, **fields) -> dict:
+        """Update the progress fields of a run and return the row as stored.
+
+        Only the progress and status fields can change, and a completed or
+        cancelled run cannot be changed at all. An unknown field or a final run
+        raises ValueError, so a mistake in the caller is loud instead of silently
+        rewriting a record of what was trained.
+        """
+        unknown = sorted(set(fields) - set(self._TRAINING_RUN_MUTABLE))
+        if unknown:
+            raise ValueError(f"these training run fields cannot be updated: {', '.join(unknown)}")
+        with self.connect() as conn:
+            current = self._one(conn, "SELECT * FROM training_runs WHERE id = ?", (run_id,))
+            if current is None:
+                raise ValueError(f"no training run with id {run_id}")
+            if current["status"] in self._TRAINING_RUN_FINAL:
+                raise ValueError(f"the run is {current['status']} and can no longer be changed")
+            if fields:
+                assignments = ", ".join(f"{name} = ?" for name in fields)
+                conn.execute(
+                    f"UPDATE training_runs SET {assignments} WHERE id = ?",
+                    (*fields.values(), run_id),
+                )
+            return self._one(conn, "SELECT * FROM training_runs WHERE id = ?", (run_id,))
+
+    def get_training_run(self, run_id: str) -> Optional[dict]:
+        with self.connect() as conn:
+            try:
+                return self._one(conn, "SELECT * FROM training_runs WHERE id = ?", (run_id,))
+            except sqlite3.OperationalError:
+                return None
+
+    def list_training_runs(
+        self,
+        *,
+        status: Optional[str] = None,
+        modality: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> list[dict]:
+        """Training runs, newest first. Empty on a database without the training tables."""
+        clauses, params = [], []
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(status)
+        if modality is not None:
+            clauses.append("modality = ?")
+            params.append(modality)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        tail = f" LIMIT {int(limit)}" if limit is not None else ""
+        with self.connect() as conn:
+            try:
+                return self._all(
+                    conn,
+                    f"SELECT * FROM training_runs{where} ORDER BY created_at DESC, rowid DESC{tail}",
+                    tuple(params),
+                )
+            except sqlite3.OperationalError:
+                return []
+
+    # -- trained model registry (desktop-owned) --------------------------
+
+    def next_model_version(self, user_name: str) -> int:
+        """The version number the next model of this name would receive.
+
+        Counted per name on this installation, ignoring case, so Reef and reef
+        share one counter. Informational: the number a model is actually issued is
+        assigned inside register_trained_model's own transaction.
+        """
+        with self.connect() as conn:
+            try:
+                row = conn.execute(
+                    "SELECT MAX(version_number) AS latest FROM trained_models WHERE lower(user_name) = lower(?)",
+                    (user_name,),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return 1
+        return int(row["latest"] or 0) + 1
+
+    def register_trained_model(
+        self,
+        *,
+        user_name: str,
+        modality: str,
+        engine: str,
+        run_id: str,
+        folder: str,
+        model_file: str,
+        labels_file: str,
+        base_label: str,
+        metrics_json: str,
+        dataset_signature: str,
+        class_count: int,
+        created_by: str,
+        checkpoint_file: Optional[str] = None,
+        license_spdx: Optional[str] = None,
+        license_note: Optional[str] = None,
+        base_license_note: Optional[str] = None,
+    ) -> dict:
+        """Issue the next version of a named model and return the registry row.
+
+        The version number and the insert happen under one write lock, so two
+        registrations of the same name can never take the same number, and a name
+        that already exists in any letter case is refused by the table's own
+        uniqueness rule. A registered model is never updated afterwards: a new
+        fine-tune is a new version.
+        """
+        user_name = validate_model_user_name(user_name)
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            latest = conn.execute(
+                "SELECT MAX(version_number) AS latest FROM trained_models WHERE lower(user_name) = lower(?)",
+                (user_name,),
+            ).fetchone()["latest"]
+            version = int(latest or 0) + 1
+            name = format_model_name(user_name, version)
+            row = TrainedModel(
+                id=new_id(),
+                name=name,
+                name_key=name.lower(),
+                user_name=user_name,
+                version_number=version,
+                modality=modality,
+                engine=engine,
+                run_id=run_id,
+                folder=folder,
+                model_file=model_file,
+                labels_file=labels_file,
+                base_label=base_label,
+                metrics_json=metrics_json,
+                dataset_signature=dataset_signature,
+                class_count=int(class_count),
+                created_by=created_by,
+                created_at=utc_now_iso(),
+                checkpoint_file=checkpoint_file,
+                license_spdx=license_spdx,
+                license_note=license_note,
+                base_license_note=base_license_note,
+            )
+            self._insert_row(conn, row)
+            return self._one(conn, "SELECT * FROM trained_models WHERE id = ?", (row.id,))
+
+    def get_trained_model(self, model_id: str) -> Optional[dict]:
+        with self.connect() as conn:
+            try:
+                return self._one(conn, "SELECT * FROM trained_models WHERE id = ?", (model_id,))
+            except sqlite3.OperationalError:
+                return None
+
+    def list_trained_models(self, *, modality: Optional[str] = None) -> list[dict]:
+        """Registered models, newest first. Empty on a database without the training tables."""
+        where, params = ("", ())
+        if modality is not None:
+            where, params = (" WHERE modality = ?", (modality,))
+        with self.connect() as conn:
+            try:
+                return self._all(
+                    conn,
+                    f"SELECT * FROM trained_models{where} ORDER BY created_at DESC, rowid DESC",
+                    params,
+                )
+            except sqlite3.OperationalError:
+                return []
+
+    # -- model activation log (desktop-owned) ----------------------------
+
+    def add_model_activation(
+        self,
+        model_id: str,
+        *,
+        slot: str,
+        action: str,
+        previous_json: str,
+        new_json: str,
+        activated_by: str,
+        station_id: Optional[str] = None,
+        acknowledged_license: bool = False,
+    ) -> dict:
+        """Append one activation or revert and return the row as stored."""
+        now = utc_now_iso()
+        row = ModelActivation(
+            id=new_id(),
+            model_id=model_id,
+            slot=slot,
+            action=action,
+            previous_json=previous_json,
+            new_json=new_json,
+            activated_by=activated_by,
+            activated_at=now,
+            created_at=now,
+            station_id=station_id,
+            acknowledged_license=1 if acknowledged_license else 0,
+        )
+        with self.connect() as conn:
+            self._insert_row(conn, row)
+            return self._one(conn, "SELECT * FROM model_activation_log WHERE id = ?", (row.id,))
+
+    def model_activations(self, slot: str, station_id: Optional[str] = None) -> list[dict]:
+        """The activation history of one slot, newest first."""
+        with self.connect() as conn:
+            try:
+                if station_id is None:
+                    return self._all(
+                        conn,
+                        "SELECT * FROM model_activation_log WHERE slot = ? AND station_id IS NULL"
+                        " ORDER BY activated_at DESC, rowid DESC",
+                        (slot,),
+                    )
+                return self._all(
+                    conn,
+                    "SELECT * FROM model_activation_log WHERE slot = ? AND station_id = ?"
+                    " ORDER BY activated_at DESC, rowid DESC",
+                    (slot, station_id),
+                )
+            except sqlite3.OperationalError:
+                return []
+
+    def previous_activation(self, slot: str, station_id: Optional[str] = None) -> Optional[dict]:
+        """The second most recent activation of a slot, which is what a revert restores.
+
+        The newest row is the change currently in effect; the one before it holds
+        the configuration that was live until then. None when the slot has been
+        changed at most once.
+        """
+        history = self.model_activations(slot, station_id)
+        return history[1] if len(history) > 1 else None
 
     # -- interpretations (desktop-owned) ---------------------------------
 

@@ -13,3 +13,5 @@ The visual detection models. Which ones you need depends on how you run Audtheia
 ## Desktop hardware-free mode
 
 The desktop folder also holds the screening detector for running with no field hardware at all, an RF-DETR model exported to ONNX. The reference build ships one pretrained on the common object set, licensed Apache-2.0, so a fresh install detects out of the box against a webcam, a stream, or a video file. Point it at your own species model to specialize it. See [docs/custom-models.md](../../docs/custom-models.md) for how to prepare either model, and the main [README](../../README.md) for how the two modes differ.
+
+Models you train yourself with the Train tab are kept apart from the downloaded ones, in [models/trained](../trained/README.md). Switching one on writes your own settings and never touches the files above.

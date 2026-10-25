@@ -18,7 +18,9 @@
 --       station_telemetry, station_telemetry_errors
 --   Desktop-owned (written only on desktop): observation_verification,
 --       interpretations, dream_passes, patterns, pattern_observations,
---       site_baselines
+--       site_baselines, observation_corrections, frame_review,
+--       frame_box_correction, training_runs, trained_models,
+--       model_activation_log
 --   Synced desktop -> Pi (not part of the Pi -> desktop pull): skills
 --   Reference cache (written by setup/fetch scripts): species_reference
 --
@@ -701,6 +703,169 @@ CREATE TABLE site_baselines (
 -- serves the "every cell for this station" scan a pass uses when refreshing a
 -- station's gist.
 CREATE INDEX idx_site_baselines_station_id ON site_baselines(station_id);
+
+-- ============================================================================
+-- FRAME BOX CORRECTION  (desktop-owned, append-only)
+-- An expert's correction to the geometry of the boxes a screening model drew
+-- on a stored frame: adjust the model's box, add a box for an organism the
+-- model missed, or remove a box. The measured annotation file and the
+-- model-owned child_detections rows are never altered. A box lineage is the
+-- model's own box ('model') or one added box (a UUID); the newest row per
+-- (observation, frame, box_key) is the current state of that box.
+-- ============================================================================
+CREATE TABLE frame_box_correction (
+    id                          TEXT PRIMARY KEY,       -- UUID
+    observation_id              TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+    frame_index                 INTEGER NOT NULL,       -- the per-frame annotation index the box belongs to
+    box_key                     TEXT NOT NULL,          -- 'model' for the model's own box, else a UUID for an added box
+
+    action                      TEXT NOT NULL CHECK (action IN ('adjust', 'add', 'remove', 'cleared')),
+
+    -- Pixel corners in the stored frame's own coordinates. Required for adjust
+    -- and add, NULL for remove and cleared.
+    x1                          REAL,
+    y1                          REAL,
+    x2                          REAL,
+    y2                          REAL,
+    frame_width                 INTEGER,
+    frame_height                INTEGER,
+
+    -- Only an added box carries a taxon, resolved against the shipped backbone
+    -- exactly as observation_corrections does.
+    corrected_scientific_name   TEXT,
+    corrected_gbif_usage_key    TEXT,
+    gbif_snapshot_date          TEXT,
+
+    corrector                   TEXT NOT NULL,          -- required: an anonymous correction is not reviewable
+    corrected_at                TEXT NOT NULL,          -- UTC ISO8601
+    reason                      TEXT,
+
+    data_source                 TEXT NOT NULL CHECK (data_source = 'human_expert'),
+    created_at                  TEXT NOT NULL,
+
+    CHECK ((action IN ('adjust', 'add') AND x1 IS NOT NULL AND y1 IS NOT NULL
+            AND x2 IS NOT NULL AND y2 IS NOT NULL AND x2 > x1 AND y2 > y1)
+           OR (action IN ('remove', 'cleared'))),
+    CHECK (action <> 'add' OR corrected_gbif_usage_key IS NOT NULL)
+) STRICT;
+
+-- The dominant read is "the current state of every box on this event's
+-- frames", served by the composite; by leftmost prefix it also serves every
+-- observation_id-only lookup.
+CREATE INDEX idx_frame_box_correction_observation
+    ON frame_box_correction(observation_id, frame_index, box_key, corrected_at);
+
+-- ============================================================================
+-- TRAINING RUNS  (desktop-owned)
+-- One row per training attempt. A run is a model output, never a measurement.
+-- The full configuration, the hardware that ran it and the library versions are
+-- kept as JSON so a result can be reproduced and audited. Status moves through
+-- the controlled set below and is updated in place by the desktop only.
+-- ============================================================================
+CREATE TABLE training_runs (
+    id                          TEXT PRIMARY KEY,       -- UUID
+    run_name                    TEXT NOT NULL,          -- the user-chosen name
+    planned_model_name          TEXT NOT NULL,          -- Audtheia-<Name>-V<n>, reserved at start, issued only on success
+    modality                    TEXT NOT NULL CHECK (modality IN ('vision', 'acoustic')),
+    engine                      TEXT NOT NULL,          -- the configured engine key
+    mode                        TEXT NOT NULL CHECK (mode IN ('full_speed', 'gentle')),
+
+    status                      TEXT NOT NULL CHECK (status IN
+                                    ('queued', 'preparing', 'running', 'paused',
+                                     'completed', 'failed', 'cancelled', 'interrupted')),
+    stop_reason                 TEXT,                   -- plain-language reason on a failed, interrupted or limit stop
+
+    dataset_signature           TEXT NOT NULL,          -- selection signature of the dataset it trained on
+    dataset_dir                 TEXT NOT NULL,          -- repo-relative path under the datasets directory
+    run_dir                     TEXT NOT NULL,          -- repo-relative path of the run's own folder
+    seed                        INTEGER NOT NULL,
+    base_label                  TEXT NOT NULL,          -- what it started from: a base entry label or a model name
+    parent_model_id             TEXT REFERENCES trained_models(id),
+
+    config_json                 TEXT NOT NULL,
+    hardware_json               TEXT,
+    software_json               TEXT,
+
+    epochs_total                INTEGER,
+    epochs_done                 INTEGER NOT NULL DEFAULT 0,
+    best_metric_name            TEXT,
+    best_metric_value           REAL,
+    last_heartbeat_at           TEXT,                   -- UTC; a stale heartbeat on a running run marks a crash
+
+    created_by                  TEXT NOT NULL,
+    started_at                  TEXT,
+    ended_at                    TEXT,
+    data_source                 TEXT NOT NULL CHECK (data_source = 'model'),
+    created_at                  TEXT NOT NULL
+) STRICT;
+
+CREATE INDEX idx_training_runs_status ON training_runs(status, created_at);
+
+-- ============================================================================
+-- TRAINED MODELS  (desktop-owned registry, immutable once written)
+-- One row per issued model version. The name is unique ignoring case because the
+-- model folder is named after it and Windows treats names case-insensitively.
+-- The version counter is per user-chosen name on this installation.
+-- ============================================================================
+CREATE TABLE trained_models (
+    id                          TEXT PRIMARY KEY,       -- UUID
+    name                        TEXT NOT NULL,          -- Audtheia-<UserName>-V<n>
+    name_key                    TEXT NOT NULL UNIQUE,   -- lower-cased name, enforces uniqueness
+    user_name                   TEXT NOT NULL,
+    version_number              INTEGER NOT NULL CHECK (version_number >= 1),
+    modality                    TEXT NOT NULL CHECK (modality IN ('vision', 'acoustic')),
+    engine                      TEXT NOT NULL,
+    run_id                      TEXT NOT NULL REFERENCES training_runs(id),
+
+    folder                      TEXT NOT NULL,          -- repo-relative model folder
+    model_file                  TEXT NOT NULL,          -- relative to the folder
+    labels_file                 TEXT NOT NULL,
+    checkpoint_file             TEXT,
+
+    license_spdx                TEXT,                   -- NULL means not confirmed, shown as such
+    license_note                TEXT,
+    base_label                  TEXT NOT NULL,
+    base_license_note           TEXT,
+
+    metrics_json                TEXT NOT NULL,          -- test-split summary with the challenger and current-model figures
+    dataset_signature           TEXT NOT NULL,
+    class_count                 INTEGER NOT NULL,
+
+    created_by                  TEXT NOT NULL,
+    data_source                 TEXT NOT NULL CHECK (data_source = 'model'),
+    created_at                  TEXT NOT NULL,
+
+    UNIQUE (user_name, version_number)
+) STRICT;
+
+-- ============================================================================
+-- MODEL ACTIVATION LOG  (desktop-owned, append-only)
+-- Every activation and revert of a trained model into a configuration slot,
+-- with the slot's previous values captured so a revert is exact. The live
+-- configuration stays the source of truth for what runs; this table is the
+-- audit trail and the revert memory. It never rewrites a detection's stored
+-- model version.
+-- ============================================================================
+CREATE TABLE model_activation_log (
+    id                          TEXT PRIMARY KEY,       -- UUID
+    model_id                    TEXT NOT NULL REFERENCES trained_models(id),
+    slot                        TEXT NOT NULL CHECK (slot IN
+                                    ('desktop_verifier', 'desktop_screening', 'station_acoustic')),
+    station_id                  TEXT,                   -- required for the station slot
+    action                      TEXT NOT NULL CHECK (action IN ('activate', 'revert')),
+    previous_json               TEXT NOT NULL,          -- the slot's configuration before this change
+    new_json                    TEXT NOT NULL,          -- and after
+    acknowledged_license        INTEGER NOT NULL DEFAULT 0 CHECK (acknowledged_license IN (0, 1)),
+    activated_by                TEXT NOT NULL,
+    activated_at                TEXT NOT NULL,          -- UTC ISO8601
+    data_source                 TEXT NOT NULL CHECK (data_source = 'human_expert'),
+    created_at                  TEXT NOT NULL,
+
+    CHECK (slot = 'desktop_verifier' OR slot = 'desktop_screening' OR station_id IS NOT NULL)
+) STRICT;
+
+CREATE INDEX idx_model_activation_slot
+    ON model_activation_log(slot, station_id, activated_at);
 
 -- ============================================================================
 -- End of schema.sql

@@ -125,6 +125,109 @@ DEFAULT_THRESHOLDS = {
 # class or classes its own detection model uses for people.
 DEFAULT_PRIVACY = {"discard_human_detections": True, "human_class_names": []}
 
+# Controlled vocabularies for the training block.
+TRAINING_CRITERIA = ("expert_confirmed", "qc_passed", "verified")
+TRAINING_UNDER_THRESHOLD_ACTIONS = ("exclude", "roll_up", "keep_with_warning")
+TRAINING_SPLIT_MODES = ("event", "station", "time_block")
+TRAINING_ACOUSTIC_WINDOW_SELECTIONS = ("scored_with_energy_fallback", "energy_only", "clip_centre")
+TRAINING_BEST_METRICS = ("map", "mar")
+TRAINING_CAPTURE_CONTENTION = ("warn", "pause_capture")
+TRAINING_DATASET_EXPORT_FORMATS = ("coco", "yolo_txt")
+
+# Documented defaults for the training block, applied by the accessors when a
+# configuration omits the block or any value in it. They mirror the committed
+# settings.json exactly, and a test holds the two equal. Every value is a
+# starting point a deployment is free to change. Base-model entries are data:
+# the keys here name no model family, and the labels are what the interface
+# shows in its drop-downs.
+DEFAULT_TRAINING = {   'enabled': True,
+    'paths': {   'datasets_dir': 'exports/train',
+                 'models_dir': 'models/trained',
+                 'envs_dir': '.venv-train'},
+    'dataset': {   'default_required_criteria': ['expert_confirmed', 'qc_passed', 'verified'],
+                   'model_labelled_max_fraction': 0.0,
+                   'max_frames_per_event': 10,
+                   'near_duplicate_hamming': 4,
+                   'background_max_fraction': 0.1,
+                   'min_examples_per_class': 5,
+                   'under_threshold_default': 'keep_with_warning',
+                   'split': {   'mode': 'event',
+                                'seed': 20260101,
+                                'fractions': {'train': 0.7, 'validation': 0.15, 'test': 0.15},
+                                'min_events_per_class_for_heldout': 3,
+                                'time_block_days': None},
+                   'acoustic': {   'window_selection': 'scored_with_energy_fallback',
+                                   'window_score_floor': 0.1,
+                                   'max_windows_per_clip': 3,
+                                   'noise_windows_per_rejected_clip': 1}},
+    'vision': {   'engine': 'vision_detector',
+                  'base_models': [   {'key': 'nano', 'label': 'Nano', 'resolution': 384},
+                                     {'key': 'small', 'label': 'Small', 'resolution': 512},
+                                     {'key': 'medium', 'label': 'Medium', 'resolution': 576},
+                                     {'key': 'large', 'label': 'Large', 'resolution': 704}],
+                  'defaults': {   'epochs': 100,
+                                  'batch_size': 4,
+                                  'grad_accum_steps': 1,
+                                  'learning_rate': 0.0001,
+                                  'encoder_learning_rate': 0.00015,
+                                  'weight_decay': 0.0001,
+                                  'use_ema': True,
+                                  'early_stopping': True,
+                                  'early_stopping_patience': 10,
+                                  'early_stopping_min_delta': 0.001,
+                                  'checkpoint_interval': 10,
+                                  'best_metric': 'map',
+                                  'score_threshold': 0.3}},
+    'acoustic': {   'engines': [   {   'key': 'acoustic_head_a',
+                                       'label': 'Terrestrial and avian',
+                                       'sample_rate': 48000,
+                                       'window_seconds': 3.0},
+                                   {   'key': 'acoustic_head_b',
+                                       'label': 'Marine and general',
+                                       'sample_rate': 32000,
+                                       'window_seconds': 5.0}],
+                    'defaults': {   'epochs': 50,
+                                    'batch_size': 32,
+                                    'learning_rate': 0.001,
+                                    'early_stopping_patience': 8,
+                                    'dropout': 0.25,
+                                    'calibrate': True},
+                    'default_engine_by_environment': {   'marine': 'acoustic_head_b',
+                                                         'estuarine': 'acoustic_head_b',
+                                                         'freshwater': 'acoustic_head_b',
+                                                         'terrestrial': 'acoustic_head_a',
+                                                         'mixed': 'acoustic_head_b'}},
+    'hardware': {   'full_speed': {   'dataloader_workers': 'auto',
+                                      'cpu_threads': 'auto',
+                                      'gradient_checkpointing': False},
+                    'gentle': {   'micro_batch': 1,
+                                  'dataloader_workers': 1,
+                                  'cpu_threads_fraction': 0.5,
+                                  'gradient_checkpointing': True,
+                                  'max_gpu_memory_fraction': 0.75},
+                    'limits': {   'require_ac_power': True,
+                                  'min_battery_percent': 30,
+                                  'min_free_disk_gb': 5.0,
+                                  'gpu_memory_headroom_fraction': 0.1,
+                                  'thermal_throttle_stop_seconds': 120,
+                                  'cpu_only_warn_hours': 6.0},
+                    'capture_contention': 'warn'},
+    'evaluation': {   'iou_thresholds': [0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.95],
+                      'max_detections': 100,
+                      'report_confidence': 0.3,
+                      'example_images_per_kind': 6,
+                      'calibration_bins': 10,
+                      'gentle_equivalence': {'min_margin': 0.02, 'sigma_multiple': 2.0}},
+    'install': {   'torch_index_by_vendor': {   'nvidia': None,
+                                                'intel': None,
+                                                'cpu': None,
+                                                'apple': None,
+                                                'amd_linux': None},
+                   'packages': {   'vision': ['rfdetr[train,onnx]'],
+                                   'acoustic': ['perch-hoplite[tf]', 'birdnet-analyzer']}},
+    'sharing': {   'package_include_checkpoint': True,
+                   'dataset_export_formats': ['coco', 'yolo_txt']}}
+
 # Optional, additive site descriptor. Independent of environment_type, which is
 # the schema's fixed five-value field. A station may set one of these for a
 # richer, reviewer-legible description of where it is deployed; it is never
@@ -223,6 +326,53 @@ def _require_nonnegative_int(value: Any, where: str) -> int:
         raise ConfigError(f"{where} must be an integer")
     if value < 0:
         raise ConfigError(f"{where} must be zero or greater")
+    return value
+
+
+def _check_number(
+    value: Any,
+    where: str,
+    *,
+    lo: Optional[float] = None,
+    hi: Optional[float] = None,
+    integer: bool = False,
+    lo_exclusive: bool = False,
+) -> Any:
+    """Check a number (or integer) lies in a range, with a message naming the key."""
+    kind = "an integer" if integer else "a number"
+    if isinstance(value, bool) or not isinstance(value, int if integer else (int, float)):
+        raise ConfigError(f"{where} must be {kind}")
+    if lo is not None and (value <= lo if lo_exclusive else value < lo):
+        bound = f"greater than {lo}" if lo_exclusive else f"{lo} or more"
+        raise ConfigError(f"{where} must be {bound}")
+    if hi is not None and value > hi:
+        raise ConfigError(f"{where} must be {hi} or less")
+    return value
+
+
+def _deep_merge(defaults: Any, override: Any) -> Any:
+    """Merge override over defaults, recursing into objects and replacing everything else.
+
+    A list in the override replaces the default list whole, which is what a
+    list of base models or engines needs: an edited list is the list, not a
+    union with the shipped one.
+    """
+    if isinstance(defaults, dict) and isinstance(override, dict):
+        merged = {key: _deep_merge(value, override[key]) if key in override else _copy_plain(value)
+                  for key, value in defaults.items()}
+        for key, value in override.items():
+            if key not in defaults:
+                merged[key] = _copy_plain(value)
+        return merged
+    return _copy_plain(override)
+
+
+def _copy_plain(value: Any) -> Any:
+    """A deep copy of plain JSON data, so a caller can never edit the loaded configuration."""
+    if isinstance(value, dict):
+        return {k: _copy_plain(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_copy_plain(v) for v in value]
     return value
 
 
@@ -451,6 +601,41 @@ class Settings:
             ),
             "human_class_names": list(raw_block.get("human_class_names", []) or []),
         }
+
+    # -- training ---------------------------------------------------------
+
+    def training_config(self) -> dict:
+        """The training block with documented defaults applied.
+
+        Returned as a fresh dictionary, merged over DEFAULT_TRAINING, so a
+        configuration that omits the block, or any value in it, gets the
+        documented default for exactly that value, and a caller can never
+        change the loaded configuration by editing what it gets back.
+        """
+        override = self.raw.get("training", {}) or {}
+        return _deep_merge(DEFAULT_TRAINING, override)
+
+    def training_paths(self) -> dict:
+        """The training folders, resolved to absolute paths with pathlib.
+
+        A relative entry is taken from the repository root; an absolute entry is
+        honored, so datasets and trained models can live on an external drive.
+        """
+        entries = self.training_config()["paths"]
+        return {key: self.resolve_path(value) for key, value in entries.items()}
+
+    def training_vision_bases(self) -> list:
+        """The base-model entries offered for vision training, as fresh dictionaries."""
+        return [dict(entry) for entry in self.training_config()["vision"]["base_models"]]
+
+    def training_acoustic_engines(self) -> list:
+        """The acoustic training engines offered, as fresh dictionaries."""
+        return [dict(entry) for entry in self.training_config()["acoustic"]["engines"]]
+
+    def default_acoustic_engine_for(self, environment_type: str) -> Optional[str]:
+        """The acoustic engine key a station of this environment type starts from, or None."""
+        mapping = self.training_config()["acoustic"]["default_engine_by_environment"]
+        return mapping.get(environment_type)
 
     # -- time base -------------------------------------------------------
 
@@ -1061,6 +1246,15 @@ def _validate(raw: dict) -> None:
             for i, name in enumerate(human_names):
                 _require_type(name, (str,), f"privacy.human_class_names[{i}]")
 
+    # -- training (optional) ---------------------------------------------
+    # The Train tab's defaults, limits and folders. The block is optional and
+    # every value in it is optional, so a configuration without it runs on the
+    # documented defaults. When present, its shape is checked strictly so a typo
+    # is caught here rather than hours into a training run.
+    training = raw.get("training")
+    if training is not None:
+        _validate_training(training)
+
     # -- desktop models --------------------------------------------------
     desktop_models = _require(raw, "desktop_models", "settings")
     for key in ("visual_rfdetr", "llm"):
@@ -1087,6 +1281,274 @@ def _validate(raw: dict) -> None:
             raise ConfigError("node.active_station_id is required when node.role is 'pi'")
         if active not in seen_ids:
             raise ConfigError(f"node.active_station_id {active!r} does not match any station")
+
+
+def _validate_training(training: Any) -> None:
+    """Check the shape and ranges of the training block."""
+    _require_type(training, (dict,), "training")
+    if "enabled" in training:
+        _require_type(training["enabled"], (bool,), "training.enabled")
+
+    paths = training.get("paths")
+    if paths is not None:
+        _require_type(paths, (dict,), "training.paths")
+        for key, value in paths.items():
+            _require_type(value, (str,), f"training.paths.{key}")
+
+    dataset = training.get("dataset")
+    if dataset is not None:
+        _require_type(dataset, (dict,), "training.dataset")
+        criteria = dataset.get("default_required_criteria")
+        if criteria is not None:
+            _require_type(criteria, (list,), "training.dataset.default_required_criteria")
+            for item in criteria:
+                _require_choice(item, TRAINING_CRITERIA, "training.dataset.default_required_criteria[]")
+        for key in ("model_labelled_max_fraction", "background_max_fraction"):
+            if key in dataset:
+                _check_number(dataset[key], f"training.dataset.{key}", lo=0, hi=1)
+        for key in ("max_frames_per_event", "min_examples_per_class"):
+            if key in dataset:
+                _check_number(dataset[key], f"training.dataset.{key}", lo=1, integer=True)
+        if "near_duplicate_hamming" in dataset:
+            _check_number(dataset["near_duplicate_hamming"], "training.dataset.near_duplicate_hamming",
+                          lo=0, hi=64, integer=True)
+        if "under_threshold_default" in dataset:
+            _require_choice(dataset["under_threshold_default"], TRAINING_UNDER_THRESHOLD_ACTIONS,
+                            "training.dataset.under_threshold_default")
+        split = dataset.get("split")
+        if split is not None:
+            _require_type(split, (dict,), "training.dataset.split")
+            if "mode" in split:
+                _require_choice(split["mode"], TRAINING_SPLIT_MODES, "training.dataset.split.mode")
+            if "seed" in split:
+                _check_number(split["seed"], "training.dataset.split.seed", integer=True)
+            fractions = split.get("fractions")
+            if fractions is not None:
+                _require_type(fractions, (dict,), "training.dataset.split.fractions")
+                for part in ("train", "validation", "test"):
+                    if part in fractions:
+                        _check_number(fractions[part], f"training.dataset.split.fractions.{part}", lo=0, hi=1)
+                merged_fractions = _deep_merge(DEFAULT_TRAINING["dataset"]["split"]["fractions"], fractions)
+                total = sum(float(merged_fractions[p]) for p in ("train", "validation", "test"))
+                if abs(total - 1.0) > 1e-6:
+                    raise ConfigError("training.dataset.split.fractions must add up to 1")
+                if float(merged_fractions["train"]) <= 0:
+                    raise ConfigError("training.dataset.split.fractions.train must be greater than 0")
+            if "min_events_per_class_for_heldout" in split:
+                _check_number(split["min_events_per_class_for_heldout"],
+                              "training.dataset.split.min_events_per_class_for_heldout", lo=1, integer=True)
+            if split.get("time_block_days") is not None:
+                _check_number(split["time_block_days"], "training.dataset.split.time_block_days",
+                              lo=0, lo_exclusive=True)
+        acoustic = dataset.get("acoustic")
+        if acoustic is not None:
+            _require_type(acoustic, (dict,), "training.dataset.acoustic")
+            if "window_selection" in acoustic:
+                _require_choice(acoustic["window_selection"], TRAINING_ACOUSTIC_WINDOW_SELECTIONS,
+                                "training.dataset.acoustic.window_selection")
+            if "window_score_floor" in acoustic:
+                _check_number(acoustic["window_score_floor"], "training.dataset.acoustic.window_score_floor",
+                              lo=0, hi=1)
+            if "max_windows_per_clip" in acoustic:
+                _check_number(acoustic["max_windows_per_clip"], "training.dataset.acoustic.max_windows_per_clip",
+                              lo=1, integer=True)
+            if "noise_windows_per_rejected_clip" in acoustic:
+                _check_number(acoustic["noise_windows_per_rejected_clip"],
+                              "training.dataset.acoustic.noise_windows_per_rejected_clip", lo=0, integer=True)
+
+    vision = training.get("vision")
+    if vision is not None:
+        _require_type(vision, (dict,), "training.vision")
+        if "engine" in vision:
+            _require_type(vision["engine"], (str,), "training.vision.engine")
+            if not vision["engine"].strip():
+                raise ConfigError("training.vision.engine must not be empty")
+        bases = vision.get("base_models")
+        if bases is not None:
+            _require_type(bases, (list,), "training.vision.base_models")
+            if not bases:
+                raise ConfigError("training.vision.base_models must list at least one base model")
+            seen_keys: set = set()
+            for i, entry in enumerate(bases):
+                where = f"training.vision.base_models[{i}]"
+                _require_type(entry, (dict,), where)
+                key = _require(entry, "key", where)
+                _require_type(key, (str,), f"{where}.key")
+                if key in seen_keys:
+                    raise ConfigError(f"duplicate base model key {key!r} in training.vision.base_models")
+                seen_keys.add(key)
+                _require_type(_require(entry, "label", where), (str,), f"{where}.label")
+                _check_number(_require(entry, "resolution", where), f"{where}.resolution", lo=1, integer=True)
+        defaults = vision.get("defaults")
+        if defaults is not None:
+            _require_type(defaults, (dict,), "training.vision.defaults")
+            for key in ("epochs", "batch_size", "grad_accum_steps", "early_stopping_patience", "checkpoint_interval"):
+                if key in defaults:
+                    _check_number(defaults[key], f"training.vision.defaults.{key}", lo=1, integer=True)
+            for key in ("learning_rate", "encoder_learning_rate"):
+                if key in defaults:
+                    _check_number(defaults[key], f"training.vision.defaults.{key}", lo=0, lo_exclusive=True)
+            for key in ("weight_decay", "early_stopping_min_delta"):
+                if key in defaults:
+                    _check_number(defaults[key], f"training.vision.defaults.{key}", lo=0)
+            for key in ("use_ema", "early_stopping"):
+                if key in defaults:
+                    _require_type(defaults[key], (bool,), f"training.vision.defaults.{key}")
+            if "best_metric" in defaults:
+                _require_choice(defaults["best_metric"], TRAINING_BEST_METRICS, "training.vision.defaults.best_metric")
+            if "score_threshold" in defaults:
+                _check_number(defaults["score_threshold"], "training.vision.defaults.score_threshold", lo=0, hi=1)
+
+    acoustic_train = training.get("acoustic")
+    if acoustic_train is not None:
+        _require_type(acoustic_train, (dict,), "training.acoustic")
+        engine_keys: set = set()
+        engines = acoustic_train.get("engines")
+        if engines is not None:
+            _require_type(engines, (list,), "training.acoustic.engines")
+            if not engines:
+                raise ConfigError("training.acoustic.engines must list at least one engine")
+            for i, entry in enumerate(engines):
+                where = f"training.acoustic.engines[{i}]"
+                _require_type(entry, (dict,), where)
+                key = _require(entry, "key", where)
+                _require_type(key, (str,), f"{where}.key")
+                if key in engine_keys:
+                    raise ConfigError(f"duplicate engine key {key!r} in training.acoustic.engines")
+                engine_keys.add(key)
+                _require_type(_require(entry, "label", where), (str,), f"{where}.label")
+                _check_number(_require(entry, "sample_rate", where), f"{where}.sample_rate", lo=1, integer=True)
+                _check_number(_require(entry, "window_seconds", where), f"{where}.window_seconds",
+                              lo=0, lo_exclusive=True)
+        else:
+            engine_keys = {e["key"] for e in DEFAULT_TRAINING["acoustic"]["engines"]}
+        defaults = acoustic_train.get("defaults")
+        if defaults is not None:
+            _require_type(defaults, (dict,), "training.acoustic.defaults")
+            for key in ("epochs", "batch_size", "early_stopping_patience"):
+                if key in defaults:
+                    _check_number(defaults[key], f"training.acoustic.defaults.{key}", lo=1, integer=True)
+            if "learning_rate" in defaults:
+                _check_number(defaults["learning_rate"], "training.acoustic.defaults.learning_rate",
+                              lo=0, lo_exclusive=True)
+            if "dropout" in defaults:
+                _check_number(defaults["dropout"], "training.acoustic.defaults.dropout", lo=0, hi=1)
+            if "calibrate" in defaults:
+                _require_type(defaults["calibrate"], (bool,), "training.acoustic.defaults.calibrate")
+        by_env = acoustic_train.get("default_engine_by_environment")
+        if by_env is not None:
+            _require_type(by_env, (dict,), "training.acoustic.default_engine_by_environment")
+            for env, engine_key in by_env.items():
+                _require_choice(env, ENVIRONMENT_TYPES, "training.acoustic.default_engine_by_environment key")
+                if engine_key not in engine_keys:
+                    raise ConfigError(
+                        f"training.acoustic.default_engine_by_environment.{env} names {engine_key!r},"
+                        " which is not a listed engine"
+                    )
+
+    hardware = training.get("hardware")
+    if hardware is not None:
+        _require_type(hardware, (dict,), "training.hardware")
+        full = hardware.get("full_speed")
+        if full is not None:
+            _require_type(full, (dict,), "training.hardware.full_speed")
+            for key in ("dataloader_workers", "cpu_threads"):
+                if key in full and full[key] != "auto":
+                    _check_number(full[key], f"training.hardware.full_speed.{key}",
+                                  lo=0 if key == "dataloader_workers" else 1, integer=True)
+            if "gradient_checkpointing" in full:
+                _require_type(full["gradient_checkpointing"], (bool,), "training.hardware.full_speed.gradient_checkpointing")
+        gentle = hardware.get("gentle")
+        if gentle is not None:
+            _require_type(gentle, (dict,), "training.hardware.gentle")
+            if "micro_batch" in gentle:
+                _check_number(gentle["micro_batch"], "training.hardware.gentle.micro_batch", lo=1, integer=True)
+            if "dataloader_workers" in gentle:
+                _check_number(gentle["dataloader_workers"], "training.hardware.gentle.dataloader_workers",
+                              lo=0, integer=True)
+            for key in ("cpu_threads_fraction", "max_gpu_memory_fraction"):
+                if key in gentle:
+                    _check_number(gentle[key], f"training.hardware.gentle.{key}", lo=0, hi=1, lo_exclusive=True)
+            if "gradient_checkpointing" in gentle:
+                _require_type(gentle["gradient_checkpointing"], (bool,), "training.hardware.gentle.gradient_checkpointing")
+        limits = hardware.get("limits")
+        if limits is not None:
+            _require_type(limits, (dict,), "training.hardware.limits")
+            if "require_ac_power" in limits:
+                _require_type(limits["require_ac_power"], (bool,), "training.hardware.limits.require_ac_power")
+            if "min_battery_percent" in limits:
+                _check_number(limits["min_battery_percent"], "training.hardware.limits.min_battery_percent",
+                              lo=0, hi=100)
+            if "min_free_disk_gb" in limits:
+                _check_number(limits["min_free_disk_gb"], "training.hardware.limits.min_free_disk_gb", lo=0)
+            if "gpu_memory_headroom_fraction" in limits:
+                _check_number(limits["gpu_memory_headroom_fraction"],
+                              "training.hardware.limits.gpu_memory_headroom_fraction", lo=0, hi=1)
+            for key in ("thermal_throttle_stop_seconds", "cpu_only_warn_hours"):
+                if key in limits:
+                    _check_number(limits[key], f"training.hardware.limits.{key}", lo=0, lo_exclusive=True)
+        if "capture_contention" in hardware:
+            _require_choice(hardware["capture_contention"], TRAINING_CAPTURE_CONTENTION,
+                            "training.hardware.capture_contention")
+
+    evaluation = training.get("evaluation")
+    if evaluation is not None:
+        _require_type(evaluation, (dict,), "training.evaluation")
+        thresholds = evaluation.get("iou_thresholds")
+        if thresholds is not None:
+            _require_type(thresholds, (list,), "training.evaluation.iou_thresholds")
+            if not thresholds:
+                raise ConfigError("training.evaluation.iou_thresholds must not be empty")
+            for t in thresholds:
+                _check_number(t, "training.evaluation.iou_thresholds[]", lo=0, hi=1, lo_exclusive=True)
+        for key in ("max_detections", "calibration_bins"):
+            if key in evaluation:
+                _check_number(evaluation[key], f"training.evaluation.{key}",
+                              lo=2 if key == "calibration_bins" else 1, integer=True)
+        if "report_confidence" in evaluation:
+            _check_number(evaluation["report_confidence"], "training.evaluation.report_confidence", lo=0, hi=1)
+        if "example_images_per_kind" in evaluation:
+            _check_number(evaluation["example_images_per_kind"], "training.evaluation.example_images_per_kind",
+                          lo=0, integer=True)
+        gentle_eq = evaluation.get("gentle_equivalence")
+        if gentle_eq is not None:
+            _require_type(gentle_eq, (dict,), "training.evaluation.gentle_equivalence")
+            for key in ("min_margin", "sigma_multiple"):
+                if key in gentle_eq:
+                    _check_number(gentle_eq[key], f"training.evaluation.gentle_equivalence.{key}", lo=0)
+
+    install = training.get("install")
+    if install is not None:
+        _require_type(install, (dict,), "training.install")
+        indexes = install.get("torch_index_by_vendor")
+        if indexes is not None:
+            _require_type(indexes, (dict,), "training.install.torch_index_by_vendor")
+            for vendor, url in indexes.items():
+                if url is None:
+                    continue
+                _require_type(url, (str,), f"training.install.torch_index_by_vendor.{vendor}")
+                if not re.match(r"^https?://", url):
+                    raise ConfigError(
+                        f"training.install.torch_index_by_vendor.{vendor} must be an http(s) address, or null"
+                    )
+        packages = install.get("packages")
+        if packages is not None:
+            _require_type(packages, (dict,), "training.install.packages")
+            for engine, names in packages.items():
+                _require_type(names, (list,), f"training.install.packages.{engine}")
+                for i, name in enumerate(names):
+                    _require_type(name, (str,), f"training.install.packages.{engine}[{i}]")
+
+    sharing = training.get("sharing")
+    if sharing is not None:
+        _require_type(sharing, (dict,), "training.sharing")
+        if "package_include_checkpoint" in sharing:
+            _require_type(sharing["package_include_checkpoint"], (bool,), "training.sharing.package_include_checkpoint")
+        formats = sharing.get("dataset_export_formats")
+        if formats is not None:
+            _require_type(formats, (list,), "training.sharing.dataset_export_formats")
+            for fmt in formats:
+                _require_choice(fmt, TRAINING_DATASET_EXPORT_FORMATS, "training.sharing.dataset_export_formats[]")
 
 
 def _validate_station(station: Any, index: int, seen_ids: set, seen_names: set) -> None:

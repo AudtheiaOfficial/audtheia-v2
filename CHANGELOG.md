@@ -7,6 +7,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ## [Unreleased]
 
+### Added
+
+- **Train tab groundwork.** Four new tables for the coming Train tab, added
+  without changing any existing table. `frame_box_correction` holds an expert's
+  corrections to boxes on saved frames as an append-only record, so the captured
+  annotations are never altered. `training_runs`, `trained_models` and
+  `model_activation_log` record what was trained, the numbered model versions
+  that resulted, and every time one was switched on or reverted. All three are
+  marked as model output or expert action, never as measurement. A new
+  `training` block in the settings, with validation and sensible defaults, and
+  `scripts/migrate_add_training.py` for adding the tables to an existing
+  database explicitly. A settings file without the block still loads.
+
 ### Changed
 
 - **Per-frame review wording.** The two verdict buttons in the Detections frame
