@@ -1774,7 +1774,7 @@ def create_app(settings, database):
     raised if the framework is absent.
     """
     try:
-        from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
+        from fastapi import Body, FastAPI, HTTPException, BackgroundTasks, Query
         from fastapi.responses import FileResponse
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel
@@ -2796,6 +2796,155 @@ def create_app(settings, database):
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"could not write the export: {exc}") from exc
+
+    # -- Train: datasets built from expert-reviewed events --------------------
+    #
+    # Everything here reads the record and the stored media; only the build writes,
+    # and it writes a new folder under the datasets directory, never into the data
+    # folder and never into the database.
+
+    def _require_desktop_for_training():
+        if settings.node_role != "desktop":
+            raise HTTPException(
+                status_code=403,
+                detail="training datasets are prepared on the desktop; this node is not the desktop.",
+            )
+
+    def _training_required(criteria):
+        from audtheia.training import candidates as cand_rules
+
+        if criteria is None:
+            return cand_rules.required_criteria(settings.training_config()["dataset"]["default_required_criteria"])
+        names = [c for c in (part.strip() for part in criteria.split(",")) if c]
+        if names == ["none"]:
+            names = []
+        return cand_rules.required_criteria(names)
+
+    @app.get(f"{API_PREFIX}/train/status")
+    def train_status():
+        """What the Train tab needs to start: defaults, engines and datasets already built."""
+        from audtheia.training import dataset as dataset_rules
+
+        config = settings.training_config()
+        try:
+            built = dataset_rules.list_datasets(settings)
+        except dataset_rules.DatasetError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {
+            "is_desktop": settings.node_role == "desktop",
+            "dataset_defaults": config["dataset"],
+            "acoustic_engines": settings.training_acoustic_engines(),
+            "datasets": built,
+        }
+
+    @app.get(f"{API_PREFIX}/train/candidates/summary")
+    def train_candidates_summary(
+        modality: str = Query(default="vision"),
+        station_id=Query(default=None),
+        criteria=Query(default=None),
+    ):
+        """How many events meet each criterion, and every combination of them."""
+        from audtheia.training import candidates as cand_rules
+
+        if modality not in ("vision", "audio"):
+            raise HTTPException(status_code=422, detail="modality must be 'vision' or 'audio'")
+        try:
+            required = _training_required(criteria)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return cand_rules.summarize(db.training_candidates(modality, station_id), required)
+
+    @app.get(f"{API_PREFIX}/train/candidates")
+    def train_candidates(
+        modality: str = Query(default="vision"),
+        station_id=Query(default=None),
+        criteria=Query(default=None),
+        only_eligible: bool = Query(default=False),
+        limit: int = Query(default=200, ge=1, le=5000),
+        offset: int = Query(default=0, ge=0),
+    ):
+        """The events behind the counts, each with the steps still missing."""
+        from audtheia.training import candidates as cand_rules
+
+        if modality not in ("vision", "audio"):
+            raise HTTPException(status_code=422, detail="modality must be 'vision' or 'audio'")
+        try:
+            required = _training_required(criteria)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        rows = db.training_candidates(modality, station_id)
+        if only_eligible:
+            rows = [r for r in rows if cand_rules.is_eligible(r, required)]
+        page = rows[offset: offset + limit]
+        return {
+            "total": len(rows),
+            "offset": offset,
+            "events": [
+                {
+                    "observation_id": r["observation_id"],
+                    "event_name": r["event_name"],
+                    "station_id": r["station_id"],
+                    "first_seen": r["first_seen"],
+                    "qc_state": r["qc_state"],
+                    "criteria": r["criteria"],
+                    "label_state": r["label_state"],
+                    "eligible": cand_rules.is_eligible(r, required),
+                    "missing_steps": r["missing_steps"],
+                    "disagreement_resolved": r["disagreement_resolved"],
+                    "frame_verdicts": r["frame_verdicts"],
+                    "taxa": [
+                        {"class_name": t["class_name"], "verdict": t["verdict"], "source": t["source"]}
+                        for t in r["taxa"]
+                    ],
+                }
+                for r in page
+            ],
+        }
+
+    @app.post(f"{API_PREFIX}/train/dataset/preview")
+    def train_dataset_preview(request: dict = Body(default={})):
+        """Plan a dataset and report exactly what it would hold. Writes nothing to the record."""
+        _require_desktop_for_training()
+        from audtheia.training import dataset as dataset_rules
+
+        try:
+            options = dataset_rules.options_from_request(settings, request)
+            plan = dataset_rules.plan_dataset(db, settings, options)
+            return dataset_rules.summarize_plan(plan)
+        except dataset_rules.DatasetError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"could not read the record or its media: {exc}") from exc
+
+    @app.post(f"{API_PREFIX}/train/dataset/build")
+    def train_dataset_build(request: dict = Body(default={})):
+        """Write the dataset the preview described, or report that it already exists."""
+        _require_desktop_for_training()
+        from audtheia.training import dataset as dataset_rules
+
+        try:
+            options = dataset_rules.options_from_request(settings, request)
+            return dataset_rules.build_dataset(db, settings, options)
+        except dataset_rules.DatasetError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"could not write the dataset: {exc}") from exc
+
+    @app.get(API_PREFIX + "/train/dataset/{dataset_id}")
+    def train_dataset_detail(dataset_id: str):
+        """The manifest of a dataset already built, without its per-example list."""
+        from audtheia.training import dataset as dataset_rules
+
+        try:
+            manifest = dataset_rules.dataset_manifest(settings, dataset_id)
+        except dataset_rules.DatasetError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if manifest is None:
+            raise HTTPException(status_code=404, detail="no such dataset")
+        manifest = dict(manifest)
+        items = manifest.pop("items", [])
+        manifest["item_count"] = len(items)
+        return manifest
 
     @app.get(f"{API_PREFIX}/brain/audit")
     def brain_audit(station_id=Query(default=None), since=Query(default=None), until=Query(default=None)):

@@ -2338,6 +2338,109 @@ class Database:
         history = self.model_activations(slot, station_id)
         return history[1] if len(history) > 1 else None
 
+    # -- training candidates (read only) ---------------------------------
+
+    def training_candidates(
+        self,
+        modality: str,
+        station_id: Optional[str] = None,
+    ) -> list[dict]:
+        """Every event that could become a training example, with its criteria worked out.
+
+        Read only. One row per event that holds at least one detection of the
+        requested modality ('vision' or 'audio'), carrying the three criteria, the
+        resolved label and the steps still missing. The evidence is gathered in a
+        fixed number of bulk reads rather than one read per event, and the rules
+        that turn it into criteria live in audtheia/training/candidates.py, so the
+        counts shown before a build and the dataset the build writes come from the
+        same code. A database that predates the corrections or review tables
+        simply reports no expert verdicts, so an event is shown as waiting for a
+        review instead of the whole read failing.
+        """
+        from audtheia.training.candidates import evaluate_candidate
+
+        if modality not in ("vision", "audio"):
+            raise ValueError("modality must be 'vision' or 'audio'")
+        clauses, params = [], []
+        if station_id is not None:
+            clauses.append("o.station_id = ?")
+            params.append(station_id)
+        # An event is a candidate only if it has a stored detection of this kind,
+        # and the media a dataset needs: a frame folder for vision, a clip for audio.
+        media = "o.representative_frame IS NOT NULL" if modality == "vision" else "o.audio_clip_path IS NOT NULL"
+        clauses.append(media)
+        clauses.append(
+            "EXISTS (SELECT 1 FROM child_detections c WHERE c.observation_id = o.id AND c.modality = ?)"
+        )
+        params.append(modality)
+        where = " WHERE " + " AND ".join(clauses)
+
+        with self.connect() as conn:
+            observations = self._all(
+                conn, f"SELECT o.* FROM observations o{where} ORDER BY o.first_seen, o.id", tuple(params)
+            )
+            ids = {row["id"] for row in observations}
+            children: dict = {}
+            for row in self._all(conn, "SELECT * FROM child_detections ORDER BY observation_id, rowid"):
+                if row["observation_id"] in ids:
+                    children.setdefault(row["observation_id"], []).append(row)
+            corrections: dict = {}
+            verifications: dict = {}
+            frames: dict = {}
+            try:
+                for row in self._all(
+                    conn,
+                    "SELECT * FROM ("
+                    "  SELECT *, rowid AS rid, ROW_NUMBER() OVER ("
+                    "    PARTITION BY observation_id, IFNULL(detection_id, '')"
+                    "    ORDER BY corrected_at DESC, rowid DESC) AS rn"
+                    "  FROM observation_corrections"
+                    ") WHERE rn = 1 ORDER BY corrected_at DESC, rid DESC",
+                ):
+                    if row["observation_id"] in ids:
+                        corrections.setdefault(row["observation_id"], []).append(row)
+            except sqlite3.OperationalError as exc:
+                if "no such table" not in str(exc):
+                    raise
+                corrections = {}
+            try:
+                for row in self._all(conn, "SELECT * FROM observation_verification"):
+                    if row["observation_id"] in ids:
+                        verifications[row["observation_id"]] = row
+            except sqlite3.OperationalError as exc:
+                if "no such table" not in str(exc):
+                    raise
+                verifications = {}
+            try:
+                for row in self._all(
+                    conn,
+                    "SELECT observation_id, verdict, COUNT(*) AS n FROM ("
+                    "  SELECT observation_id, frame_index, verdict, ROW_NUMBER() OVER ("
+                    "    PARTITION BY observation_id, frame_index ORDER BY reviewed_at DESC, rowid DESC) AS rn"
+                    "  FROM frame_review"
+                    ") WHERE rn = 1 AND verdict IN ('accurate', 'inaccurate') GROUP BY observation_id, verdict",
+                ):
+                    if row["observation_id"] in ids:
+                        frames.setdefault(row["observation_id"], {})[row["verdict"]] = row["n"]
+            except sqlite3.OperationalError as exc:
+                if "no such table" not in str(exc):
+                    raise
+                frames = {}
+
+        return [
+            evaluate_candidate(
+                {
+                    "observation": obs,
+                    "children": children.get(obs["id"], []),
+                    "corrections": corrections.get(obs["id"], []),
+                    "verification": verifications.get(obs["id"]),
+                    "frames": frames.get(obs["id"], {}),
+                },
+                modality,
+            )
+            for obs in observations
+        ]
+
     # -- interpretations (desktop-owned) ---------------------------------
 
     def insert_interpretation(self, interpretation: Interpretation) -> None:

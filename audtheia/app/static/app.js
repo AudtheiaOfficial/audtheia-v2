@@ -1888,18 +1888,32 @@
   var SUBPANEL_LOADERS = {
     "brain-models": function () { loadBrainModels(); },
     "brain-learning": function () { loadBrainLearning(); },
-    "brain-skills": function () { loadBrainSkills(); }
+    "brain-skills": function () { loadBrainSkills(); },
+    "train-dataset": function () { loadTrainDataset(); }
   };
 
+  // Each panel with sub-panels keeps its own choice. Brain keeps the original
+  // storage key, so a choice remembered before the Train tab existed still works.
+  function subpanelStoreKey(owner) {
+    return owner === "brain" ? STORE.subpanel : STORE.subpanel + "." + owner;
+  }
+
+  // A sub-panel belongs to the panel that contains it, and choosing one only
+  // touches that panel's own sub-panels, so opening a sub-panel in one panel
+  // can never hide another panel's content.
   function activateSubpanel(name) {
-    $all(".subpanel").forEach(function (p) { p.hidden = p.getAttribute("data-subpanel") !== name; });
-    $all(".subnav-item").forEach(function (b) {
+    var target = $('.subpanel[data-subpanel="' + name + '"]');
+    if (!target) { return; }
+    var panel = target.closest(".panel");
+    var owner = panel.getAttribute("data-panel");
+    $all(".subpanel", panel).forEach(function (p) { p.hidden = p.getAttribute("data-subpanel") !== name; });
+    $all(".subnav-item", panel).forEach(function (b) {
       if (b.getAttribute("data-subpanel") === name) { b.setAttribute("aria-current", "page"); }
       else { b.removeAttribute("aria-current"); }
     });
-    store(STORE.subpanel, name);
+    store(subpanelStoreKey(owner), name);
     var reload = SUBPANEL_LOADERS[name];
-    if (reload && state.activePanel === "brain") { reload(); }
+    if (reload && state.activePanel === owner) { reload(); }
   }
 
   function initRouter() {
@@ -5938,6 +5952,502 @@
   }
 
   // ----------------------------------------------------------------------
+  // 8b. Train: preparing a dataset from reviewed events
+  //
+  // The Dataset view turns the events an expert has judged into a training set.
+  // It reads the record and the stored media and writes only a new folder under
+  // the datasets directory. The preview and the build come from one plan on the
+  // server, so the counts shown here are the counts that get written.
+  // ----------------------------------------------------------------------
+
+  var TRAIN_CRITERIA = [
+    { key: "expert_confirmed", label: "Expert Confirmed",
+      hint: "A person confirmed, relabelled or rejected the event." },
+    { key: "qc_passed", label: "QC Passed",
+      hint: "The quality-control state is passed or verified." },
+    { key: "verified", label: "Verified",
+      hint: "The desktop verifier has checked the event." }
+  ];
+
+  var TRAIN_ACTIONS = [
+    ["keep", "Keep as it is"],
+    ["exclude", "Leave out"],
+    ["roll_up_genus", "Merge into its genus"],
+    ["roll_up_family", "Merge into its family"]
+  ];
+
+  var TRAIN_LABEL_STATES = {
+    positive: "Confirmed by an expert",
+    negative: "Rejected as a false alarm",
+    partial: "Partly judged",
+    model_labelled: "Model's own label",
+    unresolved: "No usable label"
+  };
+
+  var TRAIN_SPLITS = [["train", "Training"], ["validation", "Validation"], ["test", "Test"]];
+
+  function trainState(status) {
+    if (!state.train) {
+      var d = (status && status.dataset_defaults) || {};
+      var split = d.split || {};
+      var chosen = d.default_required_criteria || ["expert_confirmed", "qc_passed", "verified"];
+      var criteria = {};
+      TRAIN_CRITERIA.forEach(function (c) { criteria[c.key] = chosen.indexOf(c.key) >= 0; });
+      var engines = (status && status.acoustic_engines) || [];
+      state.train = {
+        modality: "vision",
+        engine: engines.length ? engines[0].key : "",
+        stationId: "",
+        criteria: criteria,
+        policy: {},
+        options: {
+          minExamples: d.min_examples_per_class === undefined ? 5 : d.min_examples_per_class,
+          background: d.background_max_fraction === undefined ? 0.1 : d.background_max_fraction,
+          modelLabelled: d.model_labelled_max_fraction === undefined ? 0 : d.model_labelled_max_fraction,
+          maxFrames: d.max_frames_per_event === undefined ? 10 : d.max_frames_per_event,
+          splitMode: split.mode || "event",
+          seed: split.seed === undefined ? 20260101 : split.seed
+        },
+        preview: null,
+        previewKey: null
+      };
+    }
+    return state.train;
+  }
+
+  loaders.train = function () { loadTrainDataset(); };
+
+  function trainRequest(T) {
+    var chosen = TRAIN_CRITERIA.filter(function (c) { return T.criteria[c.key]; })
+      .map(function (c) { return c.key; });
+    var o = T.options;
+    var req = {
+      modality: T.modality,
+      required_criteria: chosen,
+      station_id: T.stationId || null,
+      class_policy: T.policy,
+      min_examples_per_class: Number(o.minExamples),
+      background_max_fraction: Number(o.background),
+      model_labelled_max_fraction: Number(o.modelLabelled),
+      split: { mode: o.splitMode, seed: Number(o.seed) }
+    };
+    if (T.modality === "vision") { req.max_frames_per_event = Number(o.maxFrames); }
+    else { req.engine = T.engine; }
+    return req;
+  }
+
+  function trainCombinationLabel(name) {
+    if (name === "none") { return "None of the three"; }
+    return name.split("+").map(function (p) {
+      var found = TRAIN_CRITERIA.filter(function (c) { return c.key === p; })[0];
+      return found ? found.label : humanize(p);
+    }).join(" and ");
+  }
+
+  function loadTrainDataset() {
+    var host = region("train-dataset");
+    if (!host) { return; }
+    clear(host);
+    host.appendChild(el("p", { class: "empty-state", text: "Loading the dataset view." }));
+    apiGet("/train/status").then(function (status) {
+      clear(host);
+      if (!status.is_desktop) {
+        host.appendChild(el("p", { class: "card-note", text:
+          "Training datasets are prepared on the desktop, where the record and its media live. This node is not the desktop." }));
+        return;
+      }
+      renderTrainDataset(host, status);
+    }).catch(function (e) {
+      setState(host, "empty-state", "Could not load the dataset view: " + e.message);
+    });
+  }
+
+  function renderTrainDataset(host, status) {
+    var T = trainState(status);
+    var block = el("div", { class: "info-block" });
+    block.appendChild(el("p", { class: "settings-desc", text:
+      "A dataset is built from events an expert has judged. Choose which checks an event must have passed, and the counts below show how many events qualify before anything is written. Building only reads the record and copies or links media into a new folder. Nothing in the record or the data folder is changed." }));
+    block.appendChild(el("p", { class: "card-note", text:
+      "Events are split into training, validation and test as whole events, never frame by frame, so a test score cannot be inflated by near-identical frames from the same animal. Examples that carry the model's own label are used for training only." }));
+
+    var modality = el("select", { class: "form-input", "aria-label": "Data type" }, [
+      el("option", { value: "vision", text: "Visual, camera frames" }),
+      el("option", { value: "audio", text: "Acoustic, sound clips" })
+    ]);
+    modality.value = T.modality;
+
+    var engine = el("select", { class: "form-input", "aria-label": "Acoustic engine" });
+    (status.acoustic_engines || []).forEach(function (e) {
+      engine.appendChild(el("option", { value: e.key,
+        text: (e.label || e.key) + ", " + e.window_seconds + " second windows at " + e.sample_rate + " Hz" }));
+    });
+    engine.value = T.engine;
+    var engineField = el("label", { class: "form-field" }, [
+      el("span", { class: "form-label", text: "Acoustic engine" }), engine,
+      el("span", { class: "form-hint", text: "Sets the window length and sample rate the sound clips are cut to." })
+    ]);
+
+    var station = el("select", { class: "form-input", "aria-label": "Station" });
+    station.appendChild(el("option", { value: "", text: "All stations" }));
+    (state.stations || []).forEach(function (s) {
+      station.appendChild(el("option", { value: s.id, text: s.station_name || s.id }));
+    });
+    station.value = T.stationId;
+
+    var counts = el("div", { class: "kv-list", "data-region": "train-counts" });
+    var previewHost = el("div", { class: "train-preview", "data-region": "train-preview" });
+    var message = el("p", { class: "form-message" });
+    var builtHost = el("div", { "data-region": "train-built" });
+
+    var previewBtn = el("button", { type: "button", class: "btn", text: "Preview dataset" });
+    var buildBtn = el("button", { type: "button", class: "btn btn-primary", text: "Build dataset" });
+    buildBtn.disabled = true;
+
+    function markStale() {
+      T.previewKey = null;
+      buildBtn.disabled = true;
+      if (T.preview) {
+        message.textContent = "The settings changed since the last preview. Preview again before building.";
+      }
+    }
+
+    var criteriaBox = el("div", { class: "train-criteria" });
+    var countCells = {};
+    TRAIN_CRITERIA.forEach(function (c) {
+      var box = el("input", { type: "checkbox" });
+      box.checked = !!T.criteria[c.key];
+      var count = el("span", { class: "train-count", text: "" });
+      countCells[c.key] = count;
+      box.addEventListener("change", function () {
+        T.criteria[c.key] = box.checked;
+        markStale();
+        refreshCounts();
+      });
+      criteriaBox.appendChild(el("label", { class: "train-criterion" }, [
+        box,
+        el("span", { class: "train-criterion-text" }, [
+          el("span", { class: "form-label", text: c.label }),
+          el("span", { class: "form-hint", text: c.hint })
+        ]),
+        count
+      ]));
+    });
+
+    function numberField(label, hint, key, attrs) {
+      var input = el("input", { type: "number", class: "form-input" });
+      Object.keys(attrs).forEach(function (k) { input.setAttribute(k, attrs[k]); });
+      input.value = T.options[key];
+      input.addEventListener("input", function () { T.options[key] = input.value; markStale(); });
+      return el("label", { class: "form-field" }, [
+        el("span", { class: "form-label", text: label }), input,
+        el("span", { class: "form-hint", text: hint })
+      ]);
+    }
+
+    var splitMode = el("select", { class: "form-input", "aria-label": "How to divide events" }, [
+      el("option", { value: "event", text: "By event" }),
+      el("option", { value: "station", text: "By station, holding whole stations out" }),
+      el("option", { value: "time_block", text: "By time, holding the newest events out" })
+    ]);
+    splitMode.value = T.options.splitMode;
+    splitMode.addEventListener("change", function () { T.options.splitMode = splitMode.value; markStale(); });
+
+    var advanced = el("div", { class: "train-advanced" }, [
+      numberField("Fewest expert-judged events a class needs", "Classes below this are left out, kept with a warning, or merged into a genus or family, one class at a time, after the preview.", "minExamples", { min: "1", step: "1" }),
+      numberField("Most background examples", "As a fraction of the examples of animals in each split. Background comes from events an expert rejected as false alarms.", "background", { min: "0", max: "1", step: "0.05" }),
+      numberField("Most model-labelled examples", "As a fraction of the dataset. Zero keeps every label a person's.", "modelLabelled", { min: "0", max: "0.99", step: "0.05" }),
+      el("label", { class: "form-field" }, [
+        el("span", { class: "form-label", text: "How events are divided" }), splitMode,
+        el("span", { class: "form-hint", text: "Holding out whole stations or the newest events tests whether the model works somewhere new." })
+      ]),
+      numberField("Random seed", "The same seed gives the same split every time.", "seed", { step: "1" })
+    ]);
+    var framesField = numberField("Most frames kept per event", "Spread evenly along the track, then near-identical frames are dropped.", "maxFrames", { min: "1", step: "1" });
+    advanced.insertBefore(framesField, advanced.firstChild);
+
+    function syncModalityControls() {
+      engineField.hidden = T.modality !== "audio";
+      framesField.hidden = T.modality !== "vision";
+    }
+
+    modality.addEventListener("change", function () {
+      T.modality = modality.value;
+      T.policy = {};
+      T.preview = null;
+      clear(previewHost);
+      syncModalityControls();
+      markStale();
+      message.textContent = "";
+      refreshCounts();
+    });
+    engine.addEventListener("change", function () { T.engine = engine.value; markStale(); });
+    station.addEventListener("change", function () {
+      T.stationId = station.value;
+      T.policy = {};
+      markStale();
+      refreshCounts();
+    });
+
+    block.appendChild(el("div", { class: "train-controls" }, [
+      el("label", { class: "form-field" }, [el("span", { class: "form-label", text: "Data type" }), modality]),
+      engineField,
+      el("label", { class: "form-field" }, [el("span", { class: "form-label", text: "Station" }), station])
+    ]));
+    block.appendChild(el("h4", { text: "Which events qualify" }));
+    block.appendChild(criteriaBox);
+    block.appendChild(counts);
+    block.appendChild(el("h4", { text: "Settings" }));
+    block.appendChild(advanced);
+    block.appendChild(el("div", { class: "form-actions" }, [previewBtn, buildBtn]));
+    block.appendChild(message);
+    host.appendChild(block);
+    host.appendChild(previewHost);
+    host.appendChild(el("h3", { text: "Datasets already built" }));
+    host.appendChild(builtHost);
+    syncModalityControls();
+    renderBuilt(builtHost, status.datasets || []);
+
+    function criteriaParam() {
+      return TRAIN_CRITERIA.filter(function (c) { return T.criteria[c.key]; })
+        .map(function (c) { return c.key; }).join(",");
+    }
+
+    function refreshCounts() {
+      clear(counts);
+      counts.appendChild(el("p", { class: "card-note", text: "Counting events." }));
+      var wantedModality = T.modality, wantedStation = T.stationId;
+      apiGet("/train/candidates/summary" + query({
+        modality: T.modality, station_id: T.stationId,
+        criteria: criteriaParam() || "none"
+      })).then(function (s) {
+        if (wantedModality !== T.modality || wantedStation !== T.stationId) { return; }
+        paintCounts(s);
+      }).catch(function (e) {
+        clear(counts);
+        counts.appendChild(el("p", { class: "card-note", text: "Could not count events: " + e.message }));
+      });
+    }
+
+    function paintCounts(s) {
+      clear(counts);
+      TRAIN_CRITERIA.forEach(function (c) {
+        countCells[c.key].textContent = fmtNum(s.per_criterion[c.key] || 0) + " events";
+      });
+      counts.appendChild(modelKvRow("Events with a stored " + (T.modality === "vision" ? "frame" : "clip") + " and a detection", fmtNum(s.candidates)));
+      counts.appendChild(modelKvRow("Qualify under the chosen checks", fmtNum(s.eligible), "kv-strong"));
+      var states = Object.keys(s.label_states || {}).map(function (k) {
+        return (TRAIN_LABEL_STATES[k] || humanize(k)) + " " + fmtNum(s.label_states[k]);
+      }).join(", ");
+      if (states) { counts.appendChild(modelKvRow("How the labels stand", states)); }
+      if (s.disagreement_set) {
+        counts.appendChild(modelKvRow("Verifier disagreed, expert resolved", fmtNum(s.disagreement_set) + " events"));
+      }
+      var combos = el("table", { class: "trust-table train-table" });
+      combos.appendChild(el("thead", {}, [el("tr", {}, [
+        el("th", { text: "Checks an event has passed" }), el("th", { class: "num", text: "Events" })
+      ])]));
+      var body = el("tbody");
+      Object.keys(s.combinations || {}).forEach(function (name) {
+        body.appendChild(el("tr", { class: s.combinations[name] ? "" : "muted-row" }, [
+          el("td", { text: trainCombinationLabel(name) }),
+          el("td", { class: "num", text: fmtNum(s.combinations[name]) })
+        ]));
+      });
+      combos.appendChild(body);
+      counts.appendChild(combos);
+      counts.appendChild(el("p", { class: "form-hint", text:
+        "An event missing a step is not hidden. It is counted here so you can see what review, quality control or verification would add." }));
+    }
+
+    function paintPreview(summary) {
+      renderTrainPreview(previewHost, summary, T, function (key, action) {
+        T.policy[key] = action;
+        runPreview();
+      });
+    }
+
+    function runPreview() {
+      var req = trainRequest(T);
+      message.textContent = "Planning the dataset. A large record can take a minute.";
+      previewBtn.disabled = true; buildBtn.disabled = true;
+      apiSend("/train/dataset/preview", "POST", req).then(function (summary) {
+        T.preview = summary;
+        T.previewKey = JSON.stringify(req);
+        message.textContent = "";
+        paintPreview(summary);
+        buildBtn.disabled = !!summary.empty || !(summary.totals.train.examples > 0);
+      }).catch(function (e) {
+        message.textContent = "Could not plan the dataset: " + e.message;
+      }).then(function () { previewBtn.disabled = false; });
+    }
+
+    previewBtn.addEventListener("click", runPreview);
+    buildBtn.addEventListener("click", function () {
+      var req = trainRequest(T);
+      if (T.previewKey !== JSON.stringify(req)) {
+        message.textContent = "Preview again first, so what is built matches what you saw.";
+        buildBtn.disabled = true;
+        return;
+      }
+      message.textContent = "Writing the dataset.";
+      previewBtn.disabled = true; buildBtn.disabled = true;
+      apiSend("/train/dataset/build", "POST", req).then(function (r) {
+        message.textContent = r.already_exists
+          ? "This exact dataset was already built at " + r.path + ". Nothing was written again."
+          : "Wrote dataset " + r.dataset_id + " to " + r.path + ".";
+        return apiGet("/train/status").then(function (fresh) { renderBuilt(builtHost, fresh.datasets || []); });
+      }).catch(function (e) {
+        message.textContent = "Could not build the dataset: " + e.message;
+      }).then(function () {
+        previewBtn.disabled = false;
+        buildBtn.disabled = T.previewKey === null;
+      });
+    });
+
+    if (T.preview) {
+      paintPreview(T.preview);
+      buildBtn.disabled = T.previewKey === null || !!T.preview.empty || !(T.preview.totals.train.examples > 0);
+    }
+    refreshCounts();
+  }
+
+  function renderBuilt(host, datasets) {
+    clear(host);
+    if (!datasets.length) {
+      host.appendChild(el("p", { class: "empty-state", text: "No dataset has been built yet." }));
+      return;
+    }
+    var table = el("table", { class: "trust-table train-table" });
+    table.appendChild(el("thead", {}, [el("tr", {}, [
+      el("th", { text: "Dataset" }), el("th", { text: "Type" }), el("th", { text: "Built" }),
+      el("th", { class: "num", text: "Training" }), el("th", { class: "num", text: "Validation" }),
+      el("th", { class: "num", text: "Test" })
+    ])]));
+    var body = el("tbody");
+    datasets.forEach(function (d) {
+      var t = d.totals || {};
+      function cell(k) { return el("td", { class: "num", text: t[k] ? fmtNum(t[k].examples) : "-" }); }
+      body.appendChild(el("tr", {}, [
+        el("td", { class: "mono", text: d.dataset_id || "" }),
+        el("td", { text: d.modality === "audio" ? "Acoustic" : "Visual" }),
+        el("td", { text: d.created_at ? fmtTime(d.created_at) : "-" }),
+        cell("train"), cell("validation"), cell("test")
+      ]));
+    });
+    table.appendChild(body);
+    host.appendChild(table);
+  }
+
+  function renderTrainPreview(host, s, T, onPolicy) {
+    clear(host);
+    host.appendChild(el("h3", { text: "Preview" }));
+    if (s.empty) {
+      host.appendChild(el("p", { class: "empty-state", text:
+        "Nothing qualifies under these settings. Review more events, or relax a check above." }));
+    }
+
+    host.appendChild(metricRow(TRAIN_SPLITS.map(function (p) {
+      var t = s.totals[p[0]];
+      return metricCard(p[1] + " examples from " + fmtNum(t.events) + (t.events === 1 ? " event" : " events"), fmtNum(t.examples));
+    })));
+    host.appendChild(modelKvRow("Dataset id", s.dataset_id, "mono"));
+    host.appendChild(modelKvRow("Events divided", s.split_mode_used === "event" ? "by event" : s.split_mode_used === "station" ? "by station" : "by time"));
+    var bg = s.background || {};
+    var bgText = TRAIN_SPLITS.map(function (p) {
+      var b = bg[p[0]] || { kept: 0, available: 0 };
+      return p[1].toLowerCase() + " " + fmtNum(b.kept) + " of " + fmtNum(b.available);
+    }).join(", ");
+    host.appendChild(modelKvRow("Background kept", bgText));
+    if (T.modality === "vision") {
+      var bx = s.box_stats || {};
+      host.appendChild(modelKvRow("Boxes", fmtNum(bx.model || 0) + " from the model, " + fmtNum(bx.expert_adjusted || 0) + " adjusted and " + fmtNum(bx.expert_added || 0) + " added by an expert"));
+    }
+
+    if ((s.warnings || []).length) {
+      host.appendChild(el("h4", { text: "Read before building" }));
+      var list = el("ul", { class: "train-warnings" });
+      s.warnings.forEach(function (w) {
+        list.appendChild(el("li", {}, [badge("Note", "warn"), el("span", { text: " " + w })]));
+      });
+      host.appendChild(list);
+    }
+
+    var before = s.classes_before || [];
+    if (before.length) {
+      host.appendChild(el("h4", { text: "What to do with each class" }));
+      host.appendChild(el("p", { class: "form-hint", text:
+        "Classes with few expert-judged events cannot be learned or scored reliably. Choose for each one. Merging uses the taxonomic backbone shipped with Audtheia, with no internet needed." }));
+      var pt = el("table", { class: "trust-table train-table" });
+      pt.appendChild(el("thead", {}, [el("tr", {}, [
+        el("th", { text: "Class" }), el("th", { class: "num", text: "Expert-judged events" }),
+        el("th", { text: "Decision" }), el("th", { text: "Result" })
+      ])]));
+      var pb = el("tbody");
+      before.forEach(function (row) {
+        var dec = (s.class_policy || {})[row.class_key] || { action: "keep" };
+        var sel = el("select", { class: "form-input", "aria-label": "Decision for " + row.class_name });
+        TRAIN_ACTIONS.forEach(function (a) { sel.appendChild(el("option", { value: a[0], text: a[1] })); });
+        sel.value = dec.action;
+        sel.addEventListener("change", function () { onPolicy(row.class_key, sel.value); });
+        pb.appendChild(el("tr", { class: dec.under_threshold ? "" : "muted-row" }, [
+          el("td", { text: row.class_name }),
+          el("td", { class: "num", text: fmtNum(row.events) }),
+          el("td", {}, [sel]),
+          el("td", { text: dec.note || (dec.under_threshold ? "below the threshold" : "") })
+        ]));
+      });
+      pt.appendChild(pb);
+      host.appendChild(pt);
+    }
+
+    var classes = s.classes || [];
+    if (classes.length) {
+      host.appendChild(el("h4", { text: "Classes in the dataset" }));
+      var ct = el("table", { class: "trust-table train-table" });
+      ct.appendChild(el("thead", {}, [el("tr", {}, [
+        el("th", { text: "Class" }), el("th", { class: "num", text: "Training" }),
+        el("th", { class: "num", text: "Validation" }), el("th", { class: "num", text: "Test" }),
+        el("th", { text: "Scored" })
+      ])]));
+      var cb = el("tbody");
+      classes.forEach(function (c) {
+        var name = c.class_name;
+        if ((c.merged_from || []).length) {
+          name += " (includes " + c.merged_from.map(function (m) { return m.class_name; }).join(", ") + ")";
+        }
+        function cell(k) {
+          var n = (c.counts || {})[k] || { events: 0, instances: 0 };
+          return el("td", { class: "num", text: fmtNum(n.instances) + " in " + fmtNum(n.events) });
+        }
+        cb.appendChild(el("tr", {}, [
+          el("td", { text: name }), cell("train"), cell("validation"), cell("test"),
+          el("td", {}, [c.tested ? badge("Scored", "ok") : badge("Untested", "warn")])
+        ]));
+      });
+      ct.appendChild(cb);
+      host.appendChild(ct);
+      host.appendChild(el("p", { class: "form-hint", text:
+        "Each count reads as examples in events. An untested class is still trained on but has too few expert-judged events to hold one out, so it gets no score." }));
+    }
+
+    var sk = s.skipped || {};
+    var notes = [];
+    if ((sk.events || []).length) { notes.push(fmtNum(sk.events.length) + (sk.events.length === 1 ? " event" : " events") + " left out, for example " + sk.events[0].event + ": " + sk.events[0].reason); }
+    if (sk.missing_media) { notes.push(fmtNum(sk.missing_media) + " files were missing from storage"); }
+    if (sk.near_duplicates) { notes.push(fmtNum(sk.near_duplicates) + " near-identical frames dropped"); }
+    Object.keys(sk.frames_left_out || {}).forEach(function (reason) {
+      notes.push(fmtNum(sk.frames_left_out[reason]) + " frames left out, " + reason);
+    });
+    if (sk.model_labelled_removed) { notes.push(fmtNum(sk.model_labelled_removed) + " model-labelled examples over the cap removed"); }
+    if (notes.length) {
+      host.appendChild(el("h4", { text: "Left out" }));
+      var nl = el("ul", { class: "train-notes" });
+      notes.forEach(function (n) { nl.appendChild(el("li", { text: n })); });
+      host.appendChild(nl);
+    }
+  }
+
+  // ----------------------------------------------------------------------
   // 9. Startup
   // ----------------------------------------------------------------------
 
@@ -5952,8 +6462,10 @@
     }).then(function () {
       refreshHealth();
       window.setInterval(refreshHealth, HEALTH_INTERVAL_MS);
-      var sub = store(STORE.subpanel);
-      if (sub) { activateSubpanel(sub); }
+      ["brain", "train"].forEach(function (owner) {
+        var sub = store(subpanelStoreKey(owner));
+        if (sub) { activateSubpanel(sub); }
+      });
       activatePanel(store(STORE.panel) || "detections");
     });
   }

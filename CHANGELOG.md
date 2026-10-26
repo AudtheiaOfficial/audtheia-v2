@@ -19,6 +19,29 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `training` block in the settings, with validation and sensible defaults, and
   `scripts/migrate_add_training.py` for adding the tables to an existing
   database explicitly. A settings file without the block still loads.
+- **Train tab: Dataset.** A new Train item in the sidebar with a Dataset view that
+  turns the events experts have judged into a training dataset. Choose which of
+  three checks an event must have passed (Expert Confirmed, QC Passed, Verified);
+  the counts show how many events qualify under every combination before
+  anything is written. A preview reports exactly what would be built, with the
+  split into training, validation and test, the classes and how often each is
+  represented, the background and model-labelled share, and a plain warning for
+  anything the person should read first. Rare classes can be kept with a warning,
+  left out, or merged into their genus or family through the taxonomic backbone
+  that ships with Audtheia, class by class. Building writes a new folder under
+  the datasets directory with a COCO layout and a YOLO text layout for visual
+  data, or WAV windows with a table for acoustic data, plus a manifest recording
+  every choice, the seed, each example's source and whether its label is an
+  expert's or the model's. The record and the data folder are only ever read.
+  The same selection builds once and is then recognised, and a failed build
+  leaves nothing half written.
+- **Dataset rules.** Events are divided as whole events, so no event contributes
+  to more than one of training, validation and test. Frames an expert marked
+  Inaccurate are never used. An event an expert rejected becomes background, up
+  to a cap. A relabelled event is learned under the expert's species. Examples
+  that carry the model's own label are used for training only, up to a cap that
+  defaults to none. A class with too few expert-judged events to hold one out is
+  trained on and marked untested.
 
 ### Changed
 
@@ -28,6 +51,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   (`accurate`, `inaccurate`, `cleared`) and every summary figure are unchanged,
   so existing reviews read exactly as before. The summary metric keeps its
   statistical name, Frame precision: the share of judged frames marked Accurate.
+- **Sub-panel switching.** Choosing a sub-panel now changes only the sub-panels of
+  the panel it belongs to, and each panel remembers its own choice, so Brain and
+  Train cannot hide each other's content. A choice remembered before this change
+  still applies to Brain.
 
 ## [2.0.0] - 2026-08-15
 

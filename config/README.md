@@ -182,13 +182,35 @@ Everything the Train tab uses. Nothing here is needed to run a station.
 - `enabled`: turns the Train tab on or off.
 - `paths`: where prepared datasets, trained models and the separate training
   environments are kept, relative to the repository unless absolute.
-- `dataset`: the rules for building a training set from your records. The
-  criteria a frame's event must meet by default, how many frames one event may
-  contribute, how near-duplicate frames are removed, how much background is
-  allowed, the smallest number of examples a class needs, and the split. The
-  split is by event, never by frame, with a fixed `seed` so the same records
-  always divide the same way. `acoustic` holds the equivalent rules for sound
-  windows.
+- `dataset`: the rules for building a training set from your records.
+  - `default_required_criteria`: the checks an event must have passed to qualify,
+    chosen from `expert_confirmed`, `qc_passed` and `verified`. The Dataset view
+    starts from these and shows how many events each combination covers.
+  - `model_labelled_max_fraction`: the most examples that may carry the model's
+    own label, as a fraction of the dataset. The default of 0 keeps every label a
+    person's. Model-labelled examples are only ever used for training.
+  - `max_frames_per_event` and `near_duplicate_hamming`: at most this many frames
+    are kept per event, spread evenly along the track, then frames that look
+    almost identical are dropped. A larger `near_duplicate_hamming` drops more.
+  - `background_max_fraction`: the most background examples, as a fraction of the
+    animal examples in each split. Background comes from events an expert
+    rejected as false alarms.
+  - `min_examples_per_class` and `under_threshold_default`: the fewest
+    expert-judged events a class needs, and what happens to a class below that
+    when you have not chosen for it. `exclude` leaves it out, `roll_up` merges it
+    into its genus, and `keep_with_warning` keeps it and says so in the preview.
+  - `split`: events are divided into training, validation and test as whole
+    events, never frame by frame. `mode` is `event`, `station` or `time_block`,
+    `seed` makes the same records divide the same way every time, `fractions`
+    must add up to 1, `min_events_per_class_for_heldout` is how many events a
+    class needs before one can be held out, and `time_block_days` sets the block
+    for the time mode. A class too small to hold an event out is trained on but
+    marked untested.
+  - `acoustic`: the equivalent rules for sound windows. `window_selection` is
+    `scored_with_energy_fallback`, `energy_only` or `clip_centre`,
+    `window_score_floor` is the lowest score a scoring model's window may have,
+    and `max_windows_per_clip` and `noise_windows_per_rejected_clip` set how many
+    windows one clip gives.
 - `vision` and `acoustic`: the available base models and their sensible starting
   values. The names are labels you can change without any code change.
 - `hardware`: the Full speed and Gentle profiles and the safety limits that pause
