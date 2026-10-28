@@ -218,6 +218,18 @@ Everything the Train tab uses. Nothing here is needed to run a station.
   space or memory. Gentle is the default on a computer without a dedicated
   graphics card.
 - `evaluation`: how the held-out test figures are measured.
+  - `iou_thresholds`: the box-overlap thresholds that mAP is averaged over. The
+    default is the COCO standard, 0.50 to 0.95 in steps of 0.05. If you change
+    the list, the label "over 0.50 to 0.95" is replaced by "over the chosen IoU
+    thresholds" so a figure is never mislabelled.
+  - `max_detections`: the most predictions kept for one class in one image when
+    scoring, 100 as in COCO.
+  - `report_confidence`: the confidence, or for sound the score threshold, at
+    which precision, recall, F1 and the confusion matrix are reported. It does not
+    change average precision, which uses every score.
+  - `example_images_per_kind`: how many example pictures are shown as correct,
+    false alarm and missed.
+  - `calibration_bins`: how many bins the reliability diagram uses.
 - `install`: what the optional training install downloads. A location left as
   `null` is refused at install time rather than guessed.
 - `sharing`: what the sharing export includes.

@@ -42,6 +42,28 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   that carry the model's own label are used for training only, up to a cap that
   defaults to none. A class with too few expert-judged events to hold one out is
   trained on and marked untested.
+- **Evaluation measures.** The standard measures for judging a trained model on
+  events it never saw, written into Audtheia itself so they run without the
+  training libraries. For vision: mAP at IoU 0.50 and over 0.50 to 0.95, computed
+  as the COCO evaluation computes it; average precision per class; precision,
+  recall and F1 at a chosen confidence and at the confidence that gives the
+  highest F1; a confusion matrix with a background row and column; and top-1
+  class accuracy on matched boxes, defined exactly and never presented as if it
+  were mAP. For sound: average precision per class and averaged over classes;
+  ROC area; precision, recall and F1 at a chosen and at the best threshold; a
+  confusion matrix with a background row and column; reliability bins; and
+  per-class logistic calibration of scores following Wood and Kahl (2024), which
+  gives each class a threshold. A figure that cannot be defined, such as the
+  recall of a class with no test examples, is reported as not defined and never
+  as zero. Every measure is checked in the test suite against an independent
+  reference implementation (pycocotools, faster-coco-eval, supervision and
+  scikit-learn), which are used by the tests only.
+- **Results figures.** The stored measures are turned into the series, matrices
+  and tables the Results view will draw, each with a plain-language help line and
+  a CSV of the same numbers. Classes with no test examples are marked not tested.
+  A challenger-versus-current table prints both models on the same test set with
+  their differences, restricted to the shared classes as well, and never states
+  which model is better.
 
 ### Changed
 
