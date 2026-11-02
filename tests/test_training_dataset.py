@@ -111,7 +111,8 @@ def test_options(work: Path) -> None:
     w = World(work / "options")
     ok = options(w)
     check("a bare request takes the configured defaults", ok.min_examples_per_class == 5 and ok.split_mode == "event" and ok.seed == 20260101)
-    check("the default criteria are all three", ok.required == frozenset({"expert_confirmed", "qc_passed", "verified"}))
+    check("the default criteria are Expert Confirmed and QC Passed, because Verified needs the desktop verifier first",
+          ok.required == frozenset({"expert_confirmed", "qc_passed"}))
     check("an empty list of criteria means none, not the defaults", options(w, required_criteria=[]).required == frozenset())
     check("a request can narrow the criteria", options(w, required_criteria=["expert_confirmed"]).required == frozenset({"expert_confirmed"}))
     check("a misspelt field is refused rather than ignored", raises(lambda: options(w, minimum_examples=3), ds.DatasetError))

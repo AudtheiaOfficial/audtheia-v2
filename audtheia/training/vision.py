@@ -235,9 +235,10 @@ class VisionEngine:
         if ctx.resume:
             last = latest_full_checkpoint(output_dir)
             if last is None:
-                raise RuntimeError("there is no saved epoch to resume from")
-            resume_from = str(last)
-            ctx.log(f"Resuming from {last.name}.")
+                ctx.nothing_to_resume()
+            else:
+                resume_from = str(last)
+                ctx.log(f"Resuming from {last.name}.")
 
         ctx.log(f"Preparing the {cfg['base_label']} model at {cfg['resolution']} pixels on {cfg['device']}, "
                 f"{cfg['resources']['micro_batch']} image(s) at a time, {cfg['resources']['grad_accum_steps']} "

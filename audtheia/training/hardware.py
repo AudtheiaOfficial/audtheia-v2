@@ -51,23 +51,23 @@ EQUIVALENCE_FIELDS = (
 
 LIMIT_MESSAGES = {
     "on_battery": (
-        "Paused to protect your laptop: the charger is not connected. Your progress is saved. "
+        "Paused to protect your laptop: the charger is not connected. "
         "Connect the charger and press Resume."
     ),
     "battery_low": (
-        "Paused to protect your laptop: the battery is below {limit:g} percent. Your progress is saved. "
+        "Paused to protect your laptop: the battery is below {limit:g} percent. "
         "Connect the charger and press Resume."
     ),
     "disk_low": (
-        "Stopped to protect your disk: less than {limit:g} GB free. Your progress is saved; free some "
+        "Stopped to protect your disk: less than {limit:g} GB free. Free some "
         "space and press Resume."
     ),
     "thermal": (
         "Paused to let the computer cool down: it has been slowing itself down because of heat for "
-        "{limit:g} seconds. Your progress is saved. Press Resume when it has cooled."
+        "{limit:g} seconds. Press Resume when it has cooled."
     ),
     "gpu_memory": (
-        "Paused because the graphics card is almost out of memory. Your progress is saved. Close other "
+        "Paused because the graphics card is almost out of memory. Close other "
         "programs that use the graphics card, or choose Gentle, then press Resume."
     ),
     "power_unknown": (

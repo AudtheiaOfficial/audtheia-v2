@@ -19,22 +19,24 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   `training` block in the settings, with validation and sensible defaults, and
   `scripts/migrate_add_training.py` for adding the tables to an existing
   database explicitly. A settings file without the block still loads.
-- **Train tab: Dataset.** A new Train item in the sidebar with a Dataset view that
-  turns the events experts have judged into a training dataset. Choose which of
-  three checks an event must have passed (Expert Confirmed, QC Passed, Verified);
-  the counts show how many events qualify under every combination before
-  anything is written. A preview reports exactly what would be built, with the
-  split into training, validation and test, the classes and how often each is
-  represented, the background and model-labelled share, and a plain warning for
-  anything the person should read first. Rare classes can be kept with a warning,
-  left out, or merged into their genus or family through the taxonomic backbone
-  that ships with Audtheia, class by class. Building writes a new folder under
-  the datasets directory with a COCO layout and a YOLO text layout for visual
-  data, or WAV windows with a table for acoustic data, plus a manifest recording
-  every choice, the seed, each example's source and whether its label is an
-  expert's or the model's. The record and the data folder are only ever read.
-  The same selection builds once and is then recognised, and a failed build
-  leaves nothing half written.
+- **Train tab: Dataset.** A new Train item in the sidebar with a Dataset view
+  that turns the events experts have judged into a training dataset. Choose
+  which of three checks an event must have passed (Expert Confirmed, QC Passed,
+  Verified), with the first two chosen at the start; the counts show how many
+  events qualify under every combination before anything is written, and when
+  nothing qualifies the preview names the ticked check that no event has passed.
+  A preview reports exactly what would be built, with the split into training,
+  validation and test, the classes and how often each is represented, the
+  background and model-labelled share, and a plain warning for anything the
+  person should read first. Rare classes can be kept with a warning, left out,
+  or merged into their genus or family through the taxonomic backbone that ships
+  with Audtheia, class by class. Building writes a new folder under the datasets
+  directory with a COCO layout and a YOLO text layout for visual data, or WAV
+  windows with a table for acoustic data, plus a manifest recording every
+  choice, the seed, each example's source and whether its label is an expert's
+  or the model's. The record and the data folder are only ever read. The same
+  selection builds once and is then recognised, and a failed build leaves
+  nothing half written.
 - **Dataset rules.** Events are divided as whole events, so no event contributes
   to more than one of training, validation and test. Frames an expert marked
   Inaccurate are never used. An event an expert rejected becomes background, up
@@ -78,23 +80,27 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   removed in one step, and removal deletes only that folder.
 - **Train tab: Train and Runs.** A new Train view describes this computer in
   plain words, measures how fast it trains the chosen size, estimates the least
-  time and the disk space a run will take, and starts a run from a built dataset with a chosen model size, model
-  name, starting point and speed. The name is checked as it is typed and shows
-  the resulting Audtheia-Name-V1. An ONNX file is refused as a starting point,
-  because it cannot be trained further. The Runs view follows a run every few
-  seconds with its epochs, best validation score, figures per epoch and log, and
-  offers Pause, Resume and Cancel. A run trains in its own process, so closing
-  the window does not stop it, and a run whose process disappears, for example
-  because the computer was switched off, is marked interrupted and resumes from
-  its last saved epoch. Only one run trains at a time.
+  time and the disk space a run will take, and starts a run from a built dataset
+  with a chosen model size, model name, starting point and speed. The name is
+  checked as it is typed and shows the resulting Audtheia-Name-V1. An ONNX file
+  is refused as a starting point, because it cannot be trained further. The Runs
+  view follows a run every few seconds with its epochs, best validation score,
+  figures per epoch and log, without losing its place, and offers Pause, Resume
+  and Cancel. Training is saved at the end of each epoch, so Resume continues
+  from the last finished epoch, or starts again from the beginning when none had
+  finished, and the pause message says which. A run trains in its own process
+  with no window of its own, so closing the window does not stop it, and a run
+  whose process disappears, for example because the computer was switched off,
+  is marked interrupted and resumes from its last saved epoch. Only one run
+  trains at a time.
 - **Gentle and Full speed.** Gentle uses half the processor threads at a lower
   priority, feeds one image at a time and adds the learning signal up to the
   same batch, so it trains with exactly the settings Full speed uses: the same
   seed, epochs, batch, image size, precision, learning rates and model size. A
-  check refuses to start a run if the two would differ in any of those. Gentle is the default on a computer
-  without a supported graphics card.
-- **Training safety.** A run will not start on battery power and pauses with its
-  progress saved when the charger is removed, the battery falls below its
+  check refuses to start a run if the two would differ in any of those. Gentle
+  is the default on a computer without a supported graphics card.
+- **Training safety.** A run will not start on battery power and pauses, keeping
+  every finished epoch, when the charger is removed, the battery falls below its
   limit, free disk space falls below its limit, the graphics card is almost out
   of memory, or the computer reports that it has been slowing down because of
   heat for two minutes. Where the computer does not report heat, the Train view

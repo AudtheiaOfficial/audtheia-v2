@@ -110,7 +110,12 @@ class ProcessLauncher:
                         "stdin": subprocess.DEVNULL}
         if sys.platform.startswith("win"):
             flags = 0
-            for name in ("DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP", "CREATE_NO_WINDOW"):
+            # CREATE_NO_WINDOW gives the worker a console of its own that is never
+            # shown, so it outlives the application and the helper processes it
+            # starts for loading images inherit that hidden console. With
+            # DETACHED_PROCESS the worker had no console, and Windows opened a
+            # visible window for each helper.
+            for name in ("CREATE_NEW_PROCESS_GROUP", "CREATE_NO_WINDOW"):
                 flags |= getattr(subprocess, name, 0)
             if gentle:
                 flags |= getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)

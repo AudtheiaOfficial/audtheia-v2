@@ -5,8 +5,10 @@ Path: tests/test_training_runs.py
 Starts real worker processes against a temporary record, using the built-in
 self-test engine, which imitates training without any machine-learning library.
 Checks that a run reaches the database exactly as the worker reports it, that
-Pause keeps progress and Resume continues from the last saved epoch without
-repeating or skipping one, that Cancel is final, that a worker that dies mid-run
+Pause says truthfully where Resume will continue and Resume continues from the
+last saved epoch without repeating or skipping one, or from the beginning when
+no epoch had finished, that the worker opens no window on Windows, that Cancel
+is final, that a worker that dies mid-run
 is found and marked interrupted, that only one run trains at a time, that a
 safety limit pauses a run with a plain reason, and that a worker writes nothing
 outside its own run folder.
@@ -168,8 +170,9 @@ def test_pause_resume_cancel():
               raises(lambda: w.start(config(epochs=1), name="Other"), R.RunError, 409))
         w.manager.pause(row["id"])
         paused = wait_for(w.manager, row["id"], ("paused", "completed", "failed"))
-        check("Pause stops the run with progress kept", paused["status"] == "paused"
-              and "Paused at your request" in paused["stop_reason"])
+        check("Pause stops the run and says where Resume will continue", paused["status"] == "paused"
+              and "Paused at your request" in paused["stop_reason"]
+              and f"from the end of epoch {paused['epochs_done']}, the last one saved" in paused["stop_reason"])
         done_before = len(w.manager.read_progress(row["id"]))
         check("the paused process has ended", not w.manager._alive(w.manager.read_status(row["id"])) or
               w.manager.read_status(row["id"]).get("state") == "paused")
@@ -197,6 +200,70 @@ def test_pause_resume_cancel():
         wait_for(w.manager, row["id"], ("paused",))
         c = w.manager.cancel(row["id"])
         check("a paused run can be cancelled directly", c["status"] == "cancelled")
+
+
+def test_pause_before_first_epoch():
+    print("pausing before the first epoch has finished")
+    with tempfile.TemporaryDirectory() as td:
+        w = World4(Path(td))
+        row = w.start(config(epochs=2, steps=200, step_seconds=0.05))
+        end = time.time() + 30
+        while time.time() < end and not (w.manager.read_status(row["id"]).get("batch_done") or 0) >= 2:
+            time.sleep(0.05)
+        w.manager.pause(row["id"])
+        paused = wait_for(w.manager, row["id"], ("paused", "completed", "failed"))
+        check("a pause in the first epoch stops the run", paused["status"] == "paused" and paused["epochs_done"] == 0)
+        check("and says plainly that Resume starts again, not that progress is saved",
+              "starts the training again from the beginning" in paused["stop_reason"]
+              and "saved" not in paused["stop_reason"])
+        w.manager.resume(row["id"])
+        done = wait_for(w.manager, row["id"], ("completed", "failed", "paused"))
+        epochs = [p["epoch"] for p in w.manager.read_progress(row["id"])]
+        check("Resume then trains from the first epoch to the end, each epoch once",
+              done["status"] == "completed" and epochs == [1, 2])
+        check("the log says it started again", "starts again from the first epoch" in w.manager.read_log(row["id"])["text"])
+
+        row = w.start(config(epochs=3, steps=10, step_seconds=0.03), name="Lost")
+        wait_progress(w.manager, row["id"], 1)
+        w.manager.pause(row["id"])
+        wait_for(w.manager, row["id"], ("paused",))
+        (w.manager.run_dir(row["id"]) / "checkpoints" / "last.json").unlink()
+        w.manager.resume(row["id"])
+        lost = wait_for(w.manager, row["id"], ("failed", "completed"))
+        check("after a finished epoch a missing checkpoint is an error, never a silent restart",
+              lost["status"] == "failed" and "checkpoint is missing" in lost["stop_reason"]
+              and [p["epoch"] for p in w.manager.read_progress(row["id"])][0] == 1
+              and len(w.manager.read_progress(row["id"])) == lost["epochs_done"])
+
+
+def test_windows_launch_flags():
+    print("how the worker is started on Windows")
+
+    class FakeSubprocess:
+        DETACHED_PROCESS, CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW = 0x8, 0x200, 0x08000000
+        BELOW_NORMAL_PRIORITY_CLASS, STDOUT, DEVNULL = 0x4000, -2, -3
+        seen = {}
+
+        class Popen:
+            def __init__(self, args, **kw):
+                FakeSubprocess.seen.update(kw)
+                self.pid = 77
+
+    class FakeSys:
+        platform = "win32"
+
+    real_sub, real_sys = R.subprocess, R.sys
+    R.subprocess, R.sys = FakeSubprocess, FakeSys
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            R.ProcessLauncher().launch("python.exe", Path(td), REPO, resume=False, gentle=True)
+    finally:
+        R.subprocess, R.sys = real_sub, real_sys
+    flags = FakeSubprocess.seen.get("creationflags", 0)
+    check("the worker gets a hidden console of its own, so no window opens for it or its helpers",
+          flags & FakeSubprocess.CREATE_NO_WINDOW and not flags & FakeSubprocess.DETACHED_PROCESS)
+    check("it is in its own process group and runs below normal priority in Gentle",
+          flags & FakeSubprocess.CREATE_NEW_PROCESS_GROUP and flags & FakeSubprocess.BELOW_NORMAL_PRIORITY_CLASS)
 
 
 def test_failures_and_recovery():
@@ -237,7 +304,8 @@ def test_failures_and_recovery():
         row = w.start(config(epochs=2, limits=dict(LIMITS, min_free_disk_gb=1e9)), name="Disk")
         p = wait_for(w.manager, row["id"], ("paused", "completed", "failed"))
         check("a crossed safety limit pauses the run before training with the plain reason",
-              p["status"] == "paused" and "free some space" in p["stop_reason"] and p["epochs_done"] == 0)
+              p["status"] == "paused" and "Free some space" in p["stop_reason"] and p["epochs_done"] == 0
+              and "starts the training again from the beginning" in p["stop_reason"])
         check("a run paused for safety can still be cancelled", w.manager.cancel(row["id"])["status"] == "cancelled")
 
         cfg = config(epochs=1)
@@ -359,6 +427,8 @@ def main() -> int:
     test_names_and_ids()
     test_complete_run()
     test_pause_resume_cancel()
+    test_pause_before_first_epoch()
+    test_windows_launch_flags()
     test_failures_and_recovery()
     test_with_fake_launcher()
     test_files()

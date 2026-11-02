@@ -138,7 +138,7 @@
       "envs_dir": ".venv-train"
     },
     "dataset": {
-      "default_required_criteria": ["expert_confirmed", "qc_passed", "verified"],
+      "default_required_criteria": ["expert_confirmed", "qc_passed"],
       "model_labelled_max_fraction": 0.0,
       "max_frames_per_event": 10,
       "near_duplicate_hamming": 4,

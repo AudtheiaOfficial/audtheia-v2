@@ -184,8 +184,10 @@ Everything the Train tab uses. Nothing here is needed to run a station.
   environments are kept, relative to the repository unless absolute.
 - `dataset`: the rules for building a training set from your records.
   - `default_required_criteria`: the checks an event must have passed to qualify,
-    chosen from `expert_confirmed`, `qc_passed` and `verified`. The Dataset view
-    starts from these and shows how many events each combination covers.
+    chosen from `expert_confirmed`, `qc_passed` and `verified`. The default is the
+    first two, because an event is Verified only once the desktop verifier has
+    checked it. The Dataset view starts from these and shows how many events
+    each combination covers.
   - `model_labelled_max_fraction`: the most examples that may carry the model's
     own label, as a fraction of the dataset. The default of 0 keeps every label a
     person's. Model-labelled examples are only ever used for training.

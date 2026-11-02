@@ -163,8 +163,8 @@ def test_windows_laptop():
     on_battery = H.probe("C:/x", sources=intel_laptop(power=(0, 1, 55)))
     res = H.check_limits(on_battery, LIMITS, starting=True)
     check("on battery a run does not start", res["ok"] is False and [s["code"] for s in res["stop"]] == ["on_battery"])
-    check("and the message says progress is saved and to connect the charger",
-          "charger" in res["stop"][0]["message"] and "saved" in res["stop"][0]["message"])
+    check("and the message says to connect the charger and press Resume",
+          "Connect the charger" in res["stop"][0]["message"] and "Resume" in res["stop"][0]["message"])
     low = H.probe("C:/x", sources=intel_laptop(power=(0, 2, 25)))
     res = H.check_limits(low, LIMITS, starting=False)
     check("on a low battery both reasons are given", [s["code"] for s in res["stop"]] == ["on_battery", "battery_low"])
@@ -190,7 +190,7 @@ def test_windows_laptop():
     full = H.probe("C:/x", sources=intel_laptop(disk=(500 * H.GIB, 3 * H.GIB)))
     res = H.check_limits(full, LIMITS, starting=False)
     check("less than 5 GB free stops the run with the disk message",
-          [s["code"] for s in res["stop"]] == ["disk_low"] and "free some space" in res["stop"][0]["message"])
+          [s["code"] for s in res["stop"]] == ["disk_low"] and "Free some space" in res["stop"][0]["message"])
 
 
 def nvidia_machine(cuda="13.0", cap="8.9", plat="windows", name="NVIDIA GeForce RTX 4070"):

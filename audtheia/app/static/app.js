@@ -5971,6 +5971,27 @@
       hint: "The desktop verifier has checked the event." }
   ];
 
+  // What would let events pass a check, said when a ticked check has none.
+  var TRAIN_CRITERIA_REMEDY = {
+    expert_confirmed: "Confirm, relabel or reject events in Detections first.",
+    qc_passed: "Events pass quality control as they are reviewed and checked.",
+    verified: "Events are Verified once the desktop verifier has checked them."
+  };
+
+  function trainEmptyReason(T) {
+    var per = (T.lastCounts && T.lastCounts.per_criterion) || null;
+    if (!per) { return "Nothing qualifies under these settings. Review more events, or relax a check above."; }
+    var blocking = TRAIN_CRITERIA.filter(function (c) { return T.criteria[c.key] && !(per[c.key] > 0); });
+    if (blocking.length) {
+      var names = blocking.map(function (c) { return c.label; });
+      var named = names.length === 1 ? names[0] : names.slice(0, -1).join(", ") + " and " + names[names.length - 1];
+      return named + (names.length === 1 ? " has" : " have") + " 0 events, so nothing can qualify while " +
+        (names.length === 1 ? "it is" : "they are") + " ticked. Untick " + (names.length === 1 ? "it" : "them") +
+        " to build from the other checks. " + blocking.map(function (c) { return TRAIN_CRITERIA_REMEDY[c.key]; }).join(" ");
+    }
+    return "No event has passed all of the ticked checks together. The table of combinations above shows which checks your events have passed, so untick one of them or review more events.";
+  }
+
   var TRAIN_ACTIONS = [
     ["keep", "Keep as it is"],
     ["exclude", "Leave out"],
@@ -5992,7 +6013,7 @@
     if (!state.train) {
       var d = (status && status.dataset_defaults) || {};
       var split = d.split || {};
-      var chosen = d.default_required_criteria || ["expert_confirmed", "qc_passed", "verified"];
+      var chosen = d.default_required_criteria || ["expert_confirmed", "qc_passed"];
       var criteria = {};
       TRAIN_CRITERIA.forEach(function (c) { criteria[c.key] = chosen.indexOf(c.key) >= 0; });
       var engines = (status && status.acoustic_engines) || [];
@@ -6235,6 +6256,7 @@
     }
 
     function paintCounts(s) {
+      T.lastCounts = s;
       clear(counts);
       TRAIN_CRITERIA.forEach(function (c) {
         countCells[c.key].textContent = fmtNum(s.per_criterion[c.key] || 0) + " events";
@@ -6348,8 +6370,7 @@
     clear(host);
     host.appendChild(el("h3", { text: "Preview" }));
     if (s.empty) {
-      host.appendChild(el("p", { class: "empty-state", text:
-        "Nothing qualifies under these settings. Review more events, or relax a check above." }));
+      host.appendChild(el("p", { class: "empty-state", text: trainEmptyReason(T) }));
     }
 
     host.appendChild(metricRow(TRAIN_SPLITS.map(function (p) {
@@ -6857,15 +6878,41 @@
 
   // ---- Runs ----------------------------------------------------------------
 
+  var TRAIN_ACTIVE = ["queued", "preparing", "running"];
+
+  function trainRunsView() {
+    // What the person has open or pressed, kept across the refresh every few seconds.
+    if (!state.trainRunsView) { state.trainRunsView = { open: {}, armed: {}, messages: {}, logs: {} }; }
+    return state.trainRunsView;
+  }
+
+  function trainIsActive(run) { return TRAIN_ACTIVE.indexOf(run.status) >= 0; }
+
   function loadTrainRuns() {
     var host = region("train-runs");
     if (!host) { return; }
     if (!host.hasChildNodes()) { host.appendChild(el("p", { class: "empty-state", text: "Loading the training runs." })); }
+    var view = trainRunsView();
     apiGet("/train/runs").then(function (res) {
+      var runs = res.runs || [];
+      runs.forEach(function (run, i) {
+        if (view.open[run.id] === undefined) { view.open[run.id] = i === 0 && trainIsActive(run); }
+      });
+      // The details of every open run are read first, so the page is replaced in
+      // one step and does not shrink and grow while it refreshes.
+      return Promise.all(runs.map(function (run) {
+        if (!view.open[run.id]) { return null; }
+        return trainReadRunDetail(run).catch(function (e) { return { error: e.message }; });
+      })).then(function (details) { return { runs: runs, details: details }; });
+    }).then(function (got) {
       if (!host.isConnected) { return; }
+      trainRememberLogScroll(host);
+      var cards = got.runs.length ? got.runs.map(function (run, i) { return trainRunCard(run, got.details[i]); })
+        : [el("p", { class: "empty-state", text: "No training run yet. Start one in the Train view." })];
       clear(host);
-      renderTrainRuns(host, res.runs || []);
-      var active = (res.runs || []).some(function (r) { return ["queued", "preparing", "running"].indexOf(r.status) >= 0; });
+      cards.forEach(function (card) { host.appendChild(card); });
+      trainRestoreLogScroll(host);
+      var active = got.runs.some(trainIsActive);
       window.clearTimeout(state.trainRunsTimer);
       if (active) {
         state.trainRunsTimer = window.setTimeout(function () {
@@ -6876,16 +6923,25 @@
     }).catch(function (e) { setState(host, "empty-state", "Could not load the training runs: " + e.message); });
   }
 
-  function renderTrainRuns(host, runs) {
-    if (!runs.length) {
-      host.appendChild(el("p", { class: "empty-state", text: "No training run yet. Start one in the Train view." }));
-      return;
-    }
-    runs.forEach(function (run, i) { host.appendChild(trainRunCard(run, i === 0)); });
+  function trainRememberLogScroll(host) {
+    var view = trainRunsView();
+    Array.prototype.forEach.call(host.querySelectorAll(".train-log[data-run]"), function (log) {
+      var atEnd = log.scrollHeight - log.scrollTop - log.clientHeight < 8;
+      view.logs[log.getAttribute("data-run")] = atEnd ? null : log.scrollTop;
+    });
   }
 
-  function trainRunCard(run, open) {
-    var card = el("div", { class: "info-block train-run" });
+  function trainRestoreLogScroll(host) {
+    var view = trainRunsView();
+    Array.prototype.forEach.call(host.querySelectorAll(".train-log[data-run]"), function (log) {
+      var kept = view.logs[log.getAttribute("data-run")];
+      log.scrollTop = (kept === null || kept === undefined) ? log.scrollHeight : kept;
+    });
+  }
+
+  function trainRunCard(run, detail) {
+    var view = trainRunsView();
+    var card = el("div", { class: "info-block train-run", "data-run": run.id });
     var label = TRAIN_STATUS_TEXT[run.status] || humanize(run.status);
     card.appendChild(el("h4", { text: run.planned_model_name + ", " + label }));
     var total = run.epochs_total || 0, done = run.epochs_done || 0;
@@ -6912,16 +6968,23 @@
     if (run.started_at) { card.appendChild(modelKvRow("Started", fmtTime(run.started_at))); }
     if (run.ended_at) { card.appendChild(modelKvRow("Ended", fmtTime(run.ended_at))); }
     if (run.stop_reason) { card.appendChild(trainNote(run.stop_reason, "form-message")); }
-    var msg = el("p", { class: "form-message" });
+    var msg = el("p", { class: "form-message", text: view.messages[run.id + ":" + run.status] || "" });
     var actions = el("div", { class: "form-actions" });
+    function say(text) { view.messages[run.id + ":" + run.status] = text; msg.textContent = text; }
     function act(action) {
       return apiSend("/train/runs/" + encodeURIComponent(run.id) + "/" + action, "POST")
-        .then(function () { loadTrainRuns(); })
-        .catch(function (e) { msg.textContent = e.message; });
+        .then(function () { delete view.armed[run.id]; loadTrainRuns(); })
+        .catch(function (e) { delete view.armed[run.id]; say(e.message); });
     }
-    if (["queued", "preparing", "running"].indexOf(run.status) >= 0) {
+    if (trainIsActive(run)) {
       var pause = el("button", { type: "button", class: "btn", text: "Pause" });
-      pause.addEventListener("click", function () { pause.disabled = true; msg.textContent = "Pausing after the current step. Your progress is saved."; act("pause"); });
+      if (/^Pausing/.test(view.messages[run.id + ":" + run.status] || "")) { pause.disabled = true; }
+      pause.addEventListener("click", function () {
+        pause.disabled = true;
+        say(done > 0 ? "Pausing after the current step. Resume continues from the end of epoch " + fmtNum(done) + "."
+          : "Pausing after the current step. No epoch has finished yet, so Resume starts the training from the beginning.");
+        act("pause");
+      });
       actions.appendChild(pause);
     }
     if (["paused", "interrupted"].indexOf(run.status) >= 0) {
@@ -6930,10 +6993,10 @@
       actions.appendChild(resume);
     }
     if (["completed", "cancelled"].indexOf(run.status) < 0) {
-      var cancel = el("button", { type: "button", class: "btn", text: "Cancel" });
-      var armed = false;
+      var cancel = el("button", { type: "button", class: "btn",
+        text: view.armed[run.id] ? "Press again to cancel for good" : "Cancel" });
       cancel.addEventListener("click", function () {
-        if (!armed) { armed = true; cancel.textContent = "Press again to cancel for good"; return; }
+        if (!view.armed[run.id]) { view.armed[run.id] = true; cancel.textContent = "Press again to cancel for good"; return; }
         cancel.disabled = true;
         act("cancel");
       });
@@ -6942,41 +7005,49 @@
     card.appendChild(actions);
     card.appendChild(msg);
     var details = el("details", { class: "train-drawer" });
-    details.open = !!open && ["queued", "preparing", "running"].indexOf(run.status) >= 0;
+    details.open = !!view.open[run.id];
     details.appendChild(el("summary", { text: "Progress by epoch and the log" }));
     var body = el("div");
     details.appendChild(body);
-    details.addEventListener("toggle", function () { if (details.open) { trainRunDetail(run, body); } });
-    if (details.open) { trainRunDetail(run, body); }
+    if (detail) { trainPaintRunDetail(run, body, detail); }
+    details.addEventListener("toggle", function () {
+      view.open[run.id] = details.open;
+      if (details.open && !body.hasChildNodes()) {
+        body.appendChild(trainNote("Reading the run."));
+        trainReadRunDetail(run).then(function (d) { clear(body); trainPaintRunDetail(run, body, d); trainRestoreLogScroll(body); })
+          .catch(function (e) { setState(body, "card-note", "Could not read the run: " + e.message); });
+      }
+    });
     card.appendChild(details);
     return card;
   }
 
-  function trainRunDetail(run, body) {
-    Promise.all([apiGet("/train/runs/" + encodeURIComponent(run.id)),
-                 apiGet("/train/runs/" + encodeURIComponent(run.id) + "/log")]).then(function (res) {
-      clear(body);
-      var rows = (res[0].progress || []);
-      if (rows.length) {
-        var table = el("table", { class: "trust-table train-table" });
-        table.appendChild(el("thead", {}, [el("tr", {}, [
-          el("th", { class: "num", text: "Epoch" }), el("th", { class: "num", text: "Training loss" }),
-          el("th", { class: "num", text: "mAP at IoU 0.50" }), el("th", { class: "num", text: "mAP 0.50 to 0.95" })])]));
-        var tb = el("tbody");
-        rows.forEach(function (p) {
-          function cell(v) { return el("td", { class: "num", text: v === undefined || v === null ? "" : Number(v).toFixed(4) }); }
-          tb.appendChild(el("tr", {}, [el("td", { class: "num", text: String(p.epoch) }), cell(p.train_loss),
-            cell(p.ema_map50 !== undefined ? p.ema_map50 : p.map50), cell(p.ema_map50_95 !== undefined ? p.ema_map50_95 : p.map50_95)]));
-        });
-        table.appendChild(tb);
-        body.appendChild(table);
-      } else {
-        body.appendChild(trainNote("No epoch has finished yet."));
-      }
-      var log = el("pre", { class: "train-log", text: (res[1].text || "").slice(-20000) });
-      body.appendChild(log);
-      log.scrollTop = log.scrollHeight;
-    }).catch(function (e) { setState(body, "card-note", "Could not read the run: " + e.message); });
+  function trainReadRunDetail(run) {
+    return Promise.all([apiGet("/train/runs/" + encodeURIComponent(run.id)),
+                        apiGet("/train/runs/" + encodeURIComponent(run.id) + "/log")])
+      .then(function (res) { return { progress: res[0].progress || [], log: res[1].text || "" }; });
+  }
+
+  function trainPaintRunDetail(run, body, detail) {
+    if (detail.error) { body.appendChild(trainNote("Could not read the run: " + detail.error, "card-note")); return; }
+    var rows = detail.progress || [];
+    if (rows.length) {
+      var table = el("table", { class: "trust-table train-table" });
+      table.appendChild(el("thead", {}, [el("tr", {}, [
+        el("th", { class: "num", text: "Epoch" }), el("th", { class: "num", text: "Training loss" }),
+        el("th", { class: "num", text: "mAP at IoU 0.50" }), el("th", { class: "num", text: "mAP 0.50 to 0.95" })])]));
+      var tb = el("tbody");
+      rows.forEach(function (p) {
+        function cell(v) { return el("td", { class: "num", text: v === undefined || v === null ? "" : Number(v).toFixed(4) }); }
+        tb.appendChild(el("tr", {}, [el("td", { class: "num", text: String(p.epoch) }), cell(p.train_loss),
+          cell(p.ema_map50 !== undefined ? p.ema_map50 : p.map50), cell(p.ema_map50_95 !== undefined ? p.ema_map50_95 : p.map50_95)]));
+      });
+      table.appendChild(tb);
+      body.appendChild(table);
+    } else {
+      body.appendChild(trainNote("No epoch has finished yet."));
+    }
+    body.appendChild(el("pre", { class: "train-log", "data-run": run.id, text: (detail.log || "").slice(-20000) }));
   }
 
   // ----------------------------------------------------------------------

@@ -209,7 +209,7 @@ class RunContext:
         if cmd == "cancel":
             raise CancelRequested()
         if cmd == "pause":
-            raise PauseRequested("paused", "Paused at your request. Your progress is saved; press Resume to continue.")
+            raise PauseRequested("paused", "Paused at your request.")
         if not self.check_limits_enabled:
             return
         now = self.monotonic()
@@ -217,6 +217,30 @@ class RunContext:
             return
         self._last_limit_check = now
         self.check_safety(starting=False)
+
+    @property
+    def epochs_done(self) -> int:
+        """Epochs finished and saved so far, including those before a pause."""
+        return int(self.status.get("epochs_done") or 0)
+
+    def resume_note(self) -> str:
+        """What Resume will do, said when a run pauses. Training is saved at the
+        end of each epoch, so the epoch in progress is done again."""
+        done = self.epochs_done
+        if done == 0:
+            return "No epoch had finished yet, so Resume starts the training again from the beginning."
+        return (f"Resume continues from the end of epoch {done}, the last one saved, "
+                "and repeats the epoch that was in progress.")
+
+    def nothing_to_resume(self) -> None:
+        """For an engine asked to resume that finds no saved epoch. Before the
+        first epoch finishes there is nothing to lose, so it starts again; after
+        that a missing checkpoint is an error, because the finished epochs are
+        already recorded and would be counted twice."""
+        if self.epochs_done:
+            raise RuntimeError(f"epoch {self.epochs_done} was recorded but its saved checkpoint is missing, "
+                               "so the run cannot continue")
+        self.log("No epoch had finished before the pause, so the training starts again from the first epoch.")
 
     def check_safety(self, *, starting: bool) -> list:
         """Read power, disk and heat and pause if a limit is crossed. Returns the warnings."""
@@ -295,9 +319,10 @@ class SelfTestEngine:
         if ctx.resume:
             saved = read_json(ckpt)
             if saved is None:
-                raise RuntimeError("there is no saved epoch to resume from")
-            start = int(saved["epoch"]) + 1
-            ctx.log(f"Resuming after epoch {saved['epoch']}.")
+                ctx.nothing_to_resume()
+            else:
+                start = int(saved["epoch"]) + 1
+                ctx.log(f"Resuming after epoch {saved['epoch']}.")
         ctx.set_state("running", epochs_total=self.epochs)
         best = None
         for epoch in range(start, self.epochs + 1):
@@ -411,8 +436,9 @@ def run(run_dir: Path, *, resume: bool = False, check_limits: bool = True,
         ctx.set_state("completed", ended_at=utc_iso(ctx.clock()), result=result)
         ctx.log("The run finished.")
     except PauseRequested as stop:
-        ctx.set_state("paused", stop_code=stop.code, stop_reason=stop.reason, software=software_versions())
-        ctx.log(stop.reason)
+        reason = f"{stop.reason} {ctx.resume_note()}"
+        ctx.set_state("paused", stop_code=stop.code, stop_reason=reason, software=software_versions())
+        ctx.log(reason)
     except CancelRequested:
         ctx.set_state("cancelled", ended_at=utc_iso(ctx.clock()), stop_code="cancelled",
                       stop_reason="Cancelled at your request.")
