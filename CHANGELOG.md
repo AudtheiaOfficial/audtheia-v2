@@ -89,10 +89,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   and Cancel. Training is saved at the end of each epoch, so Resume continues
   from the last finished epoch, or starts again from the beginning when none had
   finished, and the pause message says which. A run trains in its own process
-  with no window of its own, so closing the window does not stop it, and a run
-  whose process disappears, for example because the computer was switched off,
-  is marked interrupted and resumes from its last saved epoch. Only one run
-  trains at a time.
+  with no window of its own and writes its output as UTF-8, so the training
+  library's tables of figures print on any computer. Closing the window does not
+  stop a run, and a run whose process disappears, for example because the
+  computer was switched off, is marked interrupted and resumes from its last
+  saved epoch. Only one run trains at a time.
 - **Gentle and Full speed.** Gentle uses half the processor threads at a lower
   priority, feeds one image at a time and adds the learning signal up to the
   same batch, so it trains with exactly the settings Full speed uses: the same

@@ -105,6 +105,11 @@ class ProcessLauncher:
         env = dict(os.environ)
         env["PYTHONPATH"] = str(code_root) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         env["PYTHONUNBUFFERED"] = "1"
+        # UTF-8 everywhere in the training process and the helpers it starts, so
+        # printed figures and species names with accents are written and read
+        # the same on every computer.
+        env["PYTHONUTF8"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
         out = open(Path(run_dir) / "worker_output.txt", "ab")  # noqa: SIM115 - handed to the child
         kwargs: dict = {"cwd": str(code_root), "env": env, "stdout": out, "stderr": subprocess.STDOUT,
                         "stdin": subprocess.DEVNULL}

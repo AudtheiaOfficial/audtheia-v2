@@ -7,8 +7,9 @@ self-test engine, which imitates training without any machine-learning library.
 Checks that a run reaches the database exactly as the worker reports it, that
 Pause says truthfully where Resume will continue and Resume continues from the
 last saved epoch without repeating or skipping one, or from the beginning when
-no epoch had finished, that the worker opens no window on Windows, that Cancel
-is final, that a worker that dies mid-run
+no epoch had finished, that the worker opens no window on Windows, that its
+printed output is written as UTF-8 so a table of figures cannot stop a run on a
+computer with a legacy character set, that Cancel is final, that a worker that dies mid-run
 is found and marked interrupted, that only one run trains at a time, that a
 safety limit pauses a run with a plain reason, and that a worker writes nothing
 outside its own run folder.
@@ -236,6 +237,63 @@ def test_pause_before_first_epoch():
               and len(w.manager.read_progress(row["id"])) == lost["epochs_done"])
 
 
+TABLE_TEXT = "\u250f\u2501\u2513 Val (Epoch 1/3) \u2014 Overall Metrics \u2503 0.512 \u2503"
+
+
+def test_output_encoding():
+    print("printed output on a computer whose character set has no box-drawing characters")
+    import subprocess
+    with tempfile.TemporaryDirectory() as td:
+        env = dict(os.environ, PYTHONPATH=str(REPO), PYTHONIOENCODING="cp1252")
+        env.pop("PYTHONUTF8", None)
+        code = ("import sys\n"
+                "from audtheia.training import worker as W\n"
+                "if sys.argv[1] == 'fixed':\n"
+                "    W.use_utf8_output()\n"
+                "print(sys.argv[2])\n"
+                "print(sys.stdout.fileno() not in (1, 2))\n")
+        results = {}
+        for mode in ("plain", "fixed"):
+            out = Path(td) / f"{mode}.txt"
+            with open(out, "wb") as handle:
+                done = subprocess.run([sys.executable, "-c", code, mode, TABLE_TEXT], stdout=handle,
+                                      stderr=subprocess.STDOUT, env=env, timeout=60)
+            results[mode] = (done.returncode, out.read_bytes())
+        check("without the fix, printing the library's table stops the process, as it did on Windows",
+              results["plain"][0] != 0 and b"UnicodeEncodeError" in results["plain"][1])
+        text = results["fixed"][1].decode("utf-8")
+        check("with it, the table is written to the log as UTF-8", results["fixed"][0] == 0 and TABLE_TEXT in text)
+        check("and printing no longer goes through the console's own streams", text.strip().endswith("True"))
+
+        w = World4(Path(td) / "world")
+        saved = os.environ.get("PYTHONIOENCODING")
+        os.environ["PYTHONIOENCODING"] = "cp1252"
+        try:
+            row = w.start(config(epochs=2, print_text=TABLE_TEXT))
+            done_row = wait_for(w.manager, row["id"], ("completed", "failed"))
+        finally:
+            if saved is None:
+                os.environ.pop("PYTHONIOENCODING", None)
+            else:
+                os.environ["PYTHONIOENCODING"] = saved
+        output = (w.manager.run_dir(row["id"]) / "worker_output.txt").read_bytes().decode("utf-8")
+        check("a real run that prints the table each epoch finishes on such a computer",
+              done_row["status"] == "completed" and output.count(TABLE_TEXT) == 2)
+
+        # The worker started directly, without the launcher's settings, still
+        # writes UTF-8, and a character no encoding can hold is replaced.
+        rid = w.start(config(epochs=1, print_text=TABLE_TEXT + " \udcff"), name="Direct", start=False)["id"]
+        rd = w.manager.run_dir(rid)
+        with open(rd / "worker_output.txt", "wb") as handle:
+            done = subprocess.run([sys.executable, "-m", "audtheia.training.worker", str(rd)], stdout=handle,
+                                  stderr=subprocess.STDOUT, env=env, cwd=str(REPO), timeout=120)
+        output = (rd / "worker_output.txt").read_bytes().decode("utf-8")
+        check("the worker itself writes UTF-8 and never stops over a character it cannot write",
+              done.returncode == 0 and W.read_json(rd / W.STATUS_FILE)["state"] == "completed"
+              and TABLE_TEXT in output)
+        w.db.update_training_run(rid, status="completed")
+
+
 def test_windows_launch_flags():
     print("how the worker is started on Windows")
 
@@ -264,6 +322,9 @@ def test_windows_launch_flags():
           flags & FakeSubprocess.CREATE_NO_WINDOW and not flags & FakeSubprocess.DETACHED_PROCESS)
     check("it is in its own process group and runs below normal priority in Gentle",
           flags & FakeSubprocess.CREATE_NEW_PROCESS_GROUP and flags & FakeSubprocess.BELOW_NORMAL_PRIORITY_CLASS)
+    env = FakeSubprocess.seen.get("env") or {}
+    check("it and the helpers it starts read and write UTF-8 whatever the computer's character set",
+          env.get("PYTHONUTF8") == "1" and env.get("PYTHONIOENCODING") == "utf-8")
 
 
 def test_failures_and_recovery():
@@ -429,6 +490,7 @@ def main() -> int:
     test_pause_resume_cancel()
     test_pause_before_first_epoch()
     test_windows_launch_flags()
+    test_output_encoding()
     test_failures_and_recovery()
     test_with_fake_launcher()
     test_files()

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import io
 import json
 import os
 import sys
@@ -312,6 +313,7 @@ class SelfTestEngine:
         self.fail_at_epoch = opts.get("fail_at_epoch")
         self.crash_at_epoch = opts.get("crash_at_epoch")
         self.crash_only_first_time = bool(opts.get("crash_only_first_time", True))
+        self.print_text = opts.get("print_text")
 
     def run(self, ctx: RunContext) -> dict:
         start = 1
@@ -335,6 +337,8 @@ class SelfTestEngine:
             if self.crash_at_epoch is not None and epoch == int(self.crash_at_epoch) \
                     and not (self.crash_only_first_time and ctx.resume):
                 os._exit(3)                                   # imitate a power cut: no clean-up at all
+            if self.print_text:
+                print(self.print_text, flush=True)          # as a library prints its table of figures
             score = round(epoch / self.epochs, 6)
             write_json_atomic(ckpt, {"epoch": epoch, "score": score})
             best = ("map", score)
@@ -458,7 +462,30 @@ def run(run_dir: Path, *, resume: bool = False, check_limits: bool = True,
     return code
 
 
+def use_utf8_output() -> None:
+    """Send this process's printed output to its log as UTF-8, whatever the
+    computer's own character set.
+
+    On Windows the output file is written in the computer's legacy character
+    set, which has no box-drawing characters, so the training library's table of
+    figures stopped the run with a UnicodeEncodeError. Each stream is replaced by
+    a UTF-8 writer on a copy of the same file, which also keeps that library from
+    drawing through the Windows console instead of the file. A character that
+    still cannot be written is replaced, never raised.
+    """
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name, None)
+        try:
+            stream.flush()
+            target = os.dup(stream.fileno())
+        except (AttributeError, OSError, ValueError, io.UnsupportedOperation):
+            continue
+        setattr(sys, name, io.TextIOWrapper(io.FileIO(target, "w", closefd=True), encoding="utf-8",
+                                            errors="replace", line_buffering=True, write_through=True))
+
+
 def main(argv: list | None = None) -> int:
+    use_utf8_output()
     parser = argparse.ArgumentParser(prog="python -m audtheia.training.worker")
     parser.add_argument("run_dir")
     parser.add_argument("--resume", action="store_true")
