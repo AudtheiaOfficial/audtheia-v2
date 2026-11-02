@@ -232,6 +232,16 @@ Everything the Train tab uses. Nothing here is needed to run a station.
   - `calibration_bins`: how many bins the reliability diagram uses.
 - `install`: what the optional training install downloads. A location left as
   `null` is refused at install time rather than guessed.
+  - `torch_index_by_vendor`: where PyTorch is downloaded from, one location per
+    kind of computer. The installer picks one from what it finds: `nvidia` (the
+    CUDA 13 build) for an NVIDIA card whose driver supports CUDA 13,
+    `nvidia_cuda12` (the CUDA 12.6 build) for older drivers and older cards,
+    `intel` for Intel Arc graphics, `amd_linux` for an AMD card on Linux, `apple`
+    for Apple silicon, and `cpu` for everything else, including Intel Iris Xe and
+    UHD graphics, which PyTorch cannot train on. The shipped values are the
+    official PyTorch locations for PyTorch 2.14.
+  - `packages`: the libraries installed into each separate training
+    environment, after PyTorch.
 - `sharing`: what the sharing export includes.
 
 All of these have working defaults. A settings file written before this block

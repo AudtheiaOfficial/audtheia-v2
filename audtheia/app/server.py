@@ -45,6 +45,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -2834,6 +2835,8 @@ def create_app(settings, database):
             "is_desktop": settings.node_role == "desktop",
             "dataset_defaults": config["dataset"],
             "acoustic_engines": settings.training_acoustic_engines(),
+            "vision_bases": settings.training_vision_bases(),
+            "vision_defaults": dict((config.get("vision") or {}).get("defaults") or {}),
             "datasets": built,
         }
 
@@ -2945,6 +2948,345 @@ def create_app(settings, database):
         items = manifest.pop("items", [])
         manifest["item_count"] = len(items)
         return manifest
+
+    # -- training: hardware, components and runs (desktop only) ------------
+
+    # Shared by the training endpoints. Kept on the application so a test can supply
+    # stand-ins for the installer and the process launcher.
+    _train_state: dict = {}
+    app.state.training = _train_state
+
+    def _train_runs():
+        from audtheia.training import runs as run_control
+
+        if "runs" not in _train_state:
+            _train_state["runs"] = run_control.RunManager(settings, db)
+        return _train_state["runs"]
+
+    def _train_components():
+        from audtheia.training import components as comp
+
+        if "components" not in _train_state:
+            _train_state["components"] = comp.Components(settings)
+        return _train_state["components"]
+
+    def _train_hardware(fresh: bool = False) -> dict:
+        """The hardware probe, read at most once a minute unless fresh is asked for."""
+        from audtheia.training import hardware
+
+        cached = _train_state.get("hardware")
+        if fresh or cached is None or time.monotonic() - cached[0] > 60.0:
+            path = settings.training_paths()["models_dir"]
+            cached = (time.monotonic(), hardware.probe(path))
+            _train_state["hardware"] = cached
+        return cached[1]
+
+    def _capture_busy() -> list:
+        busy = [sid for sid, job in _CAPTURE_JOBS.items() if job.running()]
+        busy += [sid for sid, job in _AUDIO_CAPTURE_JOBS.items() if job.running()]
+        return sorted(set(busy))
+
+    def _dataset_for_training(dataset_id: str) -> dict:
+        from audtheia.training import dataset as dataset_rules
+
+        manifest = dataset_rules.dataset_manifest(settings, str(dataset_id or ""))
+        if manifest is None:
+            raise HTTPException(status_code=404, detail="no such dataset; build it in the Dataset view first.")
+        path = Path(settings.training_paths()["datasets_dir"]) / manifest["dataset_id"]
+        return {"id": manifest["dataset_id"], "signature": manifest["signature"], "path": str(path),
+                "modality": manifest.get("modality"), "manifest": manifest}
+
+    def _training_error(exc) -> HTTPException:
+        return HTTPException(status_code=getattr(exc, "status", 400), detail=str(exc))
+
+    try:
+        if settings.node_role == "desktop":
+            _train_runs().refresh_all()
+    except Exception:  # noqa: BLE001 - a stale run must never stop the application from starting
+        pass
+
+    @app.get(f"{API_PREFIX}/train/model-name")
+    def train_model_name(name: str = Query(default="")):
+        """Check a model name as it is typed and show the name the next model would get."""
+        from audtheia.training import runs as run_control
+
+        try:
+            clean = run_control.validate_user_name(name)
+        except run_control.RunError as exc:
+            return {"valid": False, "message": str(exc), "planned": None}
+        version = db.next_model_version(clean)
+        return {"valid": True, "message": None, "planned": run_control.planned_model_name(clean, version)}
+
+    @app.get(f"{API_PREFIX}/train/hardware")
+    def train_hardware(fresh: bool = Query(default=False)):
+        """What this computer has, which PyTorch build suits it, and whether a run could start now."""
+        _require_desktop_for_training()
+        from audtheia.training import hardware
+
+        hw = _train_hardware(fresh)
+        cfg = settings.training_config()
+        choice = hardware.choose_torch_index(hw, (cfg.get("install") or {}).get("torch_index_by_vendor") or {})
+        limits = (cfg.get("hardware") or {}).get("limits") or {}
+        return {
+            "hardware": hw,
+            "choice": choice,
+            "lines": hardware.describe(hw, choice),
+            "limits": limits,
+            "start_check": hardware.check_limits(hw, limits, starting=True),
+            "capture_running": _capture_busy(),
+            "capture_contention": (cfg.get("hardware") or {}).get("capture_contention", "warn"),
+        }
+
+    @app.get(f"{API_PREFIX}/train/components")
+    def train_components_status(engine: str = Query(default="vision_detector")):
+        """Whether the training components of an engine are installed, and any install in progress."""
+        _require_desktop_for_training()
+        from audtheia.training import components as comp
+
+        try:
+            status = _train_components().status(engine)
+        except comp.ComponentError as exc:
+            raise _training_error(exc) from exc
+        status["plan_job"] = _job_snapshot(f"train_plan_{engine}")
+        return status
+
+    @app.post(f"{API_PREFIX}/train/components/plan", status_code=202)
+    def train_components_plan(request: dict = Body(default={})):
+        """Work out what Install would download and its real size, in the background. Installs nothing."""
+        _require_desktop_for_training()
+        from audtheia.training import components as comp
+
+        engine = str(request.get("engine") or "vision_detector")
+        try:
+            _train_components().environment(engine)
+        except comp.ComponentError as exc:
+            raise _training_error(exc) from exc
+        hw = _train_hardware(fresh=True)
+
+        def _target(update):
+            update(message="asking pip what it would download")
+            plan = _train_components().plan(engine, hw)
+            _train_state[f"plan_{engine}"] = plan
+            return plan
+
+        if not _start_background_job(f"train_plan_{engine}", _target):
+            raise HTTPException(status_code=409, detail="the download size is already being worked out.")
+        return {"started": True, "job": _job_snapshot(f"train_plan_{engine}")}
+
+    @app.post(f"{API_PREFIX}/train/components/install", status_code=202)
+    def train_components_install(request: dict = Body(default={})):
+        """Install the planned components. Needs confirm true, sent after the person saw the size."""
+        _require_desktop_for_training()
+        from audtheia.training import components as comp
+
+        engine = str(request.get("engine") or "vision_detector")
+        plan = _train_state.get(f"plan_{engine}")
+        if plan is None:
+            raise HTTPException(status_code=409, detail="work out the download size first, then install.")
+        try:
+            job = _train_components().start_install(engine, plan, confirmed=request.get("confirm") is True)
+        except comp.ComponentError as exc:
+            raise _training_error(exc) from exc
+        return {"started": True, "job": job}
+
+    @app.get(f"{API_PREFIX}/train/components/log")
+    def train_components_log(engine: str = Query(default="vision_detector"), offset: int = Query(default=0)):
+        """The install log from a byte offset, for the live view."""
+        _require_desktop_for_training()
+        from audtheia.training import components as comp
+
+        try:
+            path = _train_components().log_path(engine)
+        except comp.ComponentError as exc:
+            raise _training_error(exc) from exc
+        if not path.is_file():
+            return {"text": "", "next_offset": 0}
+        data = path.read_bytes()
+        offset = max(0, min(int(offset), len(data)))
+        return {"text": data[offset:].decode("utf-8", errors="replace"), "next_offset": len(data)}
+
+    @app.post(f"{API_PREFIX}/train/components/remove")
+    def train_components_remove(request: dict = Body(default={})):
+        """Delete the training environment of an engine, and nothing else."""
+        _require_desktop_for_training()
+        from audtheia.training import components as comp
+
+        engine = str(request.get("engine") or "vision_detector")
+        if request.get("confirm") is not True:
+            raise HTTPException(status_code=400, detail="removing the training components needs confirm true.")
+        try:
+            active = _train_runs().active_run()
+            return _train_components().remove(engine, run_active=active is not None)
+        except comp.ComponentError as exc:
+            raise _training_error(exc) from exc
+
+    @app.post(f"{API_PREFIX}/train/estimate", status_code=202)
+    def train_estimate(request: dict = Body(default={})):
+        """Measure training speed for a size on this computer, then estimate time and disk, in the background."""
+        _require_desktop_for_training()
+        from audtheia.training import components as comp
+        from audtheia.training import hardware
+        from audtheia.training import runs as run_control
+        from audtheia.training import vision
+
+        dataset = _dataset_for_training(request.get("dataset_id"))
+        base = str(request.get("base") or "nano")
+        mode = str(request.get("mode") or "gentle")
+        comps = _train_components()
+        if comps.status("vision_detector")["state"] != "ready":
+            raise HTTPException(status_code=409, detail="install the training components first.")
+        hw = _train_hardware()
+        cfg = settings.training_config()
+        device = (comps.status("vision_detector")["component"].get("self_test") or {}).get("device", "cpu")
+        try:
+            run_cfg = vision.build_config(cfg, base_key=base, mode=mode, hw=hw, device=device,
+                                          overrides=request.get("overrides") or {})
+        except (vision.VisionConfigError, hardware.HardwareError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        totals = (dataset["manifest"].get("totals") or {})
+        train_images = int(((totals.get("train") or {}).get("examples")) or 0)
+        eval_images = int(((totals.get("validation") or {}).get("examples")) or 0)
+        python = str(comp.env_python(comps.env_dir("vision_detector")))
+
+        def _target(update):
+            update(message="measuring how fast this computer trains this size")
+            res = run_cfg["resources"]
+            args = [python, "-m", "audtheia.training.vision", "benchmark", "--size", base, "--device", device,
+                    "--threads", str(res["cpu_threads"]), "--micro-batch", str(res["micro_batch"]),
+                    "--resolution", str(run_cfg["resolution"])]
+            if res["gradient_checkpointing"]:
+                args.append("--checkpointing")
+            code, out, err = comp.run_capture(args, timeout=900, pythonpath=str(run_control.CODE_ROOT))
+            line = next((ln for ln in out.splitlines() if ln.startswith("AUDTHEIA_BENCHMARK ")), None)
+            if code != 0 or line is None:
+                raise RuntimeError("the speed measurement did not finish: " + " ".join((err or out).split())[-300:])
+            bench = json.loads(line.split(" ", 1)[1])
+            disk = vision.disk_parts_mb(run_cfg, bench["parameters_mb"])
+            est = hardware.estimate_run(train_images=train_images, eval_images=eval_images, epochs=run_cfg["epochs"],
+                                        seconds_per_train_image=bench["seconds_per_train_image"],
+                                        seconds_per_eval_image=bench["seconds_per_eval_image"],
+                                        checkpoint_mb=disk["checkpoint_mb"], checkpoints_kept=disk["checkpoints_kept"],
+                                        export_mb=disk["other_mb"])
+            limits = (cfg.get("hardware") or {}).get("limits") or {}
+            return {"benchmark": bench, "estimate": est,
+                    "advice": hardware.start_advice(hw, limits, device=device, estimate=est)}
+
+        if not _start_background_job("train_estimate", _target):
+            raise HTTPException(status_code=409, detail="a speed measurement is already running.")
+        return {"started": True, "job": _job_snapshot("train_estimate")}
+
+    @app.get(f"{API_PREFIX}/train/estimate")
+    def train_estimate_status():
+        _require_desktop_for_training()
+        return {"job": _job_snapshot("train_estimate")}
+
+    @app.post(f"{API_PREFIX}/train/runs", status_code=201)
+    def train_run_start(request: dict = Body(default={})):
+        """Start a training run after checking the safety limits."""
+        _require_desktop_for_training()
+        from audtheia.training import components as comp
+        from audtheia.training import hardware
+        from audtheia.training import runs as run_control
+        from audtheia.training import vision
+
+        engine = str(request.get("engine") or "vision_detector")
+        if engine != "vision_detector":
+            raise HTTPException(status_code=422, detail="only the vision engine can train in this version.")
+        dataset = _dataset_for_training(request.get("dataset_id"))
+        if dataset["modality"] not in (None, "vision"):
+            raise HTTPException(status_code=422, detail="the vision engine trains on a visual dataset.")
+        comps = _train_components()
+        status = comps.status(engine)
+        if status["state"] != "ready":
+            raise HTTPException(status_code=409, detail="install the training components first.")
+        device = (status["component"].get("self_test") or {}).get("device", "cpu")
+        mode = str(request.get("mode") or "gentle")
+        hw = _train_hardware(fresh=True)
+        cfg = settings.training_config()
+        limits = (cfg.get("hardware") or {}).get("limits") or {}
+        verdict = hardware.check_limits(hw, limits, starting=True)
+        if not verdict["ok"]:
+            raise HTTPException(status_code=409, detail=" ".join(s["message"] for s in verdict["stop"]))
+        if _capture_busy() and cfg.get("hardware", {}).get("capture_contention", "warn") == "warn" \
+                and request.get("continue_while_capturing") is not True:
+            raise HTTPException(status_code=409, detail=(
+                "capture is running on this computer. Pause capture while training, or choose Continue anyway."))
+        weights_dir = str(comps.env_dir(engine) / "weights")
+        try:
+            run_cfg = vision.build_config(cfg, base_key=str(request.get("base") or "nano"), mode=mode, hw=hw,
+                                          device=device, overrides=request.get("overrides") or {},
+                                          start_from=request.get("start_from"), weights_dir=weights_dir)
+            pair = vision.equivalent_modes(cfg, base_key=run_cfg["base_model"], hw=hw, device=device,
+                                           overrides=request.get("overrides") or {})
+            if pair["differences"]:
+                raise HTTPException(status_code=500, detail="the two modes would differ in "
+                                    + ", ".join(pair["differences"]) + "; the run was not started.")
+            row = _train_runs().create(
+                user_name=request.get("name"), modality="vision", engine=engine, mode=mode,
+                dataset={"path": dataset["path"], "signature": dataset["signature"]},
+                base_label=run_cfg["base_label"], config=run_cfg, environment=comps.environment(engine),
+                hardware_info={"probe": hw, "device": device},
+            )
+        except (vision.VisionConfigError, hardware.HardwareError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except run_control.RunError as exc:
+            raise _training_error(exc) from exc
+        except comp.ComponentError as exc:
+            raise _training_error(exc) from exc
+        return {"run": row, "warnings": verdict["warnings"]}
+
+    @app.get(f"{API_PREFIX}/train/runs")
+    def train_runs_list():
+        """Every run, newest first, each brought up to date with its folder."""
+        _require_desktop_for_training()
+        from audtheia.training import runs as run_control
+
+        manager = _train_runs()
+        out = []
+        for row in db.list_training_runs():
+            try:
+                row = dict(manager.refresh(row["id"]))
+                if row["status"] in run_control.ACTIVE:
+                    row["live"] = manager.live(row["id"])
+            except run_control.RunError:
+                pass
+            out.append(row)
+        return {"runs": out}
+
+    @app.get(API_PREFIX + "/train/runs/{run_id}")
+    def train_run_detail(run_id: str):
+        _require_desktop_for_training()
+        from audtheia.training import runs as run_control
+
+        try:
+            return _train_runs().detail(run_id)
+        except run_control.RunError as exc:
+            raise _training_error(exc) from exc
+
+    @app.get(API_PREFIX + "/train/runs/{run_id}/log")
+    def train_run_log(run_id: str, offset: int = Query(default=0)):
+        _require_desktop_for_training()
+        from audtheia.training import runs as run_control
+
+        try:
+            return _train_runs().read_log(run_id, offset)
+        except run_control.RunError as exc:
+            raise _training_error(exc) from exc
+
+    @app.post(API_PREFIX + "/train/runs/{run_id}/{action}")
+    def train_run_action(run_id: str, action: str):
+        """Pause, resume or cancel a run."""
+        _require_desktop_for_training()
+        from audtheia.training import runs as run_control
+
+        manager = _train_runs()
+        handlers = {"pause": manager.pause, "resume": manager.resume, "cancel": manager.cancel}
+        if action not in handlers:
+            raise HTTPException(status_code=404, detail="the action is pause, resume or cancel.")
+        try:
+            return {"run": handlers[action](run_id)}
+        except run_control.RunError as exc:
+            raise _training_error(exc) from exc
 
     @app.get(f"{API_PREFIX}/brain/audit")
     def brain_audit(station_id=Query(default=None), since=Query(default=None), until=Query(default=None)):

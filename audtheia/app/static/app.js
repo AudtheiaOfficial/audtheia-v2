@@ -1889,7 +1889,9 @@
     "brain-models": function () { loadBrainModels(); },
     "brain-learning": function () { loadBrainLearning(); },
     "brain-skills": function () { loadBrainSkills(); },
-    "train-dataset": function () { loadTrainDataset(); }
+    "train-dataset": function () { loadTrainDataset(); },
+    "train-train": function () { loadTrainSetup(); },
+    "train-runs": function () { loadTrainRuns(); }
   };
 
   // Each panel with sub-panels keeps its own choice. Brain keeps the original
@@ -6015,7 +6017,11 @@
     return state.train;
   }
 
-  loaders.train = function () { loadTrainDataset(); };
+  loaders.train = function () {
+    loadTrainDataset();
+    loadTrainSetup();
+    loadTrainRuns();
+  };
 
   function trainRequest(T) {
     var chosen = TRAIN_CRITERIA.filter(function (c) { return T.criteria[c.key]; })
@@ -6445,6 +6451,532 @@
       notes.forEach(function (n) { nl.appendChild(el("li", { text: n })); });
       host.appendChild(nl);
     }
+  }
+
+  // ----------------------------------------------------------------------
+  // 8c. Train: installing the training components and starting a run
+  //
+  // The training libraries live in a separate folder and are installed only
+  // when the person presses the button, after seeing the real download size.
+  // A run starts only when the safety checks pass, and its worker reports
+  // through its own folder, which the Runs view reads every few seconds.
+  // ----------------------------------------------------------------------
+
+  var TRAIN_POLL_MS = 3000;
+  var TRAIN_ENGINE = "vision_detector";
+
+  var TRAIN_ADVANCED = [
+    ["epochs", "Epochs", "How many times the model sees every training image. Early stopping may end it sooner.", 1, 1],
+    ["batch_size", "Images per update", "How many images the model learns from before each change to its weights. Gentle feeds them one at a time and adds up their learning signal, so the batch is the same.", 1, 1],
+    ["learning_rate", "Learning rate", "How large each change to the weights is. The default is the library's tested value.", 0, "any"],
+    ["encoder_learning_rate", "Encoder learning rate", "The learning rate of the part of the model that reads the image.", 0, "any"],
+    ["weight_decay", "Weight decay", "A small pull towards simpler weights, which helps the model generalise.", 0, "any"],
+    ["early_stopping_patience", "Early stopping patience", "Stop after this many epochs without the validation score rising.", 1, 1],
+    ["checkpoint_interval", "Full checkpoint every", "Epochs between kept full checkpoints. The newest epoch is always saved so the run can resume.", 1, 1]
+  ];
+
+  var TRAIN_STATUS_TEXT = {
+    queued: "Waiting to start", preparing: "Preparing", running: "Training", paused: "Paused",
+    completed: "Finished", failed: "Stopped by an error", cancelled: "Cancelled", interrupted: "Interrupted"
+  };
+
+  function trainRunState() {
+    if (!state.trainRun) {
+      state.trainRun = { datasetId: "", base: "", mode: "", name: "", startKind: "pretrained", checkpoint: "",
+                         overrides: {}, continueWhileCapturing: false, estimate: null };
+    }
+    return state.trainRun;
+  }
+
+  function trainStillShown(node) {
+    return node && node.isConnected && state.activePanel === "train";
+  }
+
+  function trainFmtHours(h) {
+    if (h === null || h === undefined) { return "not measured yet"; }
+    if (h < 1) { return Math.max(1, Math.round(h * 60)) + " minutes"; }
+    return h.toFixed(1) + " hours";
+  }
+
+  function trainNote(text, kind) {
+    return el("p", { class: kind || "card-note", text: text });
+  }
+
+  function loadTrainSetup() {
+    var host = region("train-train");
+    if (!host) { return; }
+    clear(host);
+    host.appendChild(el("p", { class: "empty-state", text: "Reading this computer and the training components." }));
+    Promise.all([apiGet("/train/status"), apiGet("/train/hardware"), apiGet("/train/components" + query({ engine: TRAIN_ENGINE }))])
+      .then(function (res) {
+        clear(host);
+        renderTrainSetup(host, res[0], res[1], res[2]);
+      })
+      .catch(function (e) {
+        setState(host, "empty-state", "Could not load the Train view: " + e.message);
+      });
+  }
+
+  function renderTrainSetup(host, status, hw, comp) {
+    var R = trainRunState();
+    var hwBlock = el("div", { class: "info-block" });
+    hwBlock.appendChild(el("h4", { text: "This computer" }));
+    (hw.lines || []).forEach(function (line) { hwBlock.appendChild(el("p", { class: "settings-desc", text: line })); });
+    var check = hw.start_check || { stop: [], warnings: [] };
+    check.stop.forEach(function (s) { hwBlock.appendChild(trainNote(s.message, "form-message train-stop")); });
+    check.warnings.forEach(function (w) { hwBlock.appendChild(trainNote(w.message)); });
+    hwBlock.appendChild(trainNote("Training is ordinary computation and cannot damage the computer. A long run keeps the processor busy for hours, so Audtheia will not start on battery, pauses with your progress saved if the charger is removed, the battery runs low, the disk fills or the computer reports overheating, and Gentle limits how hard the processor works."));
+    var recheck = el("button", { type: "button", class: "btn", text: "Check again" });
+    recheck.addEventListener("click", loadTrainSetup);
+    hwBlock.appendChild(el("div", { class: "form-actions" }, [recheck]));
+    host.appendChild(hwBlock);
+
+    var compBlock = el("div", { class: "info-block", "data-region": "train-components" });
+    host.appendChild(compBlock);
+    renderTrainComponents(compBlock, comp, hw);
+
+    if (comp.state !== "ready") {
+      host.appendChild(trainNote("Once the training components are installed, the choices for a run appear here. Building and exporting datasets works without them."));
+      return;
+    }
+    renderTrainForm(host, status, hw, comp, R);
+  }
+
+  function renderTrainComponents(block, comp, hw) {
+    clear(block);
+    block.appendChild(el("h4", { text: "Training components" }));
+    var msg = el("p", { class: "form-message" });
+    if (comp.state === "ready") {
+      var c = comp.component || {};
+      var test = c.self_test || {};
+      block.appendChild(el("p", { class: "settings-desc", text:
+        "Installed in a separate folder, so the everyday application is unchanged. PyTorch " + (test.torch || "") +
+        ", training on " + (test.device || "the processor") + "." }));
+      var remove = el("button", { type: "button", class: "btn", text: "Remove training components" });
+      var armed = false;
+      remove.addEventListener("click", function () {
+        if (!armed) {
+          armed = true;
+          remove.textContent = "Press again to remove them";
+          msg.textContent = "This deletes only the training environment folder. Datasets, runs and models are kept.";
+          return;
+        }
+        remove.disabled = true;
+        apiSend("/train/components/remove", "POST", { engine: TRAIN_ENGINE, confirm: true })
+          .then(function () { loadTrainSetup(); })
+          .catch(function (e) { remove.disabled = false; msg.textContent = e.message; });
+      });
+      block.appendChild(el("div", { class: "form-actions" }, [remove]));
+      block.appendChild(msg);
+      return;
+    }
+    if (comp.state === "installing" || (comp.job && comp.job.state === "running")) {
+      block.appendChild(el("p", { class: "settings-desc", text: "Installing: " + ((comp.job && comp.job.message) || "working") }));
+      var logBox = el("pre", { class: "train-log" });
+      block.appendChild(logBox);
+      trainFollowInstallLog(block, logBox, 0);
+      return;
+    }
+    if (comp.state === "incomplete") {
+      block.appendChild(el("p", { class: "form-message train-stop", text:
+        "An earlier install did not finish" + (comp.job && comp.job.message ? ": " + comp.job.message : ".") +
+        " Remove it, then install again." }));
+      var clean = el("button", { type: "button", class: "btn", text: "Remove the unfinished install" });
+      clean.addEventListener("click", function () {
+        clean.disabled = true;
+        apiSend("/train/components/remove", "POST", { engine: TRAIN_ENGINE, confirm: true })
+          .then(function () { loadTrainSetup(); })
+          .catch(function (e) { clean.disabled = false; msg.textContent = e.message; });
+      });
+      block.appendChild(el("div", { class: "form-actions" }, [clean]));
+      block.appendChild(msg);
+      return;
+    }
+    block.appendChild(el("p", { class: "settings-desc", text:
+      "Training needs PyTorch and the RF-DETR training library. They are large, so they are installed only when you ask, into their own folder beside the application. First Audtheia asks the package servers exactly what would be downloaded for this computer and shows the real size. Nothing is installed until you press the download button." }));
+    var choice = hw.choice || {};
+    if (choice.reason) { block.appendChild(trainNote(choice.reason)); }
+    var planBtn = el("button", { type: "button", class: "btn", text: "Work out the download size" });
+    var planHost = el("div");
+    planBtn.addEventListener("click", function () {
+      planBtn.disabled = true;
+      msg.textContent = "Asking the package servers. This needs the internet and can take a few minutes.";
+      apiSend("/train/components/plan", "POST", { engine: TRAIN_ENGINE })
+        .then(function () { trainWaitPlan(block, planHost, planBtn, msg); })
+        .catch(function (e) { planBtn.disabled = false; msg.textContent = e.message; });
+    });
+    block.appendChild(el("div", { class: "form-actions" }, [planBtn]));
+    block.appendChild(msg);
+    block.appendChild(planHost);
+    if (comp.plan_job && comp.plan_job.status === "done" && comp.plan_job.result) {
+      trainShowPlan(planHost, comp.plan_job.result, msg);
+    }
+  }
+
+  function trainWaitPlan(block, planHost, planBtn, msg) {
+    apiGet("/train/components" + query({ engine: TRAIN_ENGINE })).then(function (comp) {
+      if (!trainStillShown(block)) { return; }
+      var job = comp.plan_job || {};
+      if (job.status === "running") {
+        window.setTimeout(function () { trainWaitPlan(block, planHost, planBtn, msg); }, 1500);
+        return;
+      }
+      planBtn.disabled = false;
+      if (job.status === "error") { msg.textContent = job.error || "The download size could not be worked out."; return; }
+      msg.textContent = "";
+      trainShowPlan(planHost, job.result, msg);
+    }).catch(function (e) { planBtn.disabled = false; msg.textContent = e.message; });
+  }
+
+  function trainShowPlan(planHost, plan, msg) {
+    clear(planHost);
+    if (!plan) { return; }
+    var gb = plan.download_gb;
+    var size = gb >= 1 ? gb.toFixed(2) + " GB" : Math.max(1, Math.round(gb * 1024)) + " MB";
+    planHost.appendChild(modelKvRow("Download", size + " in " + fmtNum((plan.files || []).length) + " files"));
+    if (plan.files_without_size) {
+      planHost.appendChild(modelKvRow("Files the server did not size", fmtNum(plan.files_without_size)));
+    }
+    planHost.appendChild(modelKvRow("PyTorch build", (plan.torch_pins || []).join(", ")));
+    planHost.appendChild(modelKvRow("Downloaded from", plan.index_url + " and the standard package index"));
+    planHost.appendChild(modelKvRow("Installed into", plan.path));
+    planHost.appendChild(trainNote(plan.internet_needed + " " + plan.installed_size_note));
+    planHost.appendChild(trainNote("Licences: PyTorch is BSD-3-Clause and the RF-DETR training library is Apache-2.0. The pretrained weights of each size are downloaded once, the first time that size is trained."));
+    var install = el("button", { type: "button", class: "btn btn-primary", text: "Download and install " + size });
+    install.addEventListener("click", function () {
+      install.disabled = true;
+      apiSend("/train/components/install", "POST", { engine: TRAIN_ENGINE, confirm: true })
+        .then(function () { loadTrainSetup(); })
+        .catch(function (e) { install.disabled = false; msg.textContent = e.message; });
+    });
+    planHost.appendChild(el("div", { class: "form-actions" }, [install]));
+  }
+
+  function trainFollowInstallLog(block, logBox, offset) {
+    if (!trainStillShown(block)) { return; }
+    apiGet("/train/components/log" + query({ engine: TRAIN_ENGINE, offset: offset })).then(function (res) {
+      if (res.text) {
+        logBox.textContent = (logBox.textContent + res.text).slice(-20000);
+        logBox.scrollTop = logBox.scrollHeight;
+      }
+      return apiGet("/train/components" + query({ engine: TRAIN_ENGINE })).then(function (comp) {
+        if (comp.state === "installing" || (comp.job && comp.job.state === "running")) {
+          window.setTimeout(function () { trainFollowInstallLog(block, logBox, res.next_offset); }, TRAIN_POLL_MS);
+        } else {
+          loadTrainSetup();
+        }
+      });
+    }).catch(function () {
+      window.setTimeout(function () { trainFollowInstallLog(block, logBox, offset); }, TRAIN_POLL_MS);
+    });
+  }
+
+  function renderTrainForm(host, status, hw, comp, R) {
+    var device = ((comp.component || {}).self_test || {}).device || "cpu";
+    var datasets = (status.datasets || []).filter(function (d) { return d.modality === "vision"; });
+    var block = el("div", { class: "info-block" });
+    block.appendChild(el("h4", { text: "A new training run" }));
+    block.appendChild(el("p", { class: "settings-desc", text:
+      "Audtheia uses the same open training method Roboflow publishes. The final accuracy is decided by the quantity and quality of your labels, not by the app." }));
+    if (!datasets.length) {
+      block.appendChild(trainNote("Build a visual dataset in the Dataset view first."));
+      host.appendChild(block);
+      return;
+    }
+    if (!R.datasetId || !datasets.some(function (d) { return d.dataset_id === R.datasetId; })) {
+      R.datasetId = datasets[0].dataset_id;
+    }
+    var bases = status.vision_bases || [];
+    if (!R.base) { R.base = device === "cpu" ? "nano" : (bases[1] || bases[0] || {}).key || "nano"; }
+    if (!R.mode) { R.mode = device === "cpu" ? "gentle" : "full_speed"; }
+
+    var dsSelect = el("select", { class: "form-input", "aria-label": "Dataset" });
+    datasets.forEach(function (d) {
+      var t = d.totals || {};
+      dsSelect.appendChild(el("option", { value: d.dataset_id, text: d.dataset_id + ", " +
+        fmtNum((t.train || {}).examples || 0) + " training images" }));
+    });
+    dsSelect.value = R.datasetId;
+    dsSelect.addEventListener("change", function () { R.datasetId = dsSelect.value; R.estimate = null; paintEstimate(); });
+
+    var baseSelect = el("select", { class: "form-input", "aria-label": "Model size" });
+    bases.forEach(function (b) {
+      baseSelect.appendChild(el("option", { value: b.key, text: b.label + ", " + b.resolution + " pixels" }));
+    });
+    baseSelect.value = R.base;
+    baseSelect.addEventListener("change", function () { R.base = baseSelect.value; R.estimate = null; paintEstimate(); });
+
+    var nameInput = el("input", { type: "text", class: "form-input", maxLength: 40, placeholder: "for example Reef" });
+    nameInput.value = R.name;
+    var nameHint = el("span", { class: "form-hint", text: "Letters, digits, hyphens or underscores. Each new run of the same name becomes the next version." });
+    var nameTimer = null;
+    nameInput.addEventListener("input", function () {
+      R.name = nameInput.value;
+      window.clearTimeout(nameTimer);
+      nameTimer = window.setTimeout(function () {
+        if (!R.name) { nameHint.textContent = "Letters, digits, hyphens or underscores."; return; }
+        apiGet("/train/model-name" + query({ name: R.name })).then(function (res) {
+          nameHint.textContent = res.valid ? "The model will be named " + res.planned + "." : res.message;
+        }).catch(function () { /* the check runs again on the next keystroke */ });
+      }, 250);
+    });
+
+    var startKind = el("select", { class: "form-input", "aria-label": "Start from" }, [
+      el("option", { value: "pretrained", text: "The pretrained weights of this size" }),
+      el("option", { value: "checkpoint", text: "My own PyTorch checkpoint (.pth)" })
+    ]);
+    startKind.value = R.startKind;
+    var ckpt = el("input", { type: "text", class: "form-input", placeholder: "Full path to a .pth file" });
+    ckpt.value = R.checkpoint;
+    var ckptField = el("label", { class: "form-field" }, [
+      el("span", { class: "form-label", text: "Checkpoint file" }), ckpt,
+      el("span", { class: "form-hint", text: "An ONNX file cannot be trained further. A checkpoint with a different number of classes is accepted and its last layer is resized to your classes." })
+    ]);
+    ckpt.addEventListener("input", function () { R.checkpoint = ckpt.value; });
+    function syncStart() { ckptField.hidden = startKind.value !== "checkpoint"; }
+    startKind.addEventListener("change", function () { R.startKind = startKind.value; syncStart(); });
+
+    var modes = el("div", { class: "train-criteria" });
+    [["gentle", "Gentle", "Uses half the processor threads at a lower priority and one image at a time, so the computer stays cool and responsive. It takes longer."],
+     ["full_speed", "Full speed", "Uses the whole computer. Fastest, and the computer will be busy and warm."]].forEach(function (m) {
+      var radio = el("input", { type: "radio", name: "train-mode", value: m[0] });
+      radio.checked = R.mode === m[0];
+      radio.addEventListener("change", function () { if (radio.checked) { R.mode = m[0]; R.estimate = null; paintEstimate(); } });
+      modes.appendChild(el("label", { class: "train-criterion" }, [radio,
+        el("span", { class: "train-criterion-text" }, [el("span", { class: "form-label", text: m[1] }), el("span", { class: "form-hint", text: m[2] })])]));
+    });
+
+    var adv = el("details", { class: "train-drawer" });
+    adv.appendChild(el("summary", { text: "Advanced settings" }));
+    var advGrid = el("div", { class: "train-advanced" });
+    var defaults = status.vision_defaults || {};
+    TRAIN_ADVANCED.forEach(function (a) {
+      var input = el("input", { type: "number", class: "form-input" });
+      input.setAttribute("min", String(a[3]));
+      input.setAttribute("step", String(a[4]));
+      input.value = R.overrides[a[0]] !== undefined ? R.overrides[a[0]] : defaults[a[0]];
+      input.addEventListener("input", function () {
+        if (input.value === "" || Number(input.value) === Number(defaults[a[0]])) { delete R.overrides[a[0]]; }
+        else { R.overrides[a[0]] = Number(input.value); }
+        R.estimate = null;
+        paintEstimate();
+      });
+      advGrid.appendChild(el("label", { class: "form-field" }, [el("span", { class: "form-label", text: a[1] }), input,
+        el("span", { class: "form-hint", text: a[2] })]));
+    });
+    adv.appendChild(advGrid);
+
+    var estimateHost = el("div", { class: "kv-list" });
+    var estimateBtn = el("button", { type: "button", class: "btn", text: "Estimate time and disk" });
+    var startBtn = el("button", { type: "button", class: "btn btn-primary", text: "Start training" });
+    var msg = el("p", { class: "form-message" });
+
+    function paintEstimate() {
+      clear(estimateHost);
+      var e = R.estimate;
+      if (!e) {
+        estimateHost.appendChild(trainNote("Press Estimate time and disk to measure how fast this computer trains the chosen size and how much disk space the run will need. It takes up to a minute."));
+        return;
+      }
+      estimateHost.appendChild(modelKvRow("Estimated time, at least", trainFmtHours(e.estimate.hours)));
+      estimateHost.appendChild(trainNote("The measurement covers the model's own calculation. Loading images, matching boxes and updating the weights add to it, so the real run takes longer. The Runs view shows the time left from the real speed once training starts."));
+      if (e.estimate.disk_gb !== null && e.estimate.disk_gb !== undefined) {
+        estimateHost.appendChild(modelKvRow("Disk the run will use, about", e.estimate.disk_gb.toFixed(1) + " GB"));
+      }
+      estimateHost.appendChild(modelKvRow("Measured speed", e.benchmark.seconds_per_train_image.toFixed(2) + " seconds per training image on " + e.benchmark.device));
+      (e.advice || []).forEach(function (a) { estimateHost.appendChild(trainNote(a.message)); });
+    }
+
+    function waitEstimate() {
+      apiGet("/train/estimate").then(function (res) {
+        if (!trainStillShown(block)) { return; }
+        var job = res.job || {};
+        if (job.status === "running") { window.setTimeout(waitEstimate, 1500); return; }
+        estimateBtn.disabled = false;
+        if (job.status === "error") { msg.textContent = job.error; return; }
+        msg.textContent = "";
+        R.estimate = job.result;
+        paintEstimate();
+      }).catch(function (e) { estimateBtn.disabled = false; msg.textContent = e.message; });
+    }
+
+    estimateBtn.addEventListener("click", function () {
+      estimateBtn.disabled = true;
+      msg.textContent = "Measuring.";
+      apiSend("/train/estimate", "POST", { dataset_id: R.datasetId, base: R.base, mode: R.mode, overrides: R.overrides })
+        .then(waitEstimate)
+        .catch(function (e) { estimateBtn.disabled = false; msg.textContent = e.message; });
+    });
+
+    var capture = el("div");
+    if ((hw.capture_running || []).length) {
+      var cont = el("input", { type: "checkbox" });
+      cont.checked = R.continueWhileCapturing;
+      cont.addEventListener("change", function () { R.continueWhileCapturing = cont.checked; });
+      capture.appendChild(trainNote("Capture is running on this computer. Training at the same time slows both, and capture may miss frames. You can pause capture in Detections or Audio while training, or continue anyway.", "form-message"));
+      capture.appendChild(el("label", { class: "train-criterion" }, [cont,
+        el("span", { class: "train-criterion-text" }, [el("span", { class: "form-label", text: "Continue anyway" })])]));
+    }
+
+    startBtn.addEventListener("click", function () {
+      startBtn.disabled = true;
+      msg.textContent = "Checking the safety limits and starting.";
+      var body = { engine: TRAIN_ENGINE, dataset_id: R.datasetId, base: R.base, mode: R.mode, name: R.name,
+                   overrides: R.overrides, continue_while_capturing: R.continueWhileCapturing,
+                   start_from: R.startKind === "checkpoint" ? { kind: "checkpoint", path: R.checkpoint } : { kind: "pretrained" } };
+      apiSend("/train/runs", "POST", body).then(function () {
+        msg.textContent = "";
+        startBtn.disabled = false;
+        activateSubpanel("train-runs");
+      }).catch(function (e) { startBtn.disabled = false; msg.textContent = e.message; });
+    });
+
+    block.appendChild(el("div", { class: "train-controls" }, [
+      el("label", { class: "form-field" }, [el("span", { class: "form-label", text: "Dataset" }), dsSelect]),
+      el("label", { class: "form-field" }, [el("span", { class: "form-label", text: "Model size" }), baseSelect,
+        el("span", { class: "form-hint", text: device === "cpu" ? "On the processor alone Nano or Small is recommended." : "Larger sizes are more accurate and slower." })]),
+      el("label", { class: "form-field" }, [el("span", { class: "form-label", text: "Model name" }), nameInput, nameHint])
+    ]));
+    block.appendChild(el("div", { class: "train-controls" }, [
+      el("label", { class: "form-field" }, [el("span", { class: "form-label", text: "Start from" }), startKind]), ckptField
+    ]));
+    block.appendChild(el("h4", { text: "Speed" }));
+    block.appendChild(modes);
+    block.appendChild(trainNote("Both modes train with the same data, seed, epochs, batch, image size, learning rates and model size. Gentle only divides each batch into smaller pieces, so its result should be close to Full speed's, though not identical bit for bit."));
+    block.appendChild(adv);
+    block.appendChild(el("h4", { text: "Licence" }));
+    block.appendChild(trainNote("The RF-DETR Nano, Small, Medium and Large weights are Apache-2.0, and a model fine-tuned from them is Apache-2.0 too. Whether your frames may be shared is your decision, and the model card records it."));
+    block.appendChild(estimateHost);
+    block.appendChild(capture);
+    block.appendChild(el("div", { class: "form-actions" }, [estimateBtn, startBtn]));
+    block.appendChild(msg);
+    host.appendChild(block);
+    syncStart();
+    paintEstimate();
+  }
+
+  // ---- Runs ----------------------------------------------------------------
+
+  function loadTrainRuns() {
+    var host = region("train-runs");
+    if (!host) { return; }
+    if (!host.hasChildNodes()) { host.appendChild(el("p", { class: "empty-state", text: "Loading the training runs." })); }
+    apiGet("/train/runs").then(function (res) {
+      if (!host.isConnected) { return; }
+      clear(host);
+      renderTrainRuns(host, res.runs || []);
+      var active = (res.runs || []).some(function (r) { return ["queued", "preparing", "running"].indexOf(r.status) >= 0; });
+      window.clearTimeout(state.trainRunsTimer);
+      if (active) {
+        state.trainRunsTimer = window.setTimeout(function () {
+          var panel = $('.subpanel[data-subpanel="train-runs"]');
+          if (state.activePanel === "train" && panel && !panel.hidden) { loadTrainRuns(); }
+        }, TRAIN_POLL_MS);
+      }
+    }).catch(function (e) { setState(host, "empty-state", "Could not load the training runs: " + e.message); });
+  }
+
+  function renderTrainRuns(host, runs) {
+    if (!runs.length) {
+      host.appendChild(el("p", { class: "empty-state", text: "No training run yet. Start one in the Train view." }));
+      return;
+    }
+    runs.forEach(function (run, i) { host.appendChild(trainRunCard(run, i === 0)); });
+  }
+
+  function trainRunCard(run, open) {
+    var card = el("div", { class: "info-block train-run" });
+    var label = TRAIN_STATUS_TEXT[run.status] || humanize(run.status);
+    card.appendChild(el("h4", { text: run.planned_model_name + ", " + label }));
+    var total = run.epochs_total || 0, done = run.epochs_done || 0;
+    var bar = el("progress", { class: "train-progress", max: Math.max(1, total), value: Math.min(done, total) });
+    bar.setAttribute("aria-label", "Epochs finished");
+    card.appendChild(bar);
+    card.appendChild(modelKvRow("Epochs", fmtNum(done) + " of " + fmtNum(total)));
+    var live = run.live || {};
+    if (live.batch_done && live.batches_total && ["preparing", "running"].indexOf(run.status) >= 0) {
+      card.appendChild(modelKvRow("Now", "epoch " + fmtNum(live.current_epoch) + ", step " + fmtNum(live.batch_done) +
+        " of " + fmtNum(live.batches_total)));
+      if (live.seconds_per_step) {
+        var left = (live.batches_total - live.batch_done) + Math.max(0, total - live.current_epoch) * live.batches_total;
+        card.appendChild(modelKvRow("Time left, from the speed so far", trainFmtHours(left * live.seconds_per_step / 3600) +
+          ", plus checking each epoch"));
+      }
+    }
+    if (run.best_metric_value !== null && run.best_metric_value !== undefined) {
+      var finished = ["completed", "cancelled", "failed"].indexOf(run.status) >= 0;
+      card.appendChild(modelKvRow("Best validation mAP over IoU 0.50 to 0.95" + (finished ? "" : " so far"),
+        run.best_metric_value.toFixed(3)));
+    }
+    card.appendChild(modelKvRow("Mode and size", (run.mode === "gentle" ? "Gentle" : "Full speed") + ", " + run.base_label));
+    if (run.started_at) { card.appendChild(modelKvRow("Started", fmtTime(run.started_at))); }
+    if (run.ended_at) { card.appendChild(modelKvRow("Ended", fmtTime(run.ended_at))); }
+    if (run.stop_reason) { card.appendChild(trainNote(run.stop_reason, "form-message")); }
+    var msg = el("p", { class: "form-message" });
+    var actions = el("div", { class: "form-actions" });
+    function act(action) {
+      return apiSend("/train/runs/" + encodeURIComponent(run.id) + "/" + action, "POST")
+        .then(function () { loadTrainRuns(); })
+        .catch(function (e) { msg.textContent = e.message; });
+    }
+    if (["queued", "preparing", "running"].indexOf(run.status) >= 0) {
+      var pause = el("button", { type: "button", class: "btn", text: "Pause" });
+      pause.addEventListener("click", function () { pause.disabled = true; msg.textContent = "Pausing after the current step. Your progress is saved."; act("pause"); });
+      actions.appendChild(pause);
+    }
+    if (["paused", "interrupted"].indexOf(run.status) >= 0) {
+      var resume = el("button", { type: "button", class: "btn btn-primary", text: "Resume" });
+      resume.addEventListener("click", function () { resume.disabled = true; act("resume"); });
+      actions.appendChild(resume);
+    }
+    if (["completed", "cancelled"].indexOf(run.status) < 0) {
+      var cancel = el("button", { type: "button", class: "btn", text: "Cancel" });
+      var armed = false;
+      cancel.addEventListener("click", function () {
+        if (!armed) { armed = true; cancel.textContent = "Press again to cancel for good"; return; }
+        cancel.disabled = true;
+        act("cancel");
+      });
+      actions.appendChild(cancel);
+    }
+    card.appendChild(actions);
+    card.appendChild(msg);
+    var details = el("details", { class: "train-drawer" });
+    details.open = !!open && ["queued", "preparing", "running"].indexOf(run.status) >= 0;
+    details.appendChild(el("summary", { text: "Progress by epoch and the log" }));
+    var body = el("div");
+    details.appendChild(body);
+    details.addEventListener("toggle", function () { if (details.open) { trainRunDetail(run, body); } });
+    if (details.open) { trainRunDetail(run, body); }
+    card.appendChild(details);
+    return card;
+  }
+
+  function trainRunDetail(run, body) {
+    Promise.all([apiGet("/train/runs/" + encodeURIComponent(run.id)),
+                 apiGet("/train/runs/" + encodeURIComponent(run.id) + "/log")]).then(function (res) {
+      clear(body);
+      var rows = (res[0].progress || []);
+      if (rows.length) {
+        var table = el("table", { class: "trust-table train-table" });
+        table.appendChild(el("thead", {}, [el("tr", {}, [
+          el("th", { class: "num", text: "Epoch" }), el("th", { class: "num", text: "Training loss" }),
+          el("th", { class: "num", text: "mAP at IoU 0.50" }), el("th", { class: "num", text: "mAP 0.50 to 0.95" })])]));
+        var tb = el("tbody");
+        rows.forEach(function (p) {
+          function cell(v) { return el("td", { class: "num", text: v === undefined || v === null ? "" : Number(v).toFixed(4) }); }
+          tb.appendChild(el("tr", {}, [el("td", { class: "num", text: String(p.epoch) }), cell(p.train_loss),
+            cell(p.ema_map50 !== undefined ? p.ema_map50 : p.map50), cell(p.ema_map50_95 !== undefined ? p.ema_map50_95 : p.map50_95)]));
+        });
+        table.appendChild(tb);
+        body.appendChild(table);
+      } else {
+        body.appendChild(trainNote("No epoch has finished yet."));
+      }
+      var log = el("pre", { class: "train-log", text: (res[1].text || "").slice(-20000) });
+      body.appendChild(log);
+      log.scrollTop = log.scrollHeight;
+    }).catch(function (e) { setState(body, "card-note", "Could not read the run: " + e.message); });
   }
 
   // ----------------------------------------------------------------------

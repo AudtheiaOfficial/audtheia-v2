@@ -4,6 +4,10 @@ Models you train on this computer with the Train tab. Nothing here is downloaded
 or shipped with Audtheia, and nothing here is committed to the repository, because
 a trained model is built from your own field records.
 
+Each training run works in its own folder under runs, which holds its
+configuration, its progress, its log, its checkpoints for resuming and the
+exported model. Nothing outside that folder is written while it trains.
+
 Every model gets its own folder named Audtheia-Name-V1, Audtheia-Name-V2 and so
 on, where Name is the word you chose when you started the training. A new
 fine-tune of the same name becomes the next version and never overwrites an

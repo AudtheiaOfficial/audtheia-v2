@@ -64,6 +64,44 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   A challenger-versus-current table prints both models on the same test set with
   their differences, restricted to the shared classes as well, and never states
   which model is better.
+- **Train tab: training components.** The training libraries, PyTorch and the
+  RF-DETR training library, are installed only on request into their own folder
+  beside the application, one per engine, so the everyday application and the
+  field station never carry them. Before anything is downloaded, Audtheia asks
+  pip in dry-run mode exactly which files this computer needs and reads each
+  file's size from the package servers, and the button shows that real size.
+  The PyTorch build is chosen for the computer: CUDA 13 or CUDA 12.6 for an
+  NVIDIA card depending on its driver, XPU for Intel Arc graphics, ROCm for an
+  AMD card on Linux, and the processor build otherwise, including for Intel Iris
+  Xe graphics, which PyTorch cannot train on. After installing, the libraries are
+  loaded and checked before they are marked ready. A failed install can be
+  removed in one step, and removal deletes only that folder.
+- **Train tab: Train and Runs.** A new Train view describes this computer in
+  plain words, measures how fast it trains the chosen size, estimates the least
+  time and the disk space a run will take, and starts a run from a built dataset with a chosen model size, model
+  name, starting point and speed. The name is checked as it is typed and shows
+  the resulting Audtheia-Name-V1. An ONNX file is refused as a starting point,
+  because it cannot be trained further. The Runs view follows a run every few
+  seconds with its epochs, best validation score, figures per epoch and log, and
+  offers Pause, Resume and Cancel. A run trains in its own process, so closing
+  the window does not stop it, and a run whose process disappears, for example
+  because the computer was switched off, is marked interrupted and resumes from
+  its last saved epoch. Only one run trains at a time.
+- **Gentle and Full speed.** Gentle uses half the processor threads at a lower
+  priority, feeds one image at a time and adds the learning signal up to the
+  same batch, so it trains with exactly the settings Full speed uses: the same
+  seed, epochs, batch, image size, precision, learning rates and model size. A
+  check refuses to start a run if the two would differ in any of those. Gentle is the default on a computer
+  without a supported graphics card.
+- **Training safety.** A run will not start on battery power and pauses with its
+  progress saved when the charger is removed, the battery falls below its
+  limit, free disk space falls below its limit, the graphics card is almost out
+  of memory, or the computer reports that it has been slowing down because of
+  heat for two minutes. Where the computer does not report heat, the Train view
+  says so instead of implying protection. Training only reads the dataset folder
+  and writes only inside its own run folder, never the record or the data
+  folder. While capture runs on the same computer, a run starts only after the
+  person chooses to continue.
 
 ### Changed
 
@@ -77,6 +115,12 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   the panel it belongs to, and each panel remembers its own choice, so Brain and
   Train cannot hide each other's content. A choice remembered before this change
   still applies to Brain.
+- **Number fields follow the theme.** Number inputs, such as the dataset and
+  training settings, now use the theme's colours and borders like every other
+  field, instead of the browser's plain white box.
+- **PyTorch download locations.** The training install settings now hold the
+  official PyTorch 2.14 download locations instead of empty values, which by
+  design blocked installing.
 
 ## [2.0.0] - 2026-08-15
 
