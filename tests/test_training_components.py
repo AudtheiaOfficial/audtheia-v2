@@ -9,7 +9,10 @@ hardware probe and is never guessed, that the download size is the sum of the
 sizes the servers report, that installing needs an explicit confirmation, that
 a failed install is reported and can be removed in one step, and that removal
 deletes the environment folder and nothing else, and that a command run in the
-training environment finds Audtheia's own code. One check asks the real pip for
+training environment finds Audtheia's own code. For sound, checks that the sound
+environment installs TensorFlow and the TFLite runtime from the standard index
+with no PyTorch choice, and that on Windows a folder too long for the deepest
+library files is refused before downloading. One check asks the real pip for
 a real dry-run of a tiny package, and is skipped, not failed, without internet.
 
 Uses the standard library, NumPy and Pillow, plus the project itself.
@@ -79,6 +82,15 @@ class FakePip:
             if self.fail_dry_run:
                 return 1, "", "ERROR: Could not find a version that satisfies the requirement torch"
             report = Path(args[args.index("--report") + 1])
+            if "--index-url" not in args and "--extra-index-url" not in args:
+                items = [
+                    {"metadata": {"name": "tensorflow", "version": "2.21.0"},
+                     "download_info": {"url": "https://files.pythonhosted.org/tensorflow-2.21.0-cp313-cp313-win_amd64.whl"}},
+                    {"metadata": {"name": "ai-edge-litert", "version": "2.3.0"},
+                     "download_info": {"url": "https://files.pythonhosted.org/ai_edge_litert-2.3.0-cp313-cp313-win_amd64.whl"}},
+                ]
+                report.write_text(json.dumps({"version": "1", "install": items}), encoding="utf-8")
+                return 0, "", ""
             index = args[args.index("--index-url") + 1] if "--index-url" in args else \
                 args[args.index("--extra-index-url") + 1]
             tag = index.rstrip("/").rsplit("/", 1)[-1]
@@ -100,11 +112,14 @@ class FakePip:
         if "-c" in args:
             if not self.selftest_ok:
                 return 1, "", "ImportError: DLL load failed while importing _C"
+            if "import tensorflow" in args[args.index("-c") + 1]:
+                return 0, 'AUDTHEIA_SELFTEST {"tensorflow": "2.21.0", "device": "cpu", "probe_seconds": 0.03}\n', ""
             return 0, 'AUDTHEIA_SELFTEST {"torch": "2.14.1+cpu", "device": "cpu", "probe_seconds": 0.02}\n', ""
         return 1, "", "unexpected"
 
 
-SIZES = {"torch-2.14.1": 130_000_000, "torchvision-0.29.1": 2_000_000, "rfdetr-1.11.2": 900_000}
+SIZES = {"torch-2.14.1": 130_000_000, "torchvision-0.29.1": 2_000_000, "rfdetr-1.11.2": 900_000,
+         "tensorflow-2.21.0": 351_205_371, "ai_edge_litert-2.3.0": 15_000_000}
 
 
 def sizer(url):
@@ -154,9 +169,9 @@ class World5(World):
         from audtheia.config import load_settings  # noqa: PLC0415
         self.settings = load_settings(self.settings_path)
 
-    def components(self, pip=None, popen=None):
+    def components(self, pip=None, popen=None, windows=False, long_paths=lambda: False):
         return C.Components(self.settings, base_python="/usr/bin/python-base", runner=pip or FakePip(),
-                            sizer=sizer, popen=popen or FakePopen())
+                            sizer=sizer, popen=popen or FakePopen(), windows=windows, long_paths=long_paths)
 
 
 def snapshot(root: Path) -> list:
@@ -281,6 +296,67 @@ def test_install_and_remove():
               and (foreign / "thesis.docx").read_text(encoding="utf-8") == "precious")
 
 
+def test_sound_components():
+    print("the sound training components")
+    with tempfile.TemporaryDirectory() as td:
+        w = World5(Path(td))
+        popen = FakePopen()
+        comp = w.components(popen=popen)
+        plan = comp.plan("acoustic_head", LAPTOP)
+        check("the sound engine installs into its own environment", comp.env_dir("acoustic_head").name == "acoustic"
+              and comp.environment("acoustic_head") == "acoustic")
+        check("its packages come from the settings and no PyTorch build is chosen",
+              plan["packages"] == ["tensorflow", "ai-edge-litert"] and plan["torch_pins"] == []
+              and plan["index_url"] is None and plan["device"] == "cpu")
+        calls = comp.runner.calls
+        check("pip is asked once, against the standard index only", len(calls) == 1
+              and "--index-url" not in calls[0] and "--extra-index-url" not in calls[0] and calls[0][-2:] == plan["packages"])
+        check("the download size is the sum of the sizes the servers report",
+              plan["download_bytes"] == 351_205_371 + 15_000_000 and plan["files_without_size"] == 0)
+        comp.start_install("acoustic_head", plan, confirmed=True)
+        job = C.wait_for_job(comp, "acoustic_head", 20)
+        st = comp.status("acoustic_head")
+        check("the install completes and the TensorFlow check is recorded", job["state"] == "completed"
+              and st["state"] == "ready" and st["component"]["self_test"]["tensorflow"] == "2.21.0")
+        steps = popen.calls
+        check("the environment is created, then the libraries installed from the standard index",
+              steps[0][1:3] == ["-m", "venv"] and len(steps) == 2 and "--index-url" not in steps[1]
+              and "--extra-index-url" not in steps[1] and steps[1][-2:] == ["tensorflow", "ai-edge-litert"])
+        snippet = [c for c in comp.runner.calls if "-c" in c][0]
+        check("the check imports TensorFlow and the TFLite runtime by their module names",
+              "import tensorflow" in snippet[snippet.index("-c") + 1] and snippet[-2:] == ["tensorflow", "ai_edge_litert"])
+        check("the image components are untouched", comp.status("vision_detector")["state"] == "not_installed")
+        check("a sound plan without its packages is refused",
+              raises(lambda: comp.start_install("acoustic_head", dict(plan, packages=[]), confirmed=True),
+                     C.ComponentError, 400))
+
+    with tempfile.TemporaryDirectory() as td:
+        w = World5(Path(td))
+        long_root = Path(td) / ("x" * 120)
+        raw = json.loads(w.settings_path.read_text(encoding="utf-8"))
+        raw["training"].setdefault("paths", {})["envs_dir"] = str(long_root)
+        w.settings_path.write_text(json.dumps(raw), encoding="utf-8")
+        from audtheia.config import load_settings  # noqa: PLC0415
+        w.settings = load_settings(w.settings_path)
+        try:
+            w.components(windows=True).plan("acoustic_head", LAPTOP)
+            reason = ""
+        except C.ComponentError as exc:
+            reason = str(exc)
+        check("on Windows a folder too long for the deepest library files is refused before downloading, with the fix",
+              "260" in reason and "long paths" in reason and "envs_dir" in reason)
+        check("the same folder is accepted when Windows long paths are switched on",
+              w.components(windows=True, long_paths=lambda: True).plan("acoustic_head", LAPTOP)["packages"])
+        check("and off Windows the length does not matter",
+              w.components(windows=False).plan("acoustic_head", LAPTOP)["packages"])
+    with tempfile.TemporaryDirectory() as td:
+        w = World5(Path(td))
+        short = w.components(windows=True)
+        room = C.WINDOWS_PATH_LIMIT - len(str(short.env_dir("vision_detector") / "Lib" / "site-packages")) - 1
+        check("a folder with enough room is accepted on Windows",
+              room < C.DEEPEST_PACKAGE_PATH or short.plan("vision_detector", LAPTOP)["torch_pins"])
+
+
 def test_command_search_path():
     print("commands in the training environment")
     probe = [sys.executable, "-c", "import os; print(os.environ.get('PYTHONPATH', ''))"]
@@ -321,6 +397,7 @@ def test_real_pip():
 def main() -> int:
     test_plan()
     test_install_and_remove()
+    test_sound_components()
     test_command_search_path()
     test_real_pip()
     if CHECKS["skipped"]:

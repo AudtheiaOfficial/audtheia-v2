@@ -215,6 +215,17 @@ Everything the Train tab uses. Nothing here is needed to run a station.
     windows one clip gives.
 - `vision` and `acoustic`: the available base models and their sensible starting
   values. The names are labels you can change without any code change.
+  - `acoustic.engines`: each sound engine's `sample_rate` and `window_seconds`,
+    and its `base`, the fixed base sound model whose summary of each window the
+    trained layer reads. `base` names the model (`label`), where it is downloaded
+    from once and its exact size (`download_url`, `download_bytes`), the entry
+    point and the names of its input and summary output (`embeddings_signature`,
+    `input_key`, `embeddings_key`), the summary's length (`embeddings_size`) and
+    its `licence`. A downloaded model that does not match this description is
+    refused. An engine whose `base` is `null` has no base model yet and cannot
+    train. The shipped terrestrial and avian engine uses BirdNET 2.4 from
+    BirdNET's own Zenodo record, licensed CC BY-NC-SA 4.0, which allows
+    non-commercial use only.
 - `hardware`: the Full speed and Gentle profiles and the safety limits that pause
   training when the computer is on low battery, running hot, or short of disk
   space or memory. Gentle is the default on a computer without a dedicated
@@ -243,7 +254,8 @@ Everything the Train tab uses. Nothing here is needed to run a station.
     UHD graphics, which PyTorch cannot train on. The shipped values are the
     official PyTorch locations for PyTorch 2.14.
   - `packages`: the libraries installed into each separate training
-    environment, after PyTorch.
+    environment: for `vision` after PyTorch, and for `acoustic` TensorFlow and
+    the TFLite runtime, both from the standard package index.
 - `sharing`: what the sharing export includes.
 
 All of these have working defaults. A settings file written before this block

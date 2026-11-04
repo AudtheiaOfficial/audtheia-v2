@@ -14,10 +14,17 @@ which files it would download for this computer, and reads each file's size from
 the server, so the interface can show the real download size instead of a
 guess. Dry-run mode downloads only package indexes and changes nothing.
 
-The PyTorch build is chosen from the settings by the hardware probe: a CUDA
-build for a supported NVIDIA card, the XPU build for Intel Arc graphics, ROCm for
-an AMD card on Linux, and otherwise the build for the processor. A download
-location missing from the settings stops the plan with a plain reason.
+For the vision environment the PyTorch build is chosen from the settings by the
+hardware probe: a CUDA build for a supported NVIDIA card, the XPU build for
+Intel Arc graphics, ROCm for an AMD card on Linux, and otherwise the build for
+the processor. A download location missing from the settings stops the plan
+with a plain reason. The sound environment needs no such choice: TensorFlow and
+the TFLite runtime come from the standard package index and run on the
+processor.
+
+On Windows a long installation folder can push the deepest files of these
+libraries past the 260-character path limit, which makes pip fail half way. The
+plan checks the folder's length first and says how to fix it.
 
 Standard library only.
 """
@@ -48,11 +55,21 @@ TORCH_PACKAGES = ("torch", "torchvision")
 SIZE_REQUESTS_AT_ONCE = 8
 
 # Which environment folder each engine key installs into.
-ENVIRONMENT_FOR_ENGINE = {"vision_detector": "vision"}
+ENVIRONMENT_FOR_ENGINE = {"vision_detector": "vision", "acoustic_head": "acoustic"}
+
+# The environments whose PyTorch build depends on the graphics hardware.
+TORCH_ENVIRONMENTS = ("vision",)
+
+# On Windows a path is limited to 260 characters unless long paths are switched
+# on. The deepest file in these libraries is about 165 characters below the
+# environment's package folder (TensorFlow 2.21 measured), so that folder must
+# leave this much room.
+WINDOWS_PATH_LIMIT = 260
+DEEPEST_PACKAGE_PATH = 170
 
 MARKER_INSTALLING = "INSTALLING"
 COMPONENT_FILE = "component.json"
-SELF_TEST_SNIPPET = (
+SELF_TEST_SNIPPET_TORCH = (
     "import json, time, sys\n"
     "import torch, torchvision\n"
     "info = {'python': sys.version.split()[0], 'torch': torch.__version__, 'torchvision': torchvision.__version__}\n"
@@ -74,6 +91,28 @@ SELF_TEST_SNIPPET = (
     "info['probe_seconds'] = round(time.perf_counter() - t, 4)\n"
     "print('AUDTHEIA_SELFTEST ' + json.dumps(info))\n"
 )
+SELF_TEST_SNIPPET_TENSORFLOW = (
+    "import json, os, time, sys\n"
+    "os.environ.setdefault('TF_CPP_MIN_LOG_LEVEL', '2')\n"
+    "import tensorflow as tf\n"
+    "info = {'python': sys.version.split()[0], 'tensorflow': tf.__version__}\n"
+    "import importlib\n"
+    "import importlib.metadata as md\n"
+    "for name in sys.argv[1:]:\n"
+    "    importlib.import_module(name)\n"
+    "    try: info[name] = md.version(name)\n"
+    "    except Exception: info[name] = 'unknown'\n"
+    "a = tf.random.normal([256, 256], seed=1)\n"
+    "t = time.perf_counter()\n"
+    "for _ in range(20): a = tf.tanh(tf.matmul(a, a))\n"
+    "float(tf.reduce_sum(a))\n"
+    "info['device'] = 'cpu'\n"
+    "info['probe_seconds'] = round(time.perf_counter() - t, 4)\n"
+    "print('AUDTHEIA_SELFTEST ' + json.dumps(info))\n"
+)
+SELF_TEST_SNIPPETS = {"vision": SELF_TEST_SNIPPET_TORCH, "acoustic": SELF_TEST_SNIPPET_TENSORFLOW}
+# Kept for anything that still refers to the vision check by its first name.
+SELF_TEST_SNIPPET = SELF_TEST_SNIPPET_TORCH
 
 
 class ComponentError(ValueError):
@@ -116,6 +155,23 @@ def run_capture(args: Sequence[str], timeout: float, pythonpath: str | None = No
         return None, "", str(exc)
 
 
+def windows_long_paths_enabled() -> bool | None:
+    """Whether Windows allows paths longer than 260 characters. None off Windows or
+    when the setting cannot be read."""
+    if not sys.platform.startswith("win"):
+        return None
+    try:
+        import winreg  # noqa: PLC0415
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem") as key:
+            value, _kind = winreg.QueryValueEx(key, "LongPathsEnabled")
+            return bool(value)
+    except OSError:
+        return False
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def content_length(url: str, timeout: float = 20.0) -> int | None:
     """The size the server reports for a file, read with a HEAD request. None if not reported."""
     try:
@@ -132,7 +188,8 @@ class Components:
 
     def __init__(self, settings: Any, *, base_python: str | None = None,
                  runner: Callable[..., tuple] = run_capture, sizer: Callable[[str], int | None] = content_length,
-                 popen: Callable[..., Any] = subprocess.Popen):
+                 popen: Callable[..., Any] = subprocess.Popen, windows: bool | None = None,
+                 long_paths: Callable[[], bool | None] = windows_long_paths_enabled):
         self.settings = settings
         cfg = settings.training_config()
         self.install_cfg = cfg.get("install") or {}
@@ -141,6 +198,8 @@ class Components:
         self.runner = runner
         self.sizer = sizer
         self.popen = popen
+        self.windows = sys.platform.startswith("win") if windows is None else bool(windows)
+        self.long_paths = long_paths
         self._lock = threading.Lock()
         self._jobs: dict = {}
 
@@ -200,9 +259,27 @@ class Components:
 
     # -- planning ------------------------------------------------------------
 
+    def uses_torch(self, engine: str) -> bool:
+        return self.environment(engine) in TORCH_ENVIRONMENTS
+
     def choose(self, hw: Mapping) -> dict:
         indexes = self.install_cfg.get("torch_index_by_vendor") or {}
         return hardware.choose_torch_index(hw, indexes)
+
+    def check_path_length(self, engine: str) -> None:
+        """Refuse, with the fix, an installation folder too long for Windows."""
+        if not self.windows:
+            return
+        packages = self.env_dir(engine) / "Lib" / "site-packages"
+        room = WINDOWS_PATH_LIMIT - len(str(packages)) - 1
+        if room >= DEEPEST_PACKAGE_PATH or self.long_paths() is True:
+            return
+        raise ComponentError(
+            f"The training environment would be installed in {packages}, which is {len(str(packages))} characters "
+            f"long. Some files of these libraries need about {DEEPEST_PACKAGE_PATH} more, and Windows stops at "
+            f"{WINDOWS_PATH_LIMIT} unless long paths are switched on. Move the Audtheia folder somewhere with a "
+            "shorter path, set training.paths.envs_dir to a short folder such as C:\\atrain, or switch on Windows "
+            "long paths, then try again.", 422)
 
     def _dry_run(self, args: list, label: str) -> list:
         with tempfile.TemporaryDirectory(prefix="audtheia-plan-") as td:
@@ -224,18 +301,26 @@ class Components:
 
     def plan(self, engine: str, hw: Mapping) -> dict:
         """What Install would download, and its measured size. Changes nothing."""
-        choice = self.choose(hw)
-        if not choice.get("url"):
-            raise ComponentError(choice["reason"], 422)
         packages = self.packages(engine)
-        torch_items = self._dry_run(["--index-url", choice["url"], *TORCH_PACKAGES], "PyTorch")
-        pins = []
-        for item in torch_items:
-            if item["name"] and item["name"].lower() in TORCH_PACKAGES:
-                pins.append(f"{item['name']}=={item['version']}")
-        if len(pins) != len(TORCH_PACKAGES):
-            raise ComponentError("pip did not offer PyTorch for this computer from the chosen location.", 502)
-        everything = self._dry_run(["--extra-index-url", choice["url"], *pins, *packages], "the training libraries")
+        self.check_path_length(engine)
+        if self.uses_torch(engine):
+            choice = self.choose(hw)
+            if not choice.get("url"):
+                raise ComponentError(choice["reason"], 422)
+            torch_items = self._dry_run(["--index-url", choice["url"], *TORCH_PACKAGES], "PyTorch")
+            pins = []
+            for item in torch_items:
+                if item["name"] and item["name"].lower() in TORCH_PACKAGES:
+                    pins.append(f"{item['name']}=={item['version']}")
+            if len(pins) != len(TORCH_PACKAGES):
+                raise ComponentError("pip did not offer PyTorch for this computer from the chosen location.", 502)
+            everything = self._dry_run(["--extra-index-url", choice["url"], *pins, *packages],
+                                       "the training libraries")
+        else:
+            choice = {"vendor_key": None, "url": None, "device": "cpu",
+                      "reason": "The sound engine runs its base model and trains its final layer on the processor."}
+            pins = []
+            everything = self._dry_run(list(packages), "the sound training libraries")
         urls = [item["url"] for item in everything]
         with ThreadPoolExecutor(max_workers=SIZE_REQUESTS_AT_ONCE) as pool:
             sizes = list(pool.map(lambda u: self.sizer(u) if u else None, urls))
@@ -272,8 +357,11 @@ class Components:
         sends after the person has seen the plan and pressed the download button."""
         if not confirmed:
             raise ComponentError("Installing needs your confirmation after you have seen the download size.", 400)
-        if plan.get("engine") != engine or not plan.get("torch_pins") or not plan.get("index_url"):
+        complete = plan.get("engine") == engine and plan.get("packages") and \
+            (not self.uses_torch(engine) or (plan.get("torch_pins") and plan.get("index_url")))
+        if not complete:
             raise ComponentError("The install plan is missing or is for another engine. Plan again first.", 400)
+        self.check_path_length(engine)
         current = self.status(engine)
         if current["state"] == "ready":
             raise ComponentError("The training components are already installed.", 409)
@@ -323,13 +411,17 @@ class Components:
             if self._stream(engine, [self.base_python, "-m", "venv", str(env_dir)]) != 0:
                 raise ComponentError("Python could not create the environment.", 500)
             py = str(env_python(env_dir))
-            self._set_job(engine, message="Downloading and installing PyTorch.")
-            if self._stream(engine, [py, "-m", "pip", "install", "--disable-pip-version-check", "--index-url",
-                                     plan["index_url"], *plan["torch_pins"]]) != 0:
-                raise ComponentError("PyTorch did not install. The install log has pip's explanation.", 500)
+            if self.uses_torch(engine):
+                self._set_job(engine, message="Downloading and installing PyTorch.")
+                if self._stream(engine, [py, "-m", "pip", "install", "--disable-pip-version-check", "--index-url",
+                                         plan["index_url"], *plan["torch_pins"]]) != 0:
+                    raise ComponentError("PyTorch did not install. The install log has pip's explanation.", 500)
+                extra = ["--extra-index-url", plan["index_url"], *plan["torch_pins"]]
+            else:
+                extra = []
             self._set_job(engine, message="Downloading and installing the training libraries.")
-            if self._stream(engine, [py, "-m", "pip", "install", "--disable-pip-version-check", "--extra-index-url",
-                                     plan["index_url"], *plan["torch_pins"], *plan["packages"]]) != 0:
+            if self._stream(engine, [py, "-m", "pip", "install", "--disable-pip-version-check", *extra,
+                                     *plan["packages"]]) != 0:
                 raise ComponentError("The training libraries did not install. The install log has pip's explanation.",
                                      500)
             self._set_job(engine, message="Checking that everything works.")
@@ -352,8 +444,10 @@ class Components:
     def self_test(self, engine: str) -> dict:
         """Import the libraries in the environment and run a one-second calculation."""
         py = env_python(self.env_dir(engine))
-        extra = [p.split("[")[0].split("=")[0].replace("-", "_") for p in self.packages(engine)]
-        code, out, err = self.runner([str(py), "-c", SELF_TEST_SNIPPET, *extra], timeout=300)
+        extra = [p.split("[")[0].split("=")[0].split("<")[0].split(">")[0].replace("-", "_")
+                 for p in self.packages(engine)]
+        snippet = SELF_TEST_SNIPPETS[self.environment(engine)]
+        code, out, err = self.runner([str(py), "-c", snippet, *extra], timeout=300)
         for line in out.splitlines():
             if line.startswith("AUDTHEIA_SELFTEST "):
                 try:

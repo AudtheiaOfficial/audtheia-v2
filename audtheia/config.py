@@ -181,11 +181,21 @@ DEFAULT_TRAINING = {   'enabled': True,
     'acoustic': {   'engines': [   {   'key': 'acoustic_head_a',
                                        'label': 'Terrestrial and avian',
                                        'sample_rate': 48000,
-                                       'window_seconds': 3.0},
+                                       'window_seconds': 3.0,
+                                       'base': {   'label': 'BirdNET 2.4',
+                                                   'download_url': 'https://zenodo.org/records/15050749/files/'
+                                                                   'BirdNET_v2.4_protobuf.zip',
+                                                   'download_bytes': 124522908,
+                                                   'input_key': 'inputs',
+                                                   'embeddings_signature': 'embeddings',
+                                                   'embeddings_key': 'embeddings',
+                                                   'embeddings_size': 1024,
+                                                   'licence': 'CC BY-NC-SA 4.0'}},
                                    {   'key': 'acoustic_head_b',
                                        'label': 'Marine and general',
                                        'sample_rate': 32000,
-                                       'window_seconds': 5.0}],
+                                       'window_seconds': 5.0,
+                                       'base': None}],
                     'defaults': {   'epochs': 50,
                                     'batch_size': 32,
                                     'learning_rate': 0.001,
@@ -225,7 +235,7 @@ DEFAULT_TRAINING = {   'enabled': True,
                                                 'apple': 'https://pypi.org/simple',
                                                 'amd_linux': 'https://download.pytorch.org/whl/rocm7.2'},
                    'packages': {   'vision': ['rfdetr[train,onnx]'],
-                                   'acoustic': ['perch-hoplite[tf]', 'birdnet-analyzer']}},
+                                   'acoustic': ['tensorflow', 'ai-edge-litert']}},
     'sharing': {   'package_include_checkpoint': True,
                    'dataset_export_formats': ['coco', 'yolo_txt']}}
 
@@ -1284,6 +1294,25 @@ def _validate(raw: dict) -> None:
             raise ConfigError(f"node.active_station_id {active!r} does not match any station")
 
 
+def _validate_acoustic_base(base: Any, where: str) -> None:
+    """An acoustic engine's base model: absent or null while the engine has none
+    yet, otherwise a complete description of the model to download and check."""
+    if base is None:
+        return
+    _require_type(base, (dict,), where)
+    for key in ("label", "input_key", "embeddings_signature", "embeddings_key", "licence"):
+        value = _require(base, key, where)
+        _require_type(value, (str,), f"{where}.{key}")
+        if not value.strip():
+            raise ConfigError(f"{where}.{key} must not be empty")
+    url = _require(base, "download_url", where)
+    _require_type(url, (str,), f"{where}.download_url")
+    if not url.startswith("https://"):
+        raise ConfigError(f"{where}.download_url must be an https address")
+    _check_number(_require(base, "download_bytes", where), f"{where}.download_bytes", lo=1, integer=True)
+    _check_number(_require(base, "embeddings_size", where), f"{where}.embeddings_size", lo=1, integer=True)
+
+
 def _validate_training(training: Any) -> None:
     """Check the shape and ranges of the training block."""
     _require_type(training, (dict,), "training")
@@ -1421,6 +1450,7 @@ def _validate_training(training: Any) -> None:
                 _check_number(_require(entry, "sample_rate", where), f"{where}.sample_rate", lo=1, integer=True)
                 _check_number(_require(entry, "window_seconds", where), f"{where}.window_seconds",
                               lo=0, lo_exclusive=True)
+                _validate_acoustic_base(entry.get("base"), f"{where}.base")
         else:
             engine_keys = {e["key"] for e in DEFAULT_TRAINING["acoustic"]["engines"]}
         defaults = acoustic_train.get("defaults")

@@ -220,6 +220,21 @@ def test_settings(work: Path) -> None:
     check("a non-boolean enabled flag is refused", bad(lambda r: r["training"].__setitem__("enabled", "yes")))
     check("a path that is not text is refused", bad(lambda r: r["training"]["paths"].__setitem__("models_dir", 5)))
 
+    def base(r):
+        return r["training"]["acoustic"]["engines"][0]["base"]
+
+    check("an acoustic engine may have no base model yet",
+          not bad(lambda r: r["training"]["acoustic"]["engines"][0].__setitem__("base", None))
+          and not bad(lambda r: r["training"]["acoustic"]["engines"][0].pop("base")))
+    check("a base model downloaded over plain http is refused",
+          bad(lambda r: base(r).__setitem__("download_url", "http://zenodo.org/x.zip")))
+    check("a base model missing its summary output name is refused", bad(lambda r: base(r).pop("embeddings_key")))
+    check("a base model with an empty licence is refused", bad(lambda r: base(r).__setitem__("licence", " ")))
+    check("a base model size that is not a whole positive number is refused",
+          bad(lambda r: base(r).__setitem__("download_bytes", 0)) and bad(lambda r: base(r).__setitem__("embeddings_size", 1.5)))
+    check("a base model description that is not an object is refused",
+          bad(lambda r: r["training"]["acoustic"]["engines"][0].__setitem__("base", "BirdNET")))
+
 
 def test_storage(work: Path) -> None:
     print("\n[4] Storage methods")

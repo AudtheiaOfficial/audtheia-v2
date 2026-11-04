@@ -67,17 +67,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   their differences, restricted to the shared classes as well, and never states
   which model is better.
 - **Train tab: training components.** The training libraries, PyTorch and the
-  RF-DETR training library, are installed only on request into their own folder
-  beside the application, one per engine, so the everyday application and the
-  field station never carry them. Before anything is downloaded, Audtheia asks
-  pip in dry-run mode exactly which files this computer needs and reads each
-  file's size from the package servers, and the button shows that real size.
-  The PyTorch build is chosen for the computer: CUDA 13 or CUDA 12.6 for an
-  NVIDIA card depending on its driver, XPU for Intel Arc graphics, ROCm for an
-  AMD card on Linux, and the processor build otherwise, including for Intel Iris
-  Xe graphics, which PyTorch cannot train on. After installing, the libraries are
-  loaded and checked before they are marked ready. A failed install can be
-  removed in one step, and removal deletes only that folder.
+  RF-DETR training library for images, and TensorFlow and the TFLite runtime for
+  sounds, are installed only on request into their own folder beside the
+  application, one per engine, so the everyday application and the field station
+  never carry them. Before anything is downloaded, Audtheia asks pip in dry-run
+  mode exactly which files this computer needs and reads each file's size from
+  the package servers, and the button shows that real size. The PyTorch build is
+  chosen for the computer: CUDA 13 or CUDA 12.6 for an NVIDIA card depending on
+  its driver, XPU for Intel Arc graphics, ROCm for an AMD card on Linux, and the
+  processor build otherwise, including for Intel Iris Xe graphics, which PyTorch
+  cannot train on. On Windows, an installation folder too long for the deepest
+  library files is refused before downloading, with the fix. After installing,
+  the libraries are loaded and checked before they are marked ready. A failed
+  install can be removed in one step, and removal deletes only that folder.
 - **Train tab: Train and Runs.** A new Train view describes this computer in
   plain words, measures how fast it trains the chosen size, estimates the least
   time and the disk space a run will take, and starts a run from a built dataset
@@ -94,6 +96,24 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   stop a run, and a run whose process disappears, for example because the
   computer was switched off, is marked interrupted and resumes from its last
   saved epoch. Only one run trains at a time.
+- **Train tab: sound models.** The Train view now trains sounds as well as
+  images. For a sound dataset, a fixed base sound model summarises every window
+  and Audtheia trains only a small final layer that turns that summary into the
+  dataset's species, with the binary cross-entropy of each species, dropout and
+  early stopping on the validation score. The terrestrial and avian engine uses
+  BirdNET 2.4, downloaded once from BirdNET's Zenodo record into the sound
+  training environment and checked against its description in the settings
+  before use. Its licence, CC BY-NC-SA 4.0, is shown before a run starts. The
+  windows are brought to the engine's sample rate, each species is calibrated on
+  the validation windows with a per-species threshold that is recorded but not
+  applied at the station, and the test windows are scored. The base model and
+  the trained layer are joined into one TFLite file that takes raw audio and
+  gives one score per species before the sigmoid, so a station's acoustic
+  adapter loads it unchanged. Before a run is called finished, that file is
+  loaded through the station's own adapter and its scores are compared with the
+  trained layer's. A run resumes after its last finished epoch with exactly the
+  weights it would have had without the pause. The marine and general engine
+  has no base model yet and says so.
 - **Gentle and Full speed.** Gentle uses half the processor threads at a lower
   priority, feeds one image at a time and adds the learning signal up to the
   same batch, so it trains with exactly the settings Full speed uses: the same

@@ -931,10 +931,19 @@ def list_datasets(settings) -> list:
                 data = json.loads(summary.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 continue
+            engine = data.get("engine")
+            if engine is None and data.get("modality") == "audio":
+                # Sound datasets built before the summary named their engine: read it from
+                # the manifest, which for sound is a short list of windows.
+                try:
+                    manifest = json.loads((summary.parent / "manifest.json").read_text(encoding="utf-8"))
+                    engine = (manifest.get("options") or {}).get("engine")
+                except (OSError, json.JSONDecodeError):
+                    engine = None
             found.append({
                 "dataset_id": data.get("dataset_id"), "modality": data.get("modality"),
                 "created_at": data.get("created_at"), "signature": data.get("signature"),
-                "totals": data.get("totals"), "path": str(summary.parent),
+                "totals": data.get("totals"), "path": str(summary.parent), "engine": engine,
             })
     return sorted(found, key=lambda d: str(d.get("created_at") or ""), reverse=True)
 
@@ -1108,6 +1117,7 @@ def _write_dataset(plan: dict, options: DatasetOptions, settings, target: Path) 
     }
     (target / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8", newline="\n")
     short = {k: manifest[k] for k in ("dataset_id", "modality", "created_at", "signature", "totals")}
+    short["engine"] = (manifest.get("options") or {}).get("engine")
     (target / "summary.json").write_text(json.dumps(short, indent=1) + "\n", encoding="utf-8", newline="\n")
     (target / "README.md").write_text(_README, encoding="utf-8", newline="\n")
     return written

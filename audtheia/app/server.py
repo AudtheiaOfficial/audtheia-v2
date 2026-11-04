@@ -2837,6 +2837,7 @@ def create_app(settings, database):
             "acoustic_engines": settings.training_acoustic_engines(),
             "vision_bases": settings.training_vision_bases(),
             "vision_defaults": dict((config.get("vision") or {}).get("defaults") or {}),
+            "acoustic_defaults": dict((config.get("acoustic") or {}).get("defaults") or {}),
             "datasets": built,
         }
 
@@ -3130,6 +3131,8 @@ def create_app(settings, database):
         from audtheia.training import vision
 
         dataset = _dataset_for_training(request.get("dataset_id"))
+        if dataset["modality"] == "audio":
+            return _acoustic_estimate(request, dataset)
         base = str(request.get("base") or "nano")
         mode = str(request.get("mode") or "gentle")
         comps = _train_components()
@@ -3175,6 +3178,79 @@ def create_app(settings, database):
             raise HTTPException(status_code=409, detail="a speed measurement is already running.")
         return {"started": True, "job": _job_snapshot("train_estimate")}
 
+    def _acoustic_run_config(request: dict, dataset: dict, hw: dict, mode: str) -> dict:
+        """The sound run configuration for a built sound dataset, with both modes checked."""
+        from audtheia.training import acoustic
+        from audtheia.training import components as comp
+        from audtheia.training import hardware
+
+        engine_key = ((dataset["manifest"].get("options") or {}).get("engine"))
+        if not engine_key:
+            raise HTTPException(status_code=422, detail="the sound dataset does not record its engine; build it again.")
+        comps = _train_components()
+        try:
+            status = comps.status(acoustic.ENGINE_KEY)
+        except comp.ComponentError as exc:
+            raise _training_error(exc) from exc
+        if status["state"] != "ready":
+            raise HTTPException(status_code=409, detail="install the sound training components first.")
+        cfg = settings.training_config()
+        bases = str(comps.env_dir(acoustic.ENGINE_KEY) / "bases")
+        overrides = request.get("overrides") or {}
+        try:
+            run_cfg = acoustic.build_config(cfg, engine_key=engine_key, mode=mode, hw=hw, overrides=overrides,
+                                            bases_dir=bases)
+            pair = acoustic.equivalent_modes(cfg, engine_key=engine_key, hw=hw, overrides=overrides)
+        except (acoustic.AcousticConfigError, hardware.HardwareError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if pair["differences"]:
+            raise HTTPException(status_code=500, detail="the two modes would differ in "
+                                + ", ".join(pair["differences"]) + "; the run was not started.")
+        return run_cfg
+
+    def _acoustic_estimate(request: dict, dataset: dict) -> dict:
+        """The time and disk of a sound run. The speed is measured once the base model is downloaded."""
+        from audtheia.training import acoustic
+        from audtheia.training import components as comp
+        from audtheia.training import hardware
+        from audtheia.training import runs as run_control
+
+        mode = str(request.get("mode") or "gentle")
+        hw = _train_hardware()
+        cfg = settings.training_config()
+        run_cfg = _acoustic_run_config(request, dataset, hw, mode)
+        totals = (dataset["manifest"].get("totals") or {})
+        windows = sum(int(((totals.get(s) or {}).get("examples")) or 0) for s in ("train", "validation", "test"))
+        disk_gb = acoustic.disk_mb(run_cfg, windows) / 1024.0
+        limits = (cfg.get("hardware") or {}).get("limits") or {}
+        python = str(comp.env_python(_train_components().env_dir(acoustic.ENGINE_KEY)))
+
+        def _target(update):
+            base = run_cfg["base"]
+            if not acoustic.base_ready(run_cfg):
+                est = {"hours": None, "disk_gb": disk_gb}
+                return {"benchmark": None, "estimate": est, "advice": [], "note": (
+                    f"The speed is measured once the {base['label']} base model has been downloaded, "
+                    f"{float(base['download_bytes']) / 1e6:.1f} MB, which happens at the start of the first run.")}
+            update(message="measuring how fast this computer summarises a window of sound")
+            with tempfile.TemporaryDirectory(prefix="audtheia-estimate-") as td:
+                cfg_path = Path(td) / "run.json"
+                cfg_path.write_text(json.dumps(run_cfg), encoding="utf-8")
+                code, out, err = comp.run_capture([python, "-m", "audtheia.training.acoustic", "benchmark",
+                                                   "--config", str(cfg_path)], timeout=900,
+                                                  pythonpath=str(run_control.CODE_ROOT))
+            line = next((ln for ln in out.splitlines() if ln.startswith("AUDTHEIA_BENCHMARK ")), None)
+            if code != 0 or line is None:
+                raise RuntimeError("the speed measurement did not finish: " + " ".join((err or out).split())[-300:])
+            bench = json.loads(line.split(" ", 1)[1])
+            est = {"hours": windows * float(bench["seconds_per_window"]) / 3600.0, "disk_gb": disk_gb}
+            return {"benchmark": bench, "estimate": est,
+                    "advice": hardware.start_advice(hw, limits, device="cpu", estimate=est)}
+
+        if not _start_background_job("train_estimate", _target):
+            raise HTTPException(status_code=409, detail="a speed measurement is already running.")
+        return {"started": True, "job": _job_snapshot("train_estimate")}
+
     @app.get(f"{API_PREFIX}/train/estimate")
     def train_estimate_status():
         _require_desktop_for_training()
@@ -3189,10 +3265,14 @@ def create_app(settings, database):
         from audtheia.training import runs as run_control
         from audtheia.training import vision
 
-        engine = str(request.get("engine") or "vision_detector")
-        if engine != "vision_detector":
-            raise HTTPException(status_code=422, detail="only the vision engine can train in this version.")
         dataset = _dataset_for_training(request.get("dataset_id"))
+        engine = str(request.get("engine") or ("acoustic_head" if dataset["modality"] == "audio" else "vision_detector"))
+        if engine not in ("vision_detector", "acoustic_head"):
+            raise HTTPException(status_code=422, detail=f"there is no training engine {engine!r}.")
+        if engine == "acoustic_head":
+            if dataset["modality"] != "audio":
+                raise HTTPException(status_code=422, detail="the sound engine trains on a sound dataset.")
+            return _start_acoustic_run(request, dataset)
         if dataset["modality"] not in (None, "vision"):
             raise HTTPException(status_code=422, detail="the vision engine trains on a visual dataset.")
         comps = _train_components()
@@ -3229,6 +3309,38 @@ def create_app(settings, database):
             )
         except (vision.VisionConfigError, hardware.HardwareError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except run_control.RunError as exc:
+            raise _training_error(exc) from exc
+        except comp.ComponentError as exc:
+            raise _training_error(exc) from exc
+        return {"run": row, "warnings": verdict["warnings"]}
+
+    def _start_acoustic_run(request: dict, dataset: dict) -> dict:
+        from audtheia.training import acoustic
+        from audtheia.training import components as comp
+        from audtheia.training import hardware
+        from audtheia.training import runs as run_control
+
+        mode = str(request.get("mode") or "gentle")
+        hw = _train_hardware(fresh=True)
+        cfg = settings.training_config()
+        run_cfg = _acoustic_run_config(request, dataset, hw, mode)
+        limits = (cfg.get("hardware") or {}).get("limits") or {}
+        verdict = hardware.check_limits(hw, limits, starting=True)
+        if not verdict["ok"]:
+            raise HTTPException(status_code=409, detail=" ".join(s["message"] for s in verdict["stop"]))
+        if _capture_busy() and cfg.get("hardware", {}).get("capture_contention", "warn") == "warn" \
+                and request.get("continue_while_capturing") is not True:
+            raise HTTPException(status_code=409, detail=(
+                "capture is running on this computer. Pause capture while training, or choose Continue anyway."))
+        comps = _train_components()
+        try:
+            row = _train_runs().create(
+                user_name=request.get("name"), modality="acoustic", engine=acoustic.ENGINE_KEY, mode=mode,
+                dataset={"path": dataset["path"], "signature": dataset["signature"]},
+                base_label=run_cfg["base_label"], config=run_cfg, environment=comps.environment(acoustic.ENGINE_KEY),
+                hardware_info={"probe": hw, "device": "cpu"},
+            )
         except run_control.RunError as exc:
             raise _training_error(exc) from exc
         except comp.ComponentError as exc:

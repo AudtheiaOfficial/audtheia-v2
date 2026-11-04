@@ -428,7 +428,7 @@ class RunManager:
                 "live": self.live(run_id, status)}
 
     LIVE_FIELDS = ("state", "epochs_done", "epochs_total", "best_metric_name", "best_metric_value", "heartbeat_at",
-                   "stop_code", "current_epoch", "batch_done", "batches_total", "seconds_per_step")
+                   "stop_code", "current_epoch", "batch_done", "batches_total", "seconds_per_step", "stage")
 
     def live(self, run_id: str, status: Mapping | None = None) -> dict:
         """What the worker last reported, including progress within the current epoch."""

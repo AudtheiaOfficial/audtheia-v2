@@ -6477,24 +6477,34 @@
   // ----------------------------------------------------------------------
   // 8c. Train: installing the training components and starting a run
   //
-  // The training libraries live in a separate folder and are installed only
-  // when the person presses the button, after seeing the real download size.
-  // A run starts only when the safety checks pass, and its worker reports
-  // through its own folder, which the Runs view reads every few seconds.
+  // The training libraries live in separate folders, one for images and one for
+  // sounds, and are installed only when the person presses the button, after
+  // seeing the real download size. A run starts only when the safety checks
+  // pass, and its worker reports through its own folder, which the Runs view
+  // reads every few seconds.
   // ----------------------------------------------------------------------
 
   var TRAIN_POLL_MS = 3000;
-  var TRAIN_ENGINE = "vision_detector";
+  var TRAIN_ENGINES = { images: "vision_detector", sounds: "acoustic_head" };
 
-  var TRAIN_ADVANCED = [
-    ["epochs", "Epochs", "How many times the model sees every training image. Early stopping may end it sooner.", 1, 1],
-    ["batch_size", "Images per update", "How many images the model learns from before each change to its weights. Gentle feeds them one at a time and adds up their learning signal, so the batch is the same.", 1, 1],
-    ["learning_rate", "Learning rate", "How large each change to the weights is. The default is the library's tested value.", 0, "any"],
-    ["encoder_learning_rate", "Encoder learning rate", "The learning rate of the part of the model that reads the image.", 0, "any"],
-    ["weight_decay", "Weight decay", "A small pull towards simpler weights, which helps the model generalise.", 0, "any"],
-    ["early_stopping_patience", "Early stopping patience", "Stop after this many epochs without the validation score rising.", 1, 1],
-    ["checkpoint_interval", "Full checkpoint every", "Epochs between kept full checkpoints. The newest epoch is always saved so the run can resume.", 1, 1]
-  ];
+  var TRAIN_ADVANCED = {
+    images: [
+      ["epochs", "Epochs", "How many times the model sees every training image. Early stopping may end it sooner.", 1, 1],
+      ["batch_size", "Images per update", "How many images the model learns from before each change to its weights. Gentle feeds them one at a time and adds up their learning signal, so the batch is the same.", 1, 1],
+      ["learning_rate", "Learning rate", "How large each change to the weights is. The default is the library's tested value.", 0, "any"],
+      ["encoder_learning_rate", "Encoder learning rate", "The learning rate of the part of the model that reads the image.", 0, "any"],
+      ["weight_decay", "Weight decay", "A small pull towards simpler weights, which helps the model generalise.", 0, "any"],
+      ["early_stopping_patience", "Early stopping patience", "Stop after this many epochs without the validation score rising.", 1, 1],
+      ["checkpoint_interval", "Full checkpoint every", "Epochs between kept full checkpoints. The newest epoch is always saved so the run can resume.", 1, 1]
+    ],
+    sounds: [
+      ["epochs", "Epochs", "How many times the final layer sees every training window. Early stopping may end it sooner.", 1, 1],
+      ["batch_size", "Windows per update", "How many windows the final layer learns from before each change to its weights. It is the same in both speeds.", 1, 1],
+      ["learning_rate", "Learning rate", "How large each change to the final layer's weights is.", 0, "any"],
+      ["dropout", "Dropout", "The share of the base model's summary hidden at random during training, which helps the layer generalise. At least 0 and below 1.", 0, "any"],
+      ["early_stopping_patience", "Early stopping patience", "Stop after this many epochs without the validation score rising.", 1, 1]
+    ]
+  };
 
   var TRAIN_STATUS_TEXT = {
     queued: "Waiting to start", preparing: "Preparing", running: "Training", paused: "Paused",
@@ -6503,11 +6513,13 @@
 
   function trainRunState() {
     if (!state.trainRun) {
-      state.trainRun = { datasetId: "", base: "", mode: "", name: "", startKind: "pretrained", checkpoint: "",
-                         overrides: {}, continueWhileCapturing: false, estimate: null };
+      state.trainRun = { kind: "images", datasetId: "", base: "", mode: "", name: "", startKind: "pretrained",
+                         checkpoint: "", overrides: {}, continueWhileCapturing: false, estimate: null };
     }
     return state.trainRun;
   }
+
+  function trainEngine() { return TRAIN_ENGINES[trainRunState().kind] || TRAIN_ENGINES.images; }
 
   function trainStillShown(node) {
     return node && node.isConnected && state.activePanel === "train";
@@ -6528,7 +6540,7 @@
     if (!host) { return; }
     clear(host);
     host.appendChild(el("p", { class: "empty-state", text: "Reading this computer and the training components." }));
-    Promise.all([apiGet("/train/status"), apiGet("/train/hardware"), apiGet("/train/components" + query({ engine: TRAIN_ENGINE }))])
+    Promise.all([apiGet("/train/status"), apiGet("/train/hardware"), apiGet("/train/components" + query({ engine: trainEngine() }))])
       .then(function (res) {
         clear(host);
         renderTrainSetup(host, res[0], res[1], res[2]);
@@ -6540,13 +6552,31 @@
 
   function renderTrainSetup(host, status, hw, comp) {
     var R = trainRunState();
+    var kinds = el("div", { class: "train-criteria", role: "radiogroup", "aria-label": "What to train" });
+    [["images", "Images", "A detector for the camera frames, trained from your expert-confirmed boxes."],
+     ["sounds", "Sounds", "A species layer on top of a fixed base sound model, trained from your expert-confirmed clips."]].forEach(function (k) {
+      var radio = el("input", { type: "radio", name: "train-kind", value: k[0] });
+      radio.checked = R.kind === k[0];
+      radio.addEventListener("change", function () {
+        if (!radio.checked) { return; }
+        R.kind = k[0]; R.datasetId = ""; R.overrides = {}; R.estimate = null;
+        loadTrainSetup();
+      });
+      kinds.appendChild(el("label", { class: "train-criterion" }, [radio,
+        el("span", { class: "train-criterion-text" }, [el("span", { class: "form-label", text: k[1] }), el("span", { class: "form-hint", text: k[2] })])]));
+    });
+    var kindBlock = el("div", { class: "info-block" });
+    kindBlock.appendChild(el("h4", { text: "What to train" }));
+    kindBlock.appendChild(kinds);
+    host.appendChild(kindBlock);
+
     var hwBlock = el("div", { class: "info-block" });
     hwBlock.appendChild(el("h4", { text: "This computer" }));
     (hw.lines || []).forEach(function (line) { hwBlock.appendChild(el("p", { class: "settings-desc", text: line })); });
     var check = hw.start_check || { stop: [], warnings: [] };
     check.stop.forEach(function (s) { hwBlock.appendChild(trainNote(s.message, "form-message train-stop")); });
     check.warnings.forEach(function (w) { hwBlock.appendChild(trainNote(w.message)); });
-    hwBlock.appendChild(trainNote("Training is ordinary computation and cannot damage the computer. A long run keeps the processor busy for hours, so Audtheia will not start on battery, pauses with your progress saved if the charger is removed, the battery runs low, the disk fills or the computer reports overheating, and Gentle limits how hard the processor works."));
+    hwBlock.appendChild(trainNote("Training is ordinary computation and cannot damage the computer. A long run keeps the processor busy for hours, so Audtheia will not start on battery, pauses, keeping every finished epoch, if the charger is removed, the battery runs low, the disk fills or the computer reports overheating, and Gentle limits how hard the processor works."));
     var recheck = el("button", { type: "button", class: "btn", text: "Check again" });
     recheck.addEventListener("click", loadTrainSetup);
     hwBlock.appendChild(el("div", { class: "form-actions" }, [recheck]));
@@ -6564,26 +6594,29 @@
   }
 
   function renderTrainComponents(block, comp, hw) {
+    var sounds = trainRunState().kind === "sounds";
     clear(block);
-    block.appendChild(el("h4", { text: "Training components" }));
+    block.appendChild(el("h4", { text: sounds ? "Sound training components" : "Image training components" }));
     var msg = el("p", { class: "form-message" });
     if (comp.state === "ready") {
       var c = comp.component || {};
       var test = c.self_test || {};
-      block.appendChild(el("p", { class: "settings-desc", text:
-        "Installed in a separate folder, so the everyday application is unchanged. PyTorch " + (test.torch || "") +
-        ", training on " + (test.device || "the processor") + "." }));
+      block.appendChild(el("p", { class: "settings-desc", text: sounds
+        ? "Installed in a separate folder, so the everyday application is unchanged. TensorFlow " + (test.tensorflow || "") + ", training on the processor. The base sound model is downloaded into the same folder at the start of the first run."
+        : "Installed in a separate folder, so the everyday application is unchanged. PyTorch " + (test.torch || "") + ", training on " + (test.device || "the processor") + "." }));
       var remove = el("button", { type: "button", class: "btn", text: "Remove training components" });
       var armed = false;
       remove.addEventListener("click", function () {
         if (!armed) {
           armed = true;
           remove.textContent = "Press again to remove them";
-          msg.textContent = "This deletes only the training environment folder. Datasets, runs and models are kept.";
+          msg.textContent = sounds
+            ? "This deletes only the sound training environment folder, with the downloaded base model inside it. Datasets, runs and models are kept."
+            : "This deletes only the training environment folder. Datasets, runs and models are kept.";
           return;
         }
         remove.disabled = true;
-        apiSend("/train/components/remove", "POST", { engine: TRAIN_ENGINE, confirm: true })
+        apiSend("/train/components/remove", "POST", { engine: trainEngine(), confirm: true })
           .then(function () { loadTrainSetup(); })
           .catch(function (e) { remove.disabled = false; msg.textContent = e.message; });
       });
@@ -6605,7 +6638,7 @@
       var clean = el("button", { type: "button", class: "btn", text: "Remove the unfinished install" });
       clean.addEventListener("click", function () {
         clean.disabled = true;
-        apiSend("/train/components/remove", "POST", { engine: TRAIN_ENGINE, confirm: true })
+        apiSend("/train/components/remove", "POST", { engine: trainEngine(), confirm: true })
           .then(function () { loadTrainSetup(); })
           .catch(function (e) { clean.disabled = false; msg.textContent = e.message; });
       });
@@ -6613,16 +6646,17 @@
       block.appendChild(msg);
       return;
     }
-    block.appendChild(el("p", { class: "settings-desc", text:
-      "Training needs PyTorch and the RF-DETR training library. They are large, so they are installed only when you ask, into their own folder beside the application. First Audtheia asks the package servers exactly what would be downloaded for this computer and shows the real size. Nothing is installed until you press the download button." }));
+    block.appendChild(el("p", { class: "settings-desc", text: sounds
+      ? "Training a sound model needs TensorFlow and the TFLite runtime. They are large, so they are installed only when you ask, into their own folder beside the application. First Audtheia asks the package servers exactly what would be downloaded for this computer and shows the real size. Nothing is installed until you press the download button."
+      : "Training needs PyTorch and the RF-DETR training library. They are large, so they are installed only when you ask, into their own folder beside the application. First Audtheia asks the package servers exactly what would be downloaded for this computer and shows the real size. Nothing is installed until you press the download button." }));
     var choice = hw.choice || {};
-    if (choice.reason) { block.appendChild(trainNote(choice.reason)); }
+    if (!sounds && choice.reason) { block.appendChild(trainNote(choice.reason)); }
     var planBtn = el("button", { type: "button", class: "btn", text: "Work out the download size" });
     var planHost = el("div");
     planBtn.addEventListener("click", function () {
       planBtn.disabled = true;
       msg.textContent = "Asking the package servers. This needs the internet and can take a few minutes.";
-      apiSend("/train/components/plan", "POST", { engine: TRAIN_ENGINE })
+      apiSend("/train/components/plan", "POST", { engine: trainEngine() })
         .then(function () { trainWaitPlan(block, planHost, planBtn, msg); })
         .catch(function (e) { planBtn.disabled = false; msg.textContent = e.message; });
     });
@@ -6635,7 +6669,7 @@
   }
 
   function trainWaitPlan(block, planHost, planBtn, msg) {
-    apiGet("/train/components" + query({ engine: TRAIN_ENGINE })).then(function (comp) {
+    apiGet("/train/components" + query({ engine: trainEngine() })).then(function (comp) {
       if (!trainStillShown(block)) { return; }
       var job = comp.plan_job || {};
       if (job.status === "running") {
@@ -6658,15 +6692,22 @@
     if (plan.files_without_size) {
       planHost.appendChild(modelKvRow("Files the server did not size", fmtNum(plan.files_without_size)));
     }
-    planHost.appendChild(modelKvRow("PyTorch build", (plan.torch_pins || []).join(", ")));
-    planHost.appendChild(modelKvRow("Downloaded from", plan.index_url + " and the standard package index"));
+    if ((plan.torch_pins || []).length) {
+      planHost.appendChild(modelKvRow("PyTorch build", plan.torch_pins.join(", ")));
+      planHost.appendChild(modelKvRow("Downloaded from", plan.index_url + " and the standard package index"));
+    } else {
+      planHost.appendChild(modelKvRow("Packages", (plan.packages || []).join(", ")));
+      planHost.appendChild(modelKvRow("Downloaded from", "the standard package index"));
+    }
     planHost.appendChild(modelKvRow("Installed into", plan.path));
     planHost.appendChild(trainNote(plan.internet_needed + " " + plan.installed_size_note));
-    planHost.appendChild(trainNote("Licences: PyTorch is BSD-3-Clause and the RF-DETR training library is Apache-2.0. The pretrained weights of each size are downloaded once, the first time that size is trained."));
+    planHost.appendChild(trainNote((plan.torch_pins || []).length
+      ? "Licences: PyTorch is BSD-3-Clause and the RF-DETR training library is Apache-2.0. The pretrained weights of each size are downloaded once, the first time that size is trained."
+      : "Licences: TensorFlow and the TFLite runtime are Apache-2.0. The base sound model is downloaded once at the start of the first run, and its own licence is shown before you start."));
     var install = el("button", { type: "button", class: "btn btn-primary", text: "Download and install " + size });
     install.addEventListener("click", function () {
       install.disabled = true;
-      apiSend("/train/components/install", "POST", { engine: TRAIN_ENGINE, confirm: true })
+      apiSend("/train/components/install", "POST", { engine: trainEngine(), confirm: true })
         .then(function () { loadTrainSetup(); })
         .catch(function (e) { install.disabled = false; msg.textContent = e.message; });
     });
@@ -6675,12 +6716,12 @@
 
   function trainFollowInstallLog(block, logBox, offset) {
     if (!trainStillShown(block)) { return; }
-    apiGet("/train/components/log" + query({ engine: TRAIN_ENGINE, offset: offset })).then(function (res) {
+    apiGet("/train/components/log" + query({ engine: trainEngine(), offset: offset })).then(function (res) {
       if (res.text) {
         logBox.textContent = (logBox.textContent + res.text).slice(-20000);
         logBox.scrollTop = logBox.scrollHeight;
       }
-      return apiGet("/train/components" + query({ engine: TRAIN_ENGINE })).then(function (comp) {
+      return apiGet("/train/components" + query({ engine: trainEngine() })).then(function (comp) {
         if (comp.state === "installing" || (comp.job && comp.job.state === "running")) {
           window.setTimeout(function () { trainFollowInstallLog(block, logBox, res.next_offset); }, TRAIN_POLL_MS);
         } else {
@@ -6692,15 +6733,30 @@
     });
   }
 
+  function trainSoundEngine(status, dataset) {
+    var key = dataset && dataset.engine;
+    return (status.acoustic_engines || []).filter(function (e) { return e.key === key; })[0] || null;
+  }
+
+  function trainLicenceText(base) {
+    var text = "The " + base.label + " base model is licensed " + base.licence + ", and a model trained on top of it carries the same terms.";
+    if (/\bNC\b/.test(base.licence)) {
+      text += " That licence allows non-commercial use only, asks for attribution, and requires a model built on it to be shared under the same licence.";
+    }
+    return text;
+  }
+
   function renderTrainForm(host, status, hw, comp, R) {
-    var device = ((comp.component || {}).self_test || {}).device || "cpu";
-    var datasets = (status.datasets || []).filter(function (d) { return d.modality === "vision"; });
+    var sounds = R.kind === "sounds";
+    var device = sounds ? "cpu" : (((comp.component || {}).self_test || {}).device || "cpu");
+    var datasets = (status.datasets || []).filter(function (d) { return d.modality === (sounds ? "audio" : "vision"); });
     var block = el("div", { class: "info-block" });
     block.appendChild(el("h4", { text: "A new training run" }));
-    block.appendChild(el("p", { class: "settings-desc", text:
-      "Audtheia uses the same open training method Roboflow publishes. The final accuracy is decided by the quantity and quality of your labels, not by the app." }));
+    block.appendChild(el("p", { class: "settings-desc", text: sounds
+      ? "The base sound model stays fixed and summarises every window; Audtheia trains only a small final layer that turns that summary into your species. The final accuracy is decided by the quantity and quality of your labels, not by the app."
+      : "Audtheia uses the same open training method Roboflow publishes. The final accuracy is decided by the quantity and quality of your labels, not by the app." }));
     if (!datasets.length) {
-      block.appendChild(trainNote("Build a visual dataset in the Dataset view first."));
+      block.appendChild(trainNote(sounds ? "Build a sound dataset in the Dataset view first." : "Build a visual dataset in the Dataset view first."));
       host.appendChild(block);
       return;
     }
@@ -6710,15 +6766,40 @@
     var bases = status.vision_bases || [];
     if (!R.base) { R.base = device === "cpu" ? "nano" : (bases[1] || bases[0] || {}).key || "nano"; }
     if (!R.mode) { R.mode = device === "cpu" ? "gentle" : "full_speed"; }
+    function currentDataset() { return datasets.filter(function (d) { return d.dataset_id === R.datasetId; })[0]; }
 
     var dsSelect = el("select", { class: "form-input", "aria-label": "Dataset" });
     datasets.forEach(function (d) {
       var t = d.totals || {};
       dsSelect.appendChild(el("option", { value: d.dataset_id, text: d.dataset_id + ", " +
-        fmtNum((t.train || {}).examples || 0) + " training images" }));
+        fmtNum((t.train || {}).examples || 0) + (sounds ? " training windows" : " training images") }));
     });
     dsSelect.value = R.datasetId;
-    dsSelect.addEventListener("change", function () { R.datasetId = dsSelect.value; R.estimate = null; paintEstimate(); });
+
+    var engineHost = el("div");
+    var licenceHost = el("div");
+    var startBtn = el("button", { type: "button", class: "btn btn-primary", text: "Start training" });
+    function paintSoundEngine() {
+      clear(engineHost);
+      clear(licenceHost);
+      if (!sounds) { return; }
+      var engine = trainSoundEngine(status, currentDataset());
+      if (!engine) {
+        engineHost.appendChild(trainNote("This dataset does not name a sound engine Audtheia knows. Build it again in the Dataset view.", "form-message train-stop"));
+        startBtn.disabled = true;
+        return;
+      }
+      engineHost.appendChild(modelKvRow("Engine", engine.label + ", " + engine.sample_rate + " Hz, " + engine.window_seconds + " second windows"));
+      if (!engine.base) {
+        engineHost.appendChild(trainNote("The " + engine.label + " engine has no base model in this version yet, so it cannot train. A sound dataset built for the other engine can.", "form-message train-stop"));
+        startBtn.disabled = true;
+        return;
+      }
+      engineHost.appendChild(modelKvRow("Base model", engine.base.label + ", downloaded once, " + (engine.base.download_bytes / 1e6).toFixed(1) + " MB"));
+      licenceHost.appendChild(trainNote(trainLicenceText(engine.base)));
+      startBtn.disabled = false;
+    }
+    dsSelect.addEventListener("change", function () { R.datasetId = dsSelect.value; R.estimate = null; paintSoundEngine(); paintEstimate(); });
 
     var baseSelect = el("select", { class: "form-input", "aria-label": "Model size" });
     bases.forEach(function (b) {
@@ -6727,7 +6808,7 @@
     baseSelect.value = R.base;
     baseSelect.addEventListener("change", function () { R.base = baseSelect.value; R.estimate = null; paintEstimate(); });
 
-    var nameInput = el("input", { type: "text", class: "form-input", maxLength: 40, placeholder: "for example Reef" });
+    var nameInput = el("input", { type: "text", class: "form-input", maxLength: 40, placeholder: sounds ? "for example Dawn" : "for example Reef" });
     nameInput.value = R.name;
     var nameHint = el("span", { class: "form-hint", text: "Letters, digits, hyphens or underscores. Each new run of the same name becomes the next version." });
     var nameTimer = null;
@@ -6758,7 +6839,10 @@
     startKind.addEventListener("change", function () { R.startKind = startKind.value; syncStart(); });
 
     var modes = el("div", { class: "train-criteria" });
-    [["gentle", "Gentle", "Uses half the processor threads at a lower priority and one image at a time, so the computer stays cool and responsive. It takes longer."],
+    var gentleText = sounds
+      ? "Uses half the processor threads at a lower priority and summarises one window at a time, so the computer stays cool and responsive. It takes longer."
+      : "Uses half the processor threads at a lower priority and one image at a time, so the computer stays cool and responsive. It takes longer.";
+    [["gentle", "Gentle", gentleText],
      ["full_speed", "Full speed", "Uses the whole computer. Fastest, and the computer will be busy and warm."]].forEach(function (m) {
       var radio = el("input", { type: "radio", name: "train-mode", value: m[0] });
       radio.checked = R.mode === m[0];
@@ -6770,8 +6854,8 @@
     var adv = el("details", { class: "train-drawer" });
     adv.appendChild(el("summary", { text: "Advanced settings" }));
     var advGrid = el("div", { class: "train-advanced" });
-    var defaults = status.vision_defaults || {};
-    TRAIN_ADVANCED.forEach(function (a) {
+    var defaults = (sounds ? status.acoustic_defaults : status.vision_defaults) || {};
+    TRAIN_ADVANCED[sounds ? "sounds" : "images"].forEach(function (a) {
       var input = el("input", { type: "number", class: "form-input" });
       input.setAttribute("min", String(a[3]));
       input.setAttribute("step", String(a[4]));
@@ -6789,22 +6873,32 @@
 
     var estimateHost = el("div", { class: "kv-list" });
     var estimateBtn = el("button", { type: "button", class: "btn", text: "Estimate time and disk" });
-    var startBtn = el("button", { type: "button", class: "btn btn-primary", text: "Start training" });
     var msg = el("p", { class: "form-message" });
 
     function paintEstimate() {
       clear(estimateHost);
       var e = R.estimate;
       if (!e) {
-        estimateHost.appendChild(trainNote("Press Estimate time and disk to measure how fast this computer trains the chosen size and how much disk space the run will need. It takes up to a minute."));
+        estimateHost.appendChild(trainNote(sounds
+          ? "Press Estimate time and disk to measure how fast this computer summarises the windows and how much disk space the run will need."
+          : "Press Estimate time and disk to measure how fast this computer trains the chosen size and how much disk space the run will need. It takes up to a minute."));
         return;
       }
       estimateHost.appendChild(modelKvRow("Estimated time, at least", trainFmtHours(e.estimate.hours)));
-      estimateHost.appendChild(trainNote("The measurement covers the model's own calculation. Loading images, matching boxes and updating the weights add to it, so the real run takes longer. The Runs view shows the time left from the real speed once training starts."));
+      if (e.note) { estimateHost.appendChild(trainNote(e.note)); }
+      if (e.benchmark) {
+        estimateHost.appendChild(trainNote(sounds
+          ? "The measurement covers the base model summarising every window once, which is most of the work. Reading the clips and training the final layer add a little."
+          : "The measurement covers the model's own calculation. Loading images, matching boxes and updating the weights add to it, so the real run takes longer. The Runs view shows the time left from the real speed once training starts."));
+      }
       if (e.estimate.disk_gb !== null && e.estimate.disk_gb !== undefined) {
         estimateHost.appendChild(modelKvRow("Disk the run will use, about", e.estimate.disk_gb.toFixed(1) + " GB"));
       }
-      estimateHost.appendChild(modelKvRow("Measured speed", e.benchmark.seconds_per_train_image.toFixed(2) + " seconds per training image on " + e.benchmark.device));
+      if (e.benchmark && sounds) {
+        estimateHost.appendChild(modelKvRow("Measured speed", e.benchmark.seconds_per_window.toFixed(3) + " seconds per window on the processor"));
+      } else if (e.benchmark) {
+        estimateHost.appendChild(modelKvRow("Measured speed", e.benchmark.seconds_per_train_image.toFixed(2) + " seconds per training image on " + e.benchmark.device));
+      }
       (e.advice || []).forEach(function (a) { estimateHost.appendChild(trainNote(a.message)); });
     }
 
@@ -6824,8 +6918,13 @@
     estimateBtn.addEventListener("click", function () {
       estimateBtn.disabled = true;
       msg.textContent = "Measuring.";
-      apiSend("/train/estimate", "POST", { dataset_id: R.datasetId, base: R.base, mode: R.mode, overrides: R.overrides })
-        .then(waitEstimate)
+      var body = { dataset_id: R.datasetId, mode: R.mode, overrides: R.overrides };
+      if (!sounds) { body.base = R.base; }
+      apiSend("/train/estimate", "POST", body)
+        .then(function (res) {
+          if (res && res.job && res.job.status === "done") { estimateBtn.disabled = false; msg.textContent = ""; R.estimate = res.job.result; paintEstimate(); return; }
+          waitEstimate();
+        })
         .catch(function (e) { estimateBtn.disabled = false; msg.textContent = e.message; });
     });
 
@@ -6842,9 +6941,12 @@
     startBtn.addEventListener("click", function () {
       startBtn.disabled = true;
       msg.textContent = "Checking the safety limits and starting.";
-      var body = { engine: TRAIN_ENGINE, dataset_id: R.datasetId, base: R.base, mode: R.mode, name: R.name,
-                   overrides: R.overrides, continue_while_capturing: R.continueWhileCapturing,
-                   start_from: R.startKind === "checkpoint" ? { kind: "checkpoint", path: R.checkpoint } : { kind: "pretrained" } };
+      var body = { engine: trainEngine(), dataset_id: R.datasetId, mode: R.mode, name: R.name,
+                   overrides: R.overrides, continue_while_capturing: R.continueWhileCapturing };
+      if (!sounds) {
+        body.base = R.base;
+        body.start_from = R.startKind === "checkpoint" ? { kind: "checkpoint", path: R.checkpoint } : { kind: "pretrained" };
+      }
       apiSend("/train/runs", "POST", body).then(function () {
         msg.textContent = "";
         startBtn.disabled = false;
@@ -6852,27 +6954,39 @@
       }).catch(function (e) { startBtn.disabled = false; msg.textContent = e.message; });
     });
 
-    block.appendChild(el("div", { class: "train-controls" }, [
-      el("label", { class: "form-field" }, [el("span", { class: "form-label", text: "Dataset" }), dsSelect]),
-      el("label", { class: "form-field" }, [el("span", { class: "form-label", text: "Model size" }), baseSelect,
-        el("span", { class: "form-hint", text: device === "cpu" ? "On the processor alone Nano or Small is recommended." : "Larger sizes are more accurate and slower." })]),
-      el("label", { class: "form-field" }, [el("span", { class: "form-label", text: "Model name" }), nameInput, nameHint])
-    ]));
-    block.appendChild(el("div", { class: "train-controls" }, [
-      el("label", { class: "form-field" }, [el("span", { class: "form-label", text: "Start from" }), startKind]), ckptField
-    ]));
+    var firstRow = [el("label", { class: "form-field" }, [el("span", { class: "form-label", text: "Dataset" }), dsSelect])];
+    if (!sounds) {
+      firstRow.push(el("label", { class: "form-field" }, [el("span", { class: "form-label", text: "Model size" }), baseSelect,
+        el("span", { class: "form-hint", text: device === "cpu" ? "On the processor alone Nano or Small is recommended." : "Larger sizes are more accurate and slower." })]));
+    }
+    firstRow.push(el("label", { class: "form-field" }, [el("span", { class: "form-label", text: "Model name" }), nameInput, nameHint]));
+    block.appendChild(el("div", { class: "train-controls" }, firstRow));
+    if (sounds) {
+      block.appendChild(engineHost);
+    } else {
+      block.appendChild(el("div", { class: "train-controls" }, [
+        el("label", { class: "form-field" }, [el("span", { class: "form-label", text: "Start from" }), startKind]), ckptField
+      ]));
+    }
     block.appendChild(el("h4", { text: "Speed" }));
     block.appendChild(modes);
-    block.appendChild(trainNote("Both modes train with the same data, seed, epochs, batch, image size, learning rates and model size. Gentle only divides each batch into smaller pieces, so its result should be close to Full speed's, though not identical bit for bit."));
+    block.appendChild(trainNote(sounds
+      ? "Both modes summarise the same windows with the same base model and train the final layer with the same data, seed, epochs, batch and learning rate. Gentle only summarises fewer windows at a time, so its result should match Full speed's, at most to within rounding."
+      : "Both modes train with the same data, seed, epochs, batch, image size, learning rates and model size. Gentle only divides each batch into smaller pieces, so its result should be close to Full speed's, though not identical bit for bit."));
     block.appendChild(adv);
     block.appendChild(el("h4", { text: "Licence" }));
-    block.appendChild(trainNote("The RF-DETR Nano, Small, Medium and Large weights are Apache-2.0, and a model fine-tuned from them is Apache-2.0 too. Whether your frames may be shared is your decision, and the model card records it."));
+    if (sounds) {
+      block.appendChild(licenceHost);
+    } else {
+      block.appendChild(trainNote("The RF-DETR Nano, Small, Medium and Large weights are Apache-2.0, and a model fine-tuned from them is Apache-2.0 too. Whether your frames may be shared is your decision, and the model card records it."));
+    }
     block.appendChild(estimateHost);
     block.appendChild(capture);
     block.appendChild(el("div", { class: "form-actions" }, [estimateBtn, startBtn]));
     block.appendChild(msg);
     host.appendChild(block);
     syncStart();
+    paintSoundEngine();
     paintEstimate();
   }
 
@@ -6950,7 +7064,13 @@
     card.appendChild(bar);
     card.appendChild(modelKvRow("Epochs", fmtNum(done) + " of " + fmtNum(total)));
     var live = run.live || {};
-    if (live.batch_done && live.batches_total && ["preparing", "running"].indexOf(run.status) >= 0) {
+    var activeNow = ["preparing", "running"].indexOf(run.status) >= 0;
+    if (activeNow && live.stage === "summarising" && live.batch_done && live.batches_total) {
+      card.appendChild(modelKvRow("Now", "summarising the windows with the base model, step " + fmtNum(live.batch_done) +
+        " of " + fmtNum(live.batches_total)));
+    } else if (activeNow && live.stage === "exporting") {
+      card.appendChild(modelKvRow("Now", "calibrating, scoring the test windows and writing the model file"));
+    } else if (live.batch_done && live.batches_total && activeNow && live.current_epoch) {
       card.appendChild(modelKvRow("Now", "epoch " + fmtNum(live.current_epoch) + ", step " + fmtNum(live.batch_done) +
         " of " + fmtNum(live.batches_total)));
       if (live.seconds_per_step) {
@@ -6961,8 +7081,9 @@
     }
     if (run.best_metric_value !== null && run.best_metric_value !== undefined) {
       var finished = ["completed", "cancelled", "failed"].indexOf(run.status) >= 0;
-      card.appendChild(modelKvRow("Best validation mAP over IoU 0.50 to 0.95" + (finished ? "" : " so far"),
-        run.best_metric_value.toFixed(3)));
+      var bestLabel = run.best_metric_name === "cmap" ? "Best validation cmAP, the mean of each species' average precision"
+        : "Best validation mAP over IoU 0.50 to 0.95";
+      card.appendChild(modelKvRow(bestLabel + (finished ? "" : " so far"), run.best_metric_value.toFixed(3)));
     }
     card.appendChild(modelKvRow("Mode and size", (run.mode === "gentle" ? "Gentle" : "Full speed") + ", " + run.base_label));
     if (run.started_at) { card.appendChild(modelKvRow("Started", fmtTime(run.started_at))); }
@@ -7032,15 +7153,18 @@
     if (detail.error) { body.appendChild(trainNote("Could not read the run: " + detail.error, "card-note")); return; }
     var rows = detail.progress || [];
     if (rows.length) {
+      var sound = run.modality === "acoustic";
       var table = el("table", { class: "trust-table train-table" });
-      table.appendChild(el("thead", {}, [el("tr", {}, [
-        el("th", { class: "num", text: "Epoch" }), el("th", { class: "num", text: "Training loss" }),
-        el("th", { class: "num", text: "mAP at IoU 0.50" }), el("th", { class: "num", text: "mAP 0.50 to 0.95" })])]));
+      var heads = sound ? ["Epoch", "Training loss", "Validation loss", "Validation cmAP"]
+        : ["Epoch", "Training loss", "mAP at IoU 0.50", "mAP 0.50 to 0.95"];
+      table.appendChild(el("thead", {}, [el("tr", {}, heads.map(function (h) { return el("th", { class: "num", text: h }); }))]));
       var tb = el("tbody");
       rows.forEach(function (p) {
         function cell(v) { return el("td", { class: "num", text: v === undefined || v === null ? "" : Number(v).toFixed(4) }); }
-        tb.appendChild(el("tr", {}, [el("td", { class: "num", text: String(p.epoch) }), cell(p.train_loss),
-          cell(p.ema_map50 !== undefined ? p.ema_map50 : p.map50), cell(p.ema_map50_95 !== undefined ? p.ema_map50_95 : p.map50_95)]));
+        var cells = sound ? [cell(p.train_loss), cell(p.val_loss), cell(p.val_cmap)]
+          : [cell(p.train_loss), cell(p.ema_map50 !== undefined ? p.ema_map50 : p.map50),
+             cell(p.ema_map50_95 !== undefined ? p.ema_map50_95 : p.map50_95)];
+        tb.appendChild(el("tr", {}, [el("td", { class: "num", text: String(p.epoch) })].concat(cells)));
       });
       table.appendChild(tb);
       body.appendChild(table);

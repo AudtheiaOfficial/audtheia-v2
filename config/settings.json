@@ -185,8 +185,29 @@
     },
     "acoustic": {
       "engines": [
-        { "key": "acoustic_head_a", "label": "Terrestrial and avian", "sample_rate": 48000, "window_seconds": 3.0 },
-        { "key": "acoustic_head_b", "label": "Marine and general", "sample_rate": 32000, "window_seconds": 5.0 }
+        {
+          "key": "acoustic_head_a",
+          "label": "Terrestrial and avian",
+          "sample_rate": 48000,
+          "window_seconds": 3.0,
+          "base": {
+            "label": "BirdNET 2.4",
+            "download_url": "https://zenodo.org/records/15050749/files/BirdNET_v2.4_protobuf.zip",
+            "download_bytes": 124522908,
+            "input_key": "inputs",
+            "embeddings_signature": "embeddings",
+            "embeddings_key": "embeddings",
+            "embeddings_size": 1024,
+            "licence": "CC BY-NC-SA 4.0"
+          }
+        },
+        {
+          "key": "acoustic_head_b",
+          "label": "Marine and general",
+          "sample_rate": 32000,
+          "window_seconds": 5.0,
+          "base": null
+        }
       ],
       "defaults": {
         "epochs": 50,
@@ -242,7 +263,7 @@
       },
       "packages": {
         "vision": ["rfdetr[train,onnx]"],
-        "acoustic": ["perch-hoplite[tf]", "birdnet-analyzer"]
+        "acoustic": ["tensorflow", "ai-edge-litert"]
       }
     },
     "sharing": {

@@ -63,6 +63,7 @@ BATCH_NOTE_SECONDS = 3.0         # how often progress within an epoch is noted
 ENGINES = {
     "selftest": "audtheia.training.worker:SelfTestEngine",
     "vision_detector": "audtheia.training.vision:VisionEngine",
+    "acoustic_head": "audtheia.training.acoustic:AcousticEngine",
 }
 
 STATES = ("preparing", "running", "paused", "completed", "failed", "cancelled")
