@@ -129,6 +129,54 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   and writes only inside its own run folder, never the record or the data
   folder. While capture runs on the same computer, a run starts only after the
   person chooses to continue.
+- **One identity per species in every dataset.** The same organism can reach the
+  record under several labels: a model's own class name, BirdNET's joined
+  scientific and common name, or the accepted name an expert chose. Before any
+  class is counted, every label is matched to the shipped taxonomic backbone, by
+  the key the record carries, an exact scientific name, or the scientific part of
+  a BirdNET label, with synonyms followed to the accepted taxon, and the classes
+  that are one taxon are merged. A label no rule can read, such as a model's
+  class name, is listed in the preview with the reason, for an expert to map
+  once to its species through the backbone search or to keep as its own class,
+  for a morphotype or an informal name. Nothing is merged by guessing, an
+  ambiguous name is never resolved, and the record is never changed: the
+  decisions are kept in a small label map beside the datasets, each marked as an
+  expert's. The counts before building use the same identities, and the dataset
+  manifest records how every class was identified.
+- **Train tab: Results.** A finished run is scored on its test set, beside a
+  model already in use that the person chooses, by the same decoding the app
+  uses during capture and the same metric code, on the same images or sound
+  windows. Classes are matched by taxon identity, so the model in use is credited
+  with a species however its labels spell it. A first comparison covers every
+  class in the test set, with the species the model in use cannot name listed
+  and counted as missed, as they would be in the field, and a second covers only
+  the species both models know. Boxes the model in use draws for species outside
+  the dataset are counted and reported. The share of test boxes that a model
+  proposed is stated, with the caveat that a model scored against boxes it drew
+  itself is favoured. The app prints the figures and their differences and never
+  says which model is better. The panel shows the headline figures, every chart
+  of the evaluation, the figures for each class, calibrated thresholds for sound
+  models, and example test images with their truth and predicted boxes.
+- **Charts in every theme, saved as pictures and tables.** Charts are drawn in
+  the browser from a colour-blind-safe series palette defined for each of the
+  seven themes, each colour at least 3:1 against the surface and the page. Each
+  chart has Save PNG and Save CSV, series that can be switched on and off, and
+  the pictures are saved into the run folder from the same drawing shown on the
+  screen. The evaluation and one CSV per chart are written inside the run folder
+  only.
+- **Box tool.** In the Detections frame review, each frame has a Boxes button.
+  An expert can redraw or remove the model's box, or draw a box the model missed
+  with its taxon chosen from the backbone search, and move or delete that box
+  later. Each change is appended as the expert's own record and is used only
+  when building training datasets, where the frame is marked as edited and the
+  box is counted as expert-drawn. The captured frame, its annotation file and the
+  model's detections never change.
+- **Large allocation units are named before installing.** A drive formatted with
+  large blocks gives every file at least one whole block, so the training
+  libraries, which are mostly small files, can take many times their real size.
+  The install plan now reads the block size of the drive the environments go to
+  and, above 64 KB, says plainly how much more space they could take and how to
+  choose a folder on another drive, before anything is downloaded.
 
 ### Changed
 
@@ -145,6 +193,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **Number fields follow the theme.** Number inputs, such as the dataset and
   training settings, now use the theme's colours and borders like every other
   field, instead of the browser's plain white box.
+- **Sound run cards** name the base model as such, Mode and base model, rather
+  than a model size.
+- **Dataset rules version 2.** Datasets built from now on carry rules version 2,
+  because merging labels of one taxon can change what a selection holds. A
+  dataset built before stays valid and is recognised as built under version 1.
 - **PyTorch download locations.** The training install settings now hold the
   official PyTorch 2.14 download locations instead of empty values, which by
   design blocked installing.

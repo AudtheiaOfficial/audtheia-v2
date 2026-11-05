@@ -169,9 +169,10 @@ class World5(World):
         from audtheia.config import load_settings  # noqa: PLC0415
         self.settings = load_settings(self.settings_path)
 
-    def components(self, pip=None, popen=None, windows=False, long_paths=lambda: False):
+    def components(self, pip=None, popen=None, windows=False, long_paths=lambda: False, cluster=None):
+        extra = {"cluster": cluster} if cluster is not None else {}
         return C.Components(self.settings, base_python="/usr/bin/python-base", runner=pip or FakePip(),
-                            sizer=sizer, popen=popen or FakePopen(), windows=windows, long_paths=long_paths)
+                            sizer=sizer, popen=popen or FakePopen(), windows=windows, long_paths=long_paths, **extra)
 
 
 def snapshot(root: Path) -> list:
@@ -215,6 +216,38 @@ def test_plan():
         w = World5(Path(td), indexes=dict(INDEXES, cpu=None))
         check("a download location left empty stops the plan and is never guessed",
               raises(lambda: w.components().plan("vision_detector", LAPTOP), C.ComponentError, 422))
+
+
+def test_cluster_size():
+    print("drives with large allocation units")
+    check("the allocation unit of a real folder is read", (C.cluster_bytes(Path(__file__).parent) or 0) >= 512)
+    check("a folder not created yet is answered for the drive it would be on",
+          C.cluster_bytes(Path(__file__).parent / "not" / "yet" / "made") == C.cluster_bytes(Path(__file__).parent))
+    check("a usual 4 KB unit gives no warning", C.cluster_note(4096, "vision") is None)
+    check("the threshold itself gives no warning", C.cluster_note(C.LARGE_CLUSTER_BYTES, "vision") is None)
+    check("an unreadable unit gives no warning", C.cluster_note(None, "vision") is None)
+    note = C.cluster_note(1024 * 1024, "vision")
+    check("a 1 MB unit is named in plain words with its cost and the fix",
+          note is not None and "blocks of 1 MB" in note and "about 41 GB" in note and "envs_dir" in note)
+    check("a 128 KB unit is named in kilobytes", "blocks of 128 KB" in C.cluster_note(128 * 1024, "acoustic"))
+    with tempfile.TemporaryDirectory() as td:
+        w = World5(Path(td))
+        seen = []
+        plan = w.components(cluster=lambda p: seen.append(Path(p)) or 1024 * 1024).plan("vision_detector", LAPTOP)
+        check("the plan carries the warning before anything is downloaded",
+              plan["cluster_bytes"] == 1024 * 1024 and plan["cluster_warning"] == C.cluster_note(1024 * 1024, "vision"))
+        check("the drive asked is the one the environments go to",
+              seen == [Path(w.settings.training_paths()["envs_dir"])])
+        plan = w.components(cluster=lambda p: 4096).plan("acoustic_head", LAPTOP)
+        check("a usual drive gives a plan with no warning", plan["cluster_warning"] is None and plan["cluster_bytes"] == 4096)
+        comp = w.components(cluster=lambda p: 256 * 1024 * 1024)
+        env = comp.env_dir("acoustic_head")
+        env.mkdir(parents=True)
+        (env / "a.txt").write_bytes(b"x" * 10)
+        (env / "b.txt").write_bytes(b"x" * 1500)
+        check("the real size counts the bytes", comp.folder_size_gb("acoustic_head") == 0.0)
+        check("the size on disk counts one whole block for each small file",
+              comp.folder_size_gb("acoustic_head", on_disk=True) == 0.5)
 
 
 def test_install_and_remove():
@@ -396,6 +429,7 @@ def test_real_pip():
 
 def main() -> int:
     test_plan()
+    test_cluster_size()
     test_install_and_remove()
     test_sound_components()
     test_command_search_path()

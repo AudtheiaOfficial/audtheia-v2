@@ -67,6 +67,56 @@ TORCH_ENVIRONMENTS = ("vision",)
 WINDOWS_PATH_LIMIT = 260
 DEEPEST_PACKAGE_PATH = 170
 
+# A drive formatted with large allocation units gives every file at least one whole
+# unit, however small the file. The training libraries are mostly small files, so on
+# such a drive they take many times their real size. Above this unit size the plan
+# says so before anything is downloaded.
+LARGE_CLUSTER_BYTES = 64 * 1024
+# Files in each installed environment, counted on a Windows installation. They are
+# used only to estimate the space a large allocation unit would cost.
+APPROXIMATE_FILE_COUNT = {"vision": 42000, "acoustic": 22000}
+
+
+def cluster_bytes(path) -> int | None:
+    """The allocation unit of the drive that holds path, or None when it cannot be read.
+
+    The nearest folder that exists is asked, so a folder not created yet is answered
+    for the drive it will be created on. Nothing is written.
+    """
+    target = Path(path)
+    while not target.exists() and target.parent != target:
+        target = target.parent
+    try:
+        if sys.platform.startswith("win"):
+            import ctypes  # noqa: PLC0415
+
+            sectors, sector_bytes = ctypes.c_ulong(), ctypes.c_ulong()
+            free, total = ctypes.c_ulong(), ctypes.c_ulong()
+            root = os.path.splitdrive(str(target.resolve()))[0] + "\\"
+            ok = ctypes.windll.kernel32.GetDiskFreeSpaceW(ctypes.c_wchar_p(root), ctypes.byref(sectors),
+                                                          ctypes.byref(sector_bytes), ctypes.byref(free),
+                                                          ctypes.byref(total))
+            return int(sectors.value) * int(sector_bytes.value) if ok else None
+        stats = os.statvfs(str(target))
+        return int(stats.f_frsize or stats.f_bsize) or None
+    except (OSError, AttributeError, ValueError):
+        return None
+
+
+def cluster_note(cluster: int | None, environment: str) -> str | None:
+    """A plain warning when the drive's allocation unit would multiply the installed size."""
+    if not cluster or cluster <= LARGE_CLUSTER_BYTES:
+        return None
+    files = APPROXIMATE_FILE_COUNT.get(environment)
+    unit = f"{cluster // (1024 * 1024)} MB" if cluster >= 1024 * 1024 else f"{cluster // 1024} KB"
+    extra = ""
+    if files:
+        extra = (f" These libraries hold about {files:,} files, so here they could take up to about"
+                 f" {files * cluster / hardware.GIB:.0f} GB more than their real size.")
+    return (f"This drive stores every file in blocks of {unit}, so even a tiny file takes {unit}.{extra} A drive"
+            " formatted with small blocks, such as a usual Windows system drive, avoids this. Set"
+            " training.paths.envs_dir to a folder on such a drive, for example C:\\atrain, before installing.")
+
 MARKER_INSTALLING = "INSTALLING"
 COMPONENT_FILE = "component.json"
 SELF_TEST_SNIPPET_TORCH = (
@@ -189,7 +239,8 @@ class Components:
     def __init__(self, settings: Any, *, base_python: str | None = None,
                  runner: Callable[..., tuple] = run_capture, sizer: Callable[[str], int | None] = content_length,
                  popen: Callable[..., Any] = subprocess.Popen, windows: bool | None = None,
-                 long_paths: Callable[[], bool | None] = windows_long_paths_enabled):
+                 long_paths: Callable[[], bool | None] = windows_long_paths_enabled,
+                 cluster: Callable[[Any], int | None] = cluster_bytes):
         self.settings = settings
         cfg = settings.training_config()
         self.install_cfg = cfg.get("install") or {}
@@ -200,6 +251,7 @@ class Components:
         self.popen = popen
         self.windows = sys.platform.startswith("win") if windows is None else bool(windows)
         self.long_paths = long_paths
+        self.cluster = cluster
         self._lock = threading.Lock()
         self._jobs: dict = {}
 
@@ -244,17 +296,20 @@ class Components:
             info["state"] = "incomplete"
         return info
 
-    def folder_size_gb(self, engine: str) -> float | None:
+    def folder_size_gb(self, engine: str, *, on_disk: bool = False) -> float | None:
+        """The installed size, or with on_disk the space the drive gives it, whole blocks per file."""
         env_dir = self.env_dir(engine)
         if not env_dir.exists():
             return None
+        unit = (self.cluster(env_dir) or 1) if on_disk else 1
         total = 0
         for root, _dirs, files in os.walk(env_dir):
             for f in files:
                 try:
-                    total += os.path.getsize(os.path.join(root, f))
+                    size = os.path.getsize(os.path.join(root, f))
                 except OSError:
-                    pass
+                    continue
+                total += -(-size // unit) * unit if on_disk else size
         return round(total / hardware.GIB, 2)
 
     # -- planning ------------------------------------------------------------
@@ -327,6 +382,7 @@ class Components:
         files = [dict(item, size_bytes=size) for item, size in zip(everything, sizes)]
         total = sum(s for s in sizes if s is not None)
         unknown = sum(1 for s in sizes if s is None)
+        cluster = self.cluster(self.envs_dir)
         return {
             "engine": engine,
             "environment": self.environment(engine),
@@ -343,6 +399,8 @@ class Components:
             "files_without_size": unknown,
             "internet_needed": "Once, to download these files. Training itself works offline.",
             "installed_size_note": "The installed size is larger than the download and is measured after installing.",
+            "cluster_bytes": cluster,
+            "cluster_warning": cluster_note(cluster, self.environment(engine)),
         }
 
     # -- installing ----------------------------------------------------------

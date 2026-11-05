@@ -39,6 +39,7 @@ and tooling that do not need a live server.
 import copy
 import importlib.util
 import json
+import math
 import os
 import sqlite3
 import subprocess
@@ -92,6 +93,8 @@ _FRAME_REVIEW_VERDICTS = ("accurate", "inaccurate", "cleared")
 # identification is not reviewable, and this is the honest placeholder rather
 # than a fabricated identity.
 _DEFAULT_CORRECTOR = "expert"
+_CHART_UPLOAD_MAX_COUNT = 80
+_CHART_UPLOAD_MAX_BYTES = 4 * 1024 * 1024
 
 # The prebuilt taxonomic index, written beside the shipped backbone by
 # scripts/build_gbif_index.py.
@@ -2203,6 +2206,107 @@ def create_app(settings, database):
         )
         return {"written": written, "review_summary": _frame_review_summary(observation_id, frames, distribution)}
 
+    # -- box corrections: an expert's own boxes for training -------------
+
+    def _frame_for_boxes(observation_id: str, frame_index: int) -> tuple:
+        obs = db.get_observation(observation_id)
+        if obs is None:
+            raise HTTPException(status_code=404, detail=f"no observation with id {observation_id}")
+        _, frames, _ = _event_frames_on_disk(obs)
+        frame = next((f for f in frames if f.get("index") == frame_index), None)
+        if frame is None:
+            raise HTTPException(status_code=404, detail=f"the event has no saved frame {frame_index}")
+        path = Path(frame["path"])
+        path = path if path.is_absolute() else Path(settings.repo_root) / path
+        try:
+            from PIL import Image
+
+            with Image.open(path) as img:
+                width, height = img.size
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=404, detail=f"the frame image could not be read: {exc}") from exc
+        model_box = None
+        if frame.get("bbox_w") is not None:
+            model_box = [frame["bbox_x"], frame["bbox_y"], frame["bbox_x"] + frame["bbox_w"],
+                         frame["bbox_y"] + frame["bbox_h"]]
+        return obs, frame, width, height, model_box
+
+    def _boxes_state(observation_id: str, frame_index: int, model_box) -> dict:
+        rows = [r for r in db.frame_boxes_for_observation(observation_id) if r["frame_index"] == frame_index]
+        return {"model_box": model_box, "corrections": rows}
+
+    @app.get(f"{API_PREFIX}/detections/{{observation_id}}/frames/{{frame_index}}/boxes")
+    def frame_boxes(observation_id, frame_index: int):
+        """The model's box on one frame and the current expert correction of each box."""
+        _obs, frame, width, height, model_box = _frame_for_boxes(observation_id, frame_index)
+        out = _boxes_state(observation_id, frame_index, model_box)
+        out.update({"frame_width": width, "frame_height": height, "path": frame["path"],
+                    "class_name": frame.get("class_name")})
+        return out
+
+    @app.post(f"{API_PREFIX}/detections/{{observation_id}}/frames/{{frame_index}}/boxes", status_code=201)
+    def correct_frame_box(observation_id, frame_index: int, request: dict = Body(default={})):
+        """Append one expert box correction for training. The captured frame and its boxes never change.
+
+        adjust replaces a box with the expert's geometry, add draws a box the model
+        missed with a taxon chosen from the backbone search, remove drops a box, and
+        cleared retracts the expert's last word on a box so the model's box stands again.
+        """
+        _obs, _frame, width, height, model_box = _frame_for_boxes(observation_id, frame_index)
+        action = request.get("action")
+        if action not in ("adjust", "add", "remove", "cleared"):
+            raise HTTPException(status_code=422, detail="action must be adjust, add, remove or cleared.")
+        current = {r["box_key"]: r for r in db.frame_boxes_for_observation(observation_id)
+                   if r["frame_index"] == frame_index}
+        box_key = None
+        if action != "add":
+            box_key = str(request.get("box_key") or "model")
+            if box_key == "model":
+                if model_box is None:
+                    raise HTTPException(status_code=422, detail="this frame has no model box to correct.")
+            elif box_key not in current:
+                raise HTTPException(status_code=422, detail="that box is not on this frame.")
+        coords = None
+        if action in ("adjust", "add"):
+            xyxy = request.get("xyxy")
+            try:
+                coords = [float(v) for v in xyxy]
+            except (TypeError, ValueError):
+                coords = None
+            if not coords or len(coords) != 4 or not all(math.isfinite(v) for v in coords):
+                raise HTTPException(status_code=422, detail="give the box as four numbers: left, top, right, bottom.")
+            x1, y1, x2, y2 = coords
+            if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
+                raise HTTPException(status_code=422, detail=(
+                    f"the box must lie inside the {width} by {height} frame, with right after left and bottom after top."))
+        name = usage = snapshot = None
+        if action == "adjust" and box_key != "model":
+            # An expert's own box is moved by drawing it again under the same lineage,
+            # keeping its taxon, so the newest drawing is the one the dataset uses.
+            previous = current[box_key]
+            if previous.get("action") != "add":
+                raise HTTPException(status_code=422, detail="that box was removed; draw a new one instead.")
+            action = "add"
+            name, usage = previous.get("corrected_scientific_name"), previous.get("corrected_gbif_usage_key")
+            snapshot = previous.get("gbif_snapshot_date")
+        elif action == "add":
+            resolved = _resolve_usage_key(settings, str(request.get("gbif_usage_key") or "").strip()) \
+                if request.get("gbif_usage_key") else None
+            if resolved is None:
+                raise HTTPException(status_code=422, detail="choose the taxon of the new box from the backbone search.")
+            name, usage, snapshot = resolved["scientific_name"], str(resolved["usage_key"]), resolved.get("snapshot_date")
+        row = db.add_frame_box_correction(
+            observation_id, frame_index, action=action, box_key=box_key,
+            corrector=str(request.get("corrector") or "").strip() or _DEFAULT_CORRECTOR,
+            x1=coords[0] if coords else None, y1=coords[1] if coords else None,
+            x2=coords[2] if coords else None, y2=coords[3] if coords else None,
+            frame_width=width if coords else None, frame_height=height if coords else None,
+            corrected_scientific_name=name, corrected_gbif_usage_key=usage, gbif_snapshot_date=snapshot,
+            reason=str(request.get("reason") or "").strip() or None)
+        out = _boxes_state(observation_id, frame_index, model_box)
+        out["box"] = row
+        return out
+
     # -- expert corrections ----------------------------------------------
 
     @app.get(f"{API_PREFIX}/species/search")
@@ -2852,11 +2956,21 @@ def create_app(settings, database):
 
         if modality not in ("vision", "audio"):
             raise HTTPException(status_code=422, detail="modality must be 'vision' or 'audio'")
+        from audtheia.training import dataset as dataset_rules
+
         try:
             required = _training_required(criteria)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return cand_rules.summarize(db.training_candidates(modality, station_id), required)
+        try:
+            resolver = dataset_rules.default_identity_resolver(settings)
+        except dataset_rules.DatasetError:
+            resolver = None
+        try:
+            return cand_rules.summarize(db.training_candidates(modality, station_id), required, identity=resolver)
+        finally:
+            if resolver is not None:
+                resolver.close()
 
     @app.get(f"{API_PREFIX}/train/candidates")
     def train_candidates(
@@ -2933,6 +3047,49 @@ def create_app(settings, database):
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"could not write the dataset: {exc}") from exc
+
+    @app.post(f"{API_PREFIX}/train/identity/labels")
+    def train_identity_label(request: dict = Body(default={})):
+        """Record a person's decision for a label no rule could match to the backbone.
+
+        "map" ties the label to a taxon chosen from the backbone search, so only a key
+        the index holds is accepted and the accepted name is stored with it. "keep"
+        records that the label is meant to stay its own class, such as a morphotype.
+        "clear" removes the decision. The record itself is never changed.
+        """
+        _require_desktop_for_training()
+        from audtheia.training import dataset as dataset_rules
+        from audtheia.training import taxon_identity
+
+        label = str(request.get("label") or "").strip()
+        action = request.get("action")
+        if not label:
+            raise HTTPException(status_code=422, detail="a label is required")
+        if action not in ("map", "keep", "clear"):
+            raise HTTPException(status_code=422, detail="action must be 'map', 'keep' or 'clear'")
+        try:
+            path = dataset_rules.label_map_path(settings)
+            if action == "clear":
+                return {"label": label, "removed": taxon_identity.remove_label_entry(path, label)}
+            corrector = str(request.get("corrector") or "").strip() or _DEFAULT_CORRECTOR
+            if action == "keep":
+                return {"label": label, "entry": taxon_identity.save_label_entry(
+                    path, label, action="keep", corrector=corrector)}
+            usage = str(request.get("gbif_usage_key") or "").strip()
+            if not usage:
+                raise HTTPException(status_code=422, detail="choose a taxon from the backbone search first")
+            resolved = _resolve_usage_key(settings, usage)
+            if resolved is None:
+                raise HTTPException(status_code=422, detail=(
+                    "that backbone key is not in the taxonomic index, so it cannot be used."
+                    " Choose a taxon from the search."))
+            return {"label": label, "entry": taxon_identity.save_label_entry(
+                path, label, action="map", scientific_name=resolved["scientific_name"],
+                gbif_usage_key=str(resolved["usage_key"]), corrector=corrector)}
+        except (dataset_rules.DatasetError, taxon_identity.IdentityError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"could not write the label map: {exc}") from exc
 
     @app.get(API_PREFIX + "/train/dataset/{dataset_id}")
     def train_dataset_detail(dataset_id: str):
@@ -3384,6 +3541,162 @@ def create_app(settings, database):
             return _train_runs().read_log(run_id, offset)
         except run_control.RunError as exc:
             raise _training_error(exc) from exc
+
+    # -- results: scoring a finished run against the model in use ---------------
+
+    def _finished_run(run_id: str) -> tuple:
+        from audtheia.training import runs as run_control
+
+        manager = _train_runs()
+        try:
+            detail = manager.detail(run_id)
+        except run_control.RunError as exc:
+            raise _training_error(exc) from exc
+        run = detail["run"]
+        if run["status"] != "completed":
+            raise HTTPException(status_code=409, detail="results appear once a run has finished.")
+        return manager, run, detail["progress"]
+
+    def _public_candidate(row: dict) -> dict:
+        return {k: row[k] for k in ("id", "label", "exists", "version")}
+
+    def _results_modality(run: dict) -> str:
+        return "vision" if run["modality"] == "vision" else "acoustic"
+
+    @app.get(API_PREFIX + "/train/runs/{run_id}/results")
+    def train_run_results(run_id: str):
+        """Everything the Results panel shows for one finished run."""
+        _require_desktop_for_training()
+        from audtheia.training import charts_data, evaluate
+
+        manager, run, progress = _finished_run(run_id)
+        run_dir = manager.run_dir(run_id)
+        record = evaluate.read_evaluation(run_dir)
+        candidates = evaluate.current_candidates(settings, _results_modality(run))
+        out = {
+            "run": run,
+            "job": _job_snapshot("train-evaluate"),
+            "candidates": [_public_candidate(c) for c in candidates],
+            "evaluated": record is not None,
+            "curves": charts_data.training_curve_charts(progress) if progress else [],
+            "results": None, "current_results": None, "comparison": None, "examples": None,
+            "charts_saved": sorted(p.stem for p in (run_dir / "evaluation" / "png").glob("*.png")),
+        }
+        dataset_dir = settings.resolve_path(run["dataset_dir"])
+        manifest_path = dataset_dir / "manifest.json"
+        if manifest_path.is_file():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                split = manifest.get("split") or {}
+                out["dataset"] = {"dataset_id": manifest.get("dataset_id"), "split_mode": split.get("mode"),
+                                  "seed": split.get("seed"), "untested_classes": split.get("untested_classes") or [],
+                                  "identity": manifest.get("identity")}
+            except (OSError, ValueError):
+                out["dataset"] = None
+        if record is None:
+            return out
+        for key, target in (("challenger", "results"), ("current", "current_results")):
+            if record.get(key):
+                out[target] = charts_data.results_bundle(record[key])
+        out["comparison"] = record.get("comparison")
+        out["examples"] = record.get("examples")
+        out["evaluation"] = {k: record.get(k) for k in ("kind", "created_at", "scored_with", "current_model",
+                                                         "test_images", "test_windows", "note", "box_origin")}
+        return out
+
+    @app.post(API_PREFIX + "/train/runs/{run_id}/evaluate", status_code=202)
+    def train_run_evaluate(run_id: str, request: dict = Body(default={})):
+        """Score a finished run, and the chosen model in use, on the dataset's test split."""
+        _require_desktop_for_training()
+        from audtheia.training import dataset as dataset_rules, evaluate
+
+        manager, run, _progress = _finished_run(run_id)
+        modality = _results_modality(run)
+        wanted = request.get("current_id")
+        current = None
+        if wanted:
+            matches = [c for c in evaluate.current_candidates(settings, modality) if c["id"] == wanted]
+            if not matches:
+                raise HTTPException(status_code=422, detail="that model in use is not configured.")
+            current = matches[0]
+            if not current["exists"]:
+                raise HTTPException(status_code=422, detail=f"the model file was not found at {current['path']}.")
+        run_dir = manager.run_dir(run_id)
+        dataset_dir = settings.resolve_path(run["dataset_dir"])
+        config = json.loads(run["config_json"]) if run.get("config_json") else {}
+
+        def job(update):
+            update(run_id=run_id)
+
+            def note(label, done, total):
+                update(message=f"Scoring the {label}: {done} of {total}.", progress=(done / total) if total else None)
+
+            resolver = dataset_rules.default_identity_resolver(settings)
+            try:
+                if modality == "vision":
+                    record = evaluate.evaluate_vision(
+                        dataset_dir, run_dir / "export" / "model.onnx", current, resolver=resolver, progress=note,
+                        options=settings.training_config().get("evaluation"), seed=run.get("seed") or 0)
+                else:
+                    record = evaluate.evaluate_acoustic(dataset_dir, run_dir / "export", config, current,
+                                                        resolver=resolver, settings=settings, progress=note)
+            finally:
+                resolver.close()
+            evaluate.write_evaluation(run_dir, record)
+            return {"run_id": run_id}
+
+        if not _start_background_job("train-evaluate", job):
+            raise HTTPException(status_code=409, detail="another scoring is already running; wait for it to finish.")
+        return {"started": True, "job": _job_snapshot("train-evaluate")}
+
+    @app.post(API_PREFIX + "/train/runs/{run_id}/charts")
+    def train_run_charts(run_id: str, request: dict = Body(default={})):
+        """Store the chart pictures the browser drew, so the folder holds what the screen showed."""
+        _require_desktop_for_training()
+        import base64
+
+        from audtheia.training import charts_data
+
+        manager, _run, _progress = _finished_run(run_id)
+        charts = request.get("charts")
+        if not isinstance(charts, list) or not charts:
+            raise HTTPException(status_code=422, detail="send at least one chart.")
+        if len(charts) > _CHART_UPLOAD_MAX_COUNT:
+            raise HTTPException(status_code=422, detail=f"send at most {_CHART_UPLOAD_MAX_COUNT} charts at once.")
+        decoded = []
+        for chart in charts:
+            if not isinstance(chart, dict):
+                raise HTTPException(status_code=422, detail="each chart needs an id and a picture.")
+            try:
+                chart_id = charts_data._check_chart_id(str(chart.get("id") or ""))
+                data = base64.b64decode(str(chart.get("png") or ""), validate=True)
+            except (charts_data.ChartsError, ValueError) as exc:
+                raise HTTPException(status_code=422, detail=f"a chart could not be read: {exc}") from exc
+            if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+                raise HTTPException(status_code=422, detail="each chart picture must be a PNG.")
+            if len(data) > _CHART_UPLOAD_MAX_BYTES:
+                raise HTTPException(status_code=422, detail="a chart picture is larger than allowed.")
+            decoded.append((chart_id, data))
+        folder = manager.run_dir(run_id) / "evaluation" / "png"
+        folder.mkdir(parents=True, exist_ok=True)
+        for chart_id, data in decoded:
+            tmp = folder / f".{chart_id}.tmp"
+            tmp.write_bytes(data)
+            os.replace(tmp, folder / f"{chart_id}.png")
+        return {"saved": [c for c, _ in decoded], "folder": str(folder)}
+
+    @app.get(API_PREFIX + "/train/runs/{run_id}/example")
+    def train_run_example(run_id: str, file: str = Query(...)):
+        """One test image of a finished run's dataset, for the example predictions."""
+        _require_desktop_for_training()
+        from fastapi.responses import FileResponse
+
+        _manager, run, _progress = _finished_run(run_id)
+        root = (settings.resolve_path(run["dataset_dir"]) / "test").resolve()
+        target = (settings.resolve_path(run["dataset_dir"]) / file).resolve()
+        if root not in target.parents or not target.is_file():
+            raise HTTPException(status_code=404, detail="no such test image.")
+        return FileResponse(str(target))
 
     @app.post(API_PREFIX + "/train/runs/{run_id}/{action}")
     def train_run_action(run_id: str, action: str):

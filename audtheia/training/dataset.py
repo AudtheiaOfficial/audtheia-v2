@@ -22,12 +22,15 @@ The order of decisions
      audtheia/training/candidates.py.
   2. Frames or windows. The frame rules in frames.py, or the window rules in
      windows.py, with the per-event cap and near-duplicate removal.
-  3. Model-labelled content. Examples whose label is the model's own are capped by a
+  3. Taxon identity. Every label is given one identity through the shipped backbone
+     and the expert label map, in taxon_identity.py, so one species is one class
+     however the record names it. Unresolved labels are listed, never guessed.
+  4. Model-labelled content. Examples whose label is the model's own are capped by a
      setting, default none, and are only ever used for training.
-  4. Class policy. Rare classes are excluded, kept with a warning, or rolled up to a
+  5. Class policy. Rare classes are excluded, kept with a warning, or rolled up to a
      genus or family, one class at a time, and the result is previewed.
-  5. Split. Whole events go to training, validation or test, with a fixed seed.
-  6. Background. Events an expert rejected become background or noise examples, up
+  6. Split. Whole events go to training, validation or test, with a fixed seed.
+  7. Background. Events an expert rejected become background or noise examples, up
      to a fraction of the positive examples in each split.
 
 The manifest records every choice and a signature of the selection. Building the
@@ -48,7 +51,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from audtheia.training import candidates as cand_rules
-from audtheia.training import formats, frames as frame_rules, windows as window_rules
+from audtheia.training import formats, frames as frame_rules, taxon_identity, windows as window_rules
 from audtheia.training.splits import SPLITS, SplitError, assign_splits
 from audtheia.training.taxon_rollup import LEVELS, RollupError, parent_for, rollup_targets
 
@@ -62,11 +65,13 @@ __all__ = [
     "build_dataset",
     "dataset_manifest",
     "list_datasets",
+    "default_identity_resolver",
+    "label_map_path",
 ]
 
 # Bumped whenever a rule above changes what a given selection produces, so a dataset
 # built under older rules is never mistaken for one built under the current rules.
-RULES_VERSION = 1
+RULES_VERSION = 2
 
 BACKGROUND = "background"
 CLASS_ACTIONS = ("exclude", "keep", "roll_up_genus", "roll_up_family")
@@ -301,6 +306,40 @@ def default_rollup_lookup(settings) -> Callable:
         return {key: parent_for(info.get(key), level) for key in class_keys}, info
 
     return lookup
+
+
+def label_map_path(settings) -> Path:
+    """Where the expert label map lives: beside the datasets, outside the data folder."""
+    return _datasets_root(settings) / taxon_identity.LABEL_MAP_FILE
+
+
+def default_identity_resolver(settings) -> "taxon_identity.Resolver":
+    """A resolver over the shipped backbone index and the expert label map."""
+    return taxon_identity.Resolver(Path(settings.path("gbif_backbone_path")),
+                                   taxon_identity.load_label_map(label_map_path(settings)))
+
+
+def _resolve_identity(events: list, resolver, warnings: list) -> dict:
+    """Give every class one identity and merge the classes that share it."""
+    rows = list(_class_counts(events).values())
+    result = taxon_identity.resolve_classes(rows, resolver)
+    _apply_class_mapping(events, result["mapping"])
+    report = result["report"]
+    if not report["index_available"]:
+        warnings.append(
+            "The taxonomic index was not found, so labels were matched only by the backbone keys already in the"
+            " record and by the label map. Run the species data setup so names can be resolved."
+        )
+    for merged in report["merged"]:
+        labels = ", ".join(m["label"] for m in merged["labels"])
+        warnings.append(f"{labels} are the same taxon and were merged into one class, {merged['class_name']}.")
+    if report["unresolved"]:
+        labels = ", ".join(u["label"] for u in report["unresolved"])
+        warnings.append(
+            f"{len(report['unresolved'])} label(s) could not be matched to the backbone and stay their own class:"
+            f" {labels}. Map each one to its species, or mark it to keep, so one species never becomes two classes."
+        )
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -685,7 +724,7 @@ def _signature(plan: dict) -> str:
 
 
 def plan_dataset(db, settings, options: DatasetOptions, *, rollup_lookup: Optional[Callable] = None,
-                 scorer: Optional[Callable] = None) -> dict:
+                 scorer: Optional[Callable] = None, identity=None) -> dict:
     """Work out exactly what a dataset would contain, writing nothing.
 
     Returns the full plan, including the media each example would be written from.
@@ -716,6 +755,13 @@ def plan_dataset(db, settings, options: DatasetOptions, *, rollup_lookup: Option
                 f" {options.sample_rate} Hz. They are written at their own rate, recorded in windows.csv, and the"
                 " trainer resamples them when it loads them."
             )
+
+    resolver = identity or default_identity_resolver(settings)
+    try:
+        identity_report = _resolve_identity(events, resolver, warnings)
+    finally:
+        if identity is None:
+            resolver.close()
 
     _apply_model_label_cap(events, options, warnings, counters)
 
@@ -852,6 +898,7 @@ def plan_dataset(db, settings, options: DatasetOptions, *, rollup_lookup: Option
                   "assignment": {e["event_id"]: e["split"] for e in event_rows}},
         "background": background["stats"],
         "box_stats": box_stats,
+        "identity": identity_report,
         "warnings": warnings,
         "skipped": {
             "events": counters["events_skipped"],
@@ -897,6 +944,7 @@ def summarize_plan(plan: dict) -> dict:
         "untested_classes": plan["split"]["untested_classes"],
         "background": plan["background"],
         "box_stats": plan["box_stats"],
+        "identity": plan["identity"],
         "warnings": plan["warnings"],
         "skipped": plan["skipped"],
         "events": plan["events"],
@@ -985,9 +1033,9 @@ expert-judged events to hold one out and has no score.
 """
 
 
-def build_dataset(db, settings, options: DatasetOptions, *, rollup_lookup=None, scorer=None) -> dict:
+def build_dataset(db, settings, options: DatasetOptions, *, rollup_lookup=None, scorer=None, identity=None) -> dict:
     """Write the planned dataset, or report the identical one that already exists."""
-    plan = plan_dataset(db, settings, options, rollup_lookup=rollup_lookup, scorer=scorer)
+    plan = plan_dataset(db, settings, options, rollup_lookup=rollup_lookup, scorer=scorer, identity=identity)
     if not any(plan["items"][s] for s in SPLITS):
         raise DatasetError("nothing qualifies under these settings, so there is nothing to build")
     if not plan["items"]["train"]:
@@ -1104,6 +1152,7 @@ def _write_dataset(plan: dict, options: DatasetOptions, settings, target: Path) 
         "split": split_doc,
         "background": plan["background"],
         "box_stats": plan["box_stats"],
+        "identity": plan["identity"],
         "events": plan["events"],
         "warnings": plan["warnings"],
         "skipped": plan["skipped"],

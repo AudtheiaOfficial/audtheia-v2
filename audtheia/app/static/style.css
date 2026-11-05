@@ -669,6 +669,16 @@ a:hover {
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-2: 0 6px 28px rgba(0, 0, 0, 0.55);
   --panel-blur: 0px;
+  /* Chart series: the Okabe and Ito colour-blind-safe set, each at least 3:1
+     against the surface and the page in every dark theme (WCAG 1.4.11). */
+  --series-1: #56b4e9;
+  --series-2: #e69f00;
+  --series-3: #009e73;
+  --series-4: #f0e442;
+  --series-5: #cc79a7;
+  --series-6: #3b8fd9;
+  --series-7: #e0621a;
+  --series-8: #bbbbbb;
 }
 
 /* Forest: the light identity. Natural greens, warm paper background, canopy
@@ -695,6 +705,15 @@ a:hover {
   --shadow-1: 0 1px 2px rgba(31, 42, 28, 0.12);
   --shadow-2: 0 8px 26px rgba(31, 42, 28, 0.16);
   --panel-blur: 0px;
+  /* Chart series: the Okabe and Ito set darkened to reach 3:1 on light surfaces. */
+  --series-1: #0067a3;
+  --series-2: #a35200;
+  --series-3: #00735a;
+  --series-4: #736600;
+  --series-5: #9c437c;
+  --series-6: #3a56a8;
+  --series-7: #b83f00;
+  --series-8: #5c5c5c;
 }
 
 /* Cloud Dancer: a warm, airy light theme built on Pantone's 2026 Cloud Dancer.
@@ -724,6 +743,15 @@ a:hover {
   --shadow-1: 0 1px 2px rgba(84, 63, 42, 0.06);
   --shadow-2: 0 4px 14px rgba(84, 63, 42, 0.09);
   --panel-blur: 0px;
+  /* Chart series: the Okabe and Ito set darkened to reach 3:1 on light surfaces. */
+  --series-1: #0067a3;
+  --series-2: #a35200;
+  --series-3: #00735a;
+  --series-4: #736600;
+  --series-5: #9c437c;
+  --series-6: #3a56a8;
+  --series-7: #b83f00;
+  --series-8: #5c5c5c;
 }
 
 /* Cyberpunk: dark base with neon magenta and cyan accents and a stronger glow.
@@ -841,6 +869,15 @@ a:hover {
   --shadow-1: 6px 6px 12px rgba(163, 177, 198, 0.55), -6px -6px 12px rgba(255, 255, 255, 0.9);
   --shadow-2: 8px 8px 18px rgba(163, 177, 198, 0.6), -8px -8px 18px rgba(255, 255, 255, 0.95);
   --panel-blur: 0px;
+  /* Chart series: the Okabe and Ito set darkened to reach 3:1 on light surfaces. */
+  --series-1: #0067a3;
+  --series-2: #a35200;
+  --series-3: #00735a;
+  --series-4: #736600;
+  --series-5: #9c437c;
+  --series-6: #3a56a8;
+  --series-7: #b83f00;
+  --series-8: #5c5c5c;
 }
 
 /* Light themes show the sun icon rather than the moon in the theme toggle. */
@@ -2803,4 +2840,148 @@ textarea:hover {
 
 .train-drawer[open] > summary {
   margin-bottom: var(--space-3);
+}
+
+/* Results: charts drawn from the theme's series tokens. */
+.train-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 520px), 1fr));
+  gap: 16px;
+  margin: 12px 0;
+}
+
+.train-chart {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  min-width: 0;
+}
+
+.train-chart figcaption {
+  margin-bottom: 8px;
+}
+
+.train-chart-svg {
+  display: block;
+  height: auto;
+  max-width: 100%;
+}
+
+.train-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 8px 0;
+  font-size: 0.85rem;
+}
+
+.train-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.train-swatch {
+  display: inline-block;
+  width: 14px;
+  height: 4px;
+  border-radius: 2px;
+}
+
+.train-swatch.dashed {
+  background-image: linear-gradient(90deg, transparent 50%, var(--surface) 50%);
+  background-size: 6px 4px;
+}
+
+.train-compare caption {
+  caption-side: top;
+  text-align: left;
+  font-weight: 600;
+  padding: 6px 0;
+}
+
+.train-score {
+  display: grid;
+  gap: 6px;
+  max-width: 520px;
+  margin: 12px 0;
+}
+
+.train-examples {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+  gap: 12px;
+}
+
+.train-example {
+  margin: 0;
+}
+
+.train-example-frame {
+  position: relative;
+  line-height: 0;
+}
+
+.train-example-frame img {
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+
+.train-example-boxes {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.train-identity-picker {
+  margin-top: 6px;
+}
+
+
+/* The box tool: the frame with its boxes, drawn over in the frame's own pixels. */
+.box-editor {
+  max-width: 960px;
+}
+
+.box-stage {
+  position: relative;
+  line-height: 0;
+  margin: 12px 0;
+  touch-action: none;
+}
+
+.box-image {
+  width: 100%;
+  height: auto;
+  border-radius: 6px;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+.box-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.box-stage.is-drawing .box-overlay {
+  cursor: crosshair;
+  outline: 2px dashed var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.box-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-subtle);
 }

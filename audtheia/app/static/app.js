@@ -1547,7 +1547,200 @@
     paint();
     rowEl.appendChild(accBtn);
     rowEl.appendChild(badBtn);
+    var boxBtn = el("button", { type: "button", class: "frame-review-btn", text: "Boxes",
+      title: "Adjust, remove or add boxes on this frame for training" });
+    boxBtn.addEventListener("click", function () { openBoxEditor(obsId, f); });
+    rowEl.appendChild(boxBtn);
     return rowEl;
+  }
+
+  // The box tool. An expert adjusts the model's box, removes it, or draws a box the
+  // model missed with its taxon chosen from the backbone search. Each change is
+  // appended as the expert's own record and is used only when building training
+  // datasets; the captured frame and the model's box stay on the record unchanged.
+  function speciesPicker(placeholder, onChoose) {
+    var box = el("div", { class: "correction-search" });
+    var input = el("input", { type: "text", class: "correction-input", placeholder: placeholder, "aria-label": placeholder });
+    var results = el("div", { class: "correction-results" });
+    box.appendChild(input);
+    box.appendChild(results);
+    var timer = null;
+    input.addEventListener("input", function () {
+      if (timer) { clearTimeout(timer); }
+      var term = input.value.trim();
+      if (term.length < 2) { clear(results); return; }
+      timer = setTimeout(function () {
+        apiGet("/species/search" + query({ q: term })).then(function (data) {
+          clear(results);
+          if (data.index_available === false) {
+            results.appendChild(el("p", { class: "form-hint", text: "The taxonomic index has not been built yet, so a species cannot be chosen." }));
+            return;
+          }
+          (data.results || []).forEach(function (r) {
+            var opt = el("button", { type: "button", class: "correction-result",
+              text: r.canonical_name + (r.status === "SYNONYM" && r.accepted_name ? ", a synonym of " + r.accepted_name : "") });
+            opt.addEventListener("click", function () {
+              clear(results);
+              input.value = r.accepted_name || r.canonical_name;
+              onChoose(r);
+            });
+            results.appendChild(opt);
+          });
+          if (!(data.results || []).length) { results.appendChild(el("p", { class: "form-hint", text: "No matching taxon in the shipped backbone." })); }
+        }).catch(function (e) { clear(results); results.appendChild(el("p", { class: "form-hint", text: "Species search failed: " + e.message })); });
+      }, 150);
+    });
+    return box;
+  }
+
+  function openBoxEditor(obsId, frame) {
+    var overlay = el("div", { class: "audit-modal" });
+    var panel = el("div", { class: "audit-panel box-editor" });
+    function close() { if (overlay.parentNode) { overlay.parentNode.removeChild(overlay); } document.removeEventListener("keydown", onKey); }
+    function onKey(e) { if (e.key === "Escape") { close(); } }
+    document.addEventListener("keydown", onKey);
+    overlay.addEventListener("click", function (e) { if (e.target === overlay) { close(); } });
+    var closeBtn = el("button", { type: "button", class: "audit-close", "aria-label": "Close", text: "\u00d7" });
+    closeBtn.addEventListener("click", close);
+    panel.appendChild(closeBtn);
+    panel.appendChild(el("div", { class: "audit-title", text: "Boxes on frame " + frame.index }));
+    panel.appendChild(el("p", { class: "form-hint", text:
+      "Changes here are your own boxes for training models. The captured frame and the model's box stay on the record as they were." }));
+    var stage = el("div", { class: "box-stage" });
+    var img = el("img", { class: "box-image", src: API + "/media" + query({ path: frame.path }), alt: "Frame " + frame.index });
+    var svg = svgEl("svg", { class: "box-overlay", preserveAspectRatio: "none" });
+    stage.appendChild(img);
+    stage.appendChild(svg);
+    panel.appendChild(stage);
+    var list = el("div", { class: "box-list" });
+    var status = el("p", { class: "form-message", role: "status" });
+    var tools = el("div", { class: "form-actions" });
+    panel.appendChild(tools);
+    panel.appendChild(list);
+    panel.appendChild(status);
+    overlay.appendChild(panel);
+    document.body.appendChild(overlay);
+
+    var state = null;
+    var drawing = null;  // { box_key or null, action, gbif_usage_key }
+    var url = "/detections/" + encodeURIComponent(obsId) + "/frames/" + frame.index + "/boxes";
+
+    function current() {
+      var out = [];
+      if (!state) { return out; }
+      var byKey = {};
+      (state.corrections || []).forEach(function (r) { byKey[r.box_key] = r; });
+      if (state.model_box) {
+        var m = byKey.model;
+        out.push({ key: "model", label: "The model's box" + (frame.class_name ? ", " + frame.class_name : ""),
+          xyxy: m && m.action === "adjust" ? [m.x1, m.y1, m.x2, m.y2] : state.model_box,
+          state: m ? m.action : null });
+      }
+      Object.keys(byKey).forEach(function (k) {
+        var r = byKey[k];
+        if (k === "model" || r.action !== "add") { return; }
+        out.push({ key: k, label: "Your box, " + (r.corrected_scientific_name || "unnamed"), xyxy: [r.x1, r.y1, r.x2, r.y2], state: "add" });
+      });
+      return out;
+    }
+
+    function paint() {
+      while (svg.firstChild) { svg.removeChild(svg.firstChild); }
+      clear(list);
+      if (!state) { return; }
+      svg.setAttribute("viewBox", "0 0 " + state.frame_width + " " + state.frame_height);
+      current().forEach(function (b, i) {
+        var removed = b.state === "remove";
+        svg.appendChild(svgEl("rect", { x: b.xyxy[0], y: b.xyxy[1], width: b.xyxy[2] - b.xyxy[0], height: b.xyxy[3] - b.xyxy[1],
+          "vector-effect": "non-scaling-stroke",
+          style: "fill: none; stroke: " + (b.key === "model" ? "var(--series-1)" : "var(--series-2)") + "; stroke-width: 2;" +
+            (removed ? " stroke-dasharray: 4 4; opacity: 0.6;" : "") }));
+        var row = el("div", { class: "box-row" }, [el("span", { text: b.label + (removed ? ", removed by you" : b.state === "adjust" ? ", adjusted by you" : "") })]);
+        if (!removed) {
+          var adj = el("button", { type: "button", class: "btn btn-small", text: "Redraw" });
+          adj.addEventListener("click", function () { startDraw({ box_key: b.key, action: "adjust" }, "Drag across the frame to draw the box again."); });
+          var rem = el("button", { type: "button", class: "btn btn-small", text: "Remove" });
+          rem.addEventListener("click", function () { send({ action: "remove", box_key: b.key }); });
+          row.appendChild(adj);
+          row.appendChild(rem);
+        }
+        if (b.state) {
+          var undo = el("button", { type: "button", class: "btn btn-small", text: b.key === "model" ? "Use the model's box again" : "Delete your box" });
+          undo.addEventListener("click", function () { send({ action: "cleared", box_key: b.key }); });
+          row.appendChild(undo);
+        }
+        list.appendChild(row);
+      });
+      if (!current().length) { list.appendChild(el("p", { class: "form-hint", text: "This frame has no box yet." })); }
+    }
+
+    function send(body) {
+      status.textContent = "Saving.";
+      return apiSend(url, "POST", body).then(function (res) {
+        state.corrections = res.corrections;
+        status.textContent = "Saved.";
+        paint();
+      }).catch(function (e) { status.textContent = "Could not save: " + e.message; });
+    }
+
+    function startDraw(spec, hint) {
+      drawing = spec;
+      stage.classList.add("is-drawing");
+      status.textContent = hint;
+    }
+
+    function point(e) {
+      var r = svg.getBoundingClientRect();
+      var x = (e.clientX - r.left) / r.width * state.frame_width;
+      var y = (e.clientY - r.top) / r.height * state.frame_height;
+      return [Math.max(0, Math.min(state.frame_width, x)), Math.max(0, Math.min(state.frame_height, y))];
+    }
+    var start = null;
+    var ghost = null;
+    svg.addEventListener("pointerdown", function (e) {
+      if (!drawing || !state) { return; }
+      start = point(e);
+      ghost = svgEl("rect", { "vector-effect": "non-scaling-stroke", style: "fill: none; stroke: var(--text); stroke-width: 2; stroke-dasharray: 3 3;" });
+      svg.appendChild(ghost);
+      svg.setPointerCapture(e.pointerId);
+    });
+    svg.addEventListener("pointermove", function (e) {
+      if (!start || !ghost) { return; }
+      var p = point(e);
+      ghost.setAttribute("x", Math.min(start[0], p[0])); ghost.setAttribute("y", Math.min(start[1], p[1]));
+      ghost.setAttribute("width", Math.abs(p[0] - start[0])); ghost.setAttribute("height", Math.abs(p[1] - start[1]));
+    });
+    svg.addEventListener("pointerup", function (e) {
+      if (!start || !drawing) { return; }
+      var p = point(e);
+      var xyxy = [Math.min(start[0], p[0]), Math.min(start[1], p[1]), Math.max(start[0], p[0]), Math.max(start[1], p[1])]
+        .map(function (v) { return Math.round(v * 10) / 10; });
+      start = null;
+      if (ghost && ghost.parentNode) { ghost.parentNode.removeChild(ghost); }
+      ghost = null;
+      if (xyxy[2] - xyxy[0] < 2 || xyxy[3] - xyxy[1] < 2) { status.textContent = "That box is too small. Drag across the animal."; return; }
+      var body = { action: drawing.action, xyxy: xyxy };
+      if (drawing.box_key) { body.box_key = drawing.box_key; }
+      if (drawing.gbif_usage_key) { body.gbif_usage_key = drawing.gbif_usage_key; }
+      drawing = null;
+      stage.classList.remove("is-drawing");
+      send(body);
+    });
+
+    var addBtn = el("button", { type: "button", class: "btn", text: "Draw a box the model missed" });
+    var pickerHost = el("div");
+    addBtn.addEventListener("click", function () {
+      clear(pickerHost);
+      pickerHost.appendChild(speciesPicker("Taxon of the new box, at least two letters", function (r) {
+        clear(pickerHost);
+        startDraw({ action: "add", gbif_usage_key: r.usage_key }, "Now drag across the frame to draw the box for " + (r.accepted_name || r.canonical_name) + ".");
+      }));
+    });
+    tools.appendChild(addBtn);
+    panel.insertBefore(pickerHost, list);
+
+    apiGet(url).then(function (res) { state = res; paint(); })
+      .catch(function (e) { status.textContent = "Could not read the boxes: " + e.message; });
   }
 
   // Model trust, an inferred reliability score for a single detection. It is the
@@ -1891,7 +2084,8 @@
     "brain-skills": function () { loadBrainSkills(); },
     "train-dataset": function () { loadTrainDataset(); },
     "train-train": function () { loadTrainSetup(); },
-    "train-runs": function () { loadTrainRuns(); }
+    "train-runs": function () { loadTrainRuns(); },
+    "train-results": function () { loadTrainResults(); }
   };
 
   // Each panel with sub-panels keeps its own choice. Brain keeps the original
@@ -6291,7 +6485,7 @@
       renderTrainPreview(previewHost, summary, T, function (key, action) {
         T.policy[key] = action;
         runPreview();
-      });
+      }, runPreview);
     }
 
     function runPreview() {
@@ -6366,7 +6560,131 @@
     host.appendChild(table);
   }
 
-  function renderTrainPreview(host, s, T, onPolicy) {
+  // One identity per species. A label no rule could match to the backbone, such
+  // as a model's own class name, is mapped once by a person, choosing the taxon
+  // from the backbone search so only a real key is stored, or kept as its own
+  // class. The record is never changed; the decision lives beside the datasets.
+  function trainIdentitySend(body, status, done) {
+    status.textContent = "Saving.";
+    apiSend("/train/identity/labels", "POST", body).then(function () {
+      status.textContent = "Saved. Planning the dataset again.";
+      done();
+    }).catch(function (e) { status.textContent = "Could not save: " + e.message; });
+  }
+
+  function trainIdentityPicker(label, status, done) {
+    var box = el("div", { class: "correction-search train-identity-picker" });
+    var input = el("input", { type: "text", class: "correction-input", "aria-label": "Species for " + label,
+      placeholder: "Type at least two letters of the scientific name" });
+    var results = el("div", { class: "correction-results" });
+    box.appendChild(input);
+    box.appendChild(results);
+    var timer = null;
+    input.addEventListener("input", function () {
+      if (timer) { clearTimeout(timer); }
+      var term = input.value.trim();
+      if (term.length < 2) { clear(results); return; }
+      timer = setTimeout(function () {
+        apiGet("/species/search" + query({ q: term })).then(function (data) {
+          clear(results);
+          if (data.index_available === false) {
+            results.appendChild(el("p", { class: "form-hint", text: "The taxonomic index has not been built yet, so a species cannot be chosen." }));
+            return;
+          }
+          var list = data.results || [];
+          if (!list.length) {
+            results.appendChild(el("p", { class: "form-hint", text: "No matching taxon in the shipped backbone." }));
+            return;
+          }
+          list.forEach(function (r) {
+            var line = r.canonical_name;
+            if (r.status === "SYNONYM" && r.accepted_name) { line += ", a synonym of " + r.accepted_name; }
+            var opt = el("button", { type: "button", class: "correction-result", text: line });
+            opt.addEventListener("click", function () {
+              clear(results);
+              input.value = r.canonical_name;
+              trainIdentitySend({ label: label, action: "map", gbif_usage_key: r.usage_key }, status, done);
+            });
+            results.appendChild(opt);
+          });
+        }).catch(function (e) {
+          clear(results);
+          results.appendChild(el("p", { class: "form-hint", text: "Species search failed: " + e.message }));
+        });
+      }, 150);
+    });
+    return box;
+  }
+
+  function renderTrainIdentity(host, identity, onIdentity) {
+    if (!identity) { return; }
+    var merged = identity.merged || [];
+    var unresolved = identity.unresolved || [];
+    var kept = (identity.kept_as_label || []).map(function (k) {
+      return { label: k.label, text: k.label + " is kept as its own class by your decision. " };
+    });
+    (identity.classes || []).forEach(function (c) {
+      (c.labels || []).forEach(function (l) {
+        if (l.method === "label_map") {
+          kept.push({ label: l.label, text: l.label + " is mapped to " + c.class_name + " by your decision. " });
+        }
+      });
+    });
+    if (!merged.length && !unresolved.length && !kept.length) { return; }
+    host.appendChild(el("h4", { text: "One identity per species" }));
+    host.appendChild(el("p", { class: "form-hint", text:
+      "Every label is matched to the shipped taxonomic backbone, so one species named two ways becomes one class. Your record is not changed." }));
+    if (merged.length) {
+      var ml = el("ul", { class: "train-notes" });
+      merged.forEach(function (m) {
+        ml.appendChild(el("li", { text: m.labels.map(function (l) { return l.label; }).join(", ") + " are one taxon, " + m.class_name + "." }));
+      });
+      host.appendChild(ml);
+    }
+    if (unresolved.length) {
+      host.appendChild(el("p", { class: "form-hint", text:
+        "These labels could not be matched to the backbone. Map each one to its species once, or keep it as its own class if it is a morphotype or an informal name." }));
+      var ut = el("table", { class: "trust-table train-table train-identity" });
+      ut.appendChild(el("thead", {}, [el("tr", {}, [
+        el("th", { text: "Label" }), el("th", { text: "Why it was not matched" }), el("th", { text: "Decision" })
+      ])]));
+      var ub = el("tbody");
+      unresolved.forEach(function (u) {
+        var status = el("p", { class: "form-hint", role: "status" });
+        var cell = el("td");
+        var mapBtn = el("button", { type: "button", class: "btn", text: "Map to a species" });
+        var keepBtn = el("button", { type: "button", class: "btn", text: "Keep as its own class" });
+        mapBtn.addEventListener("click", function () {
+          mapBtn.disabled = true;
+          cell.insertBefore(trainIdentityPicker(u.label, status, onIdentity), status);
+        });
+        keepBtn.addEventListener("click", function () {
+          keepBtn.disabled = true;
+          trainIdentitySend({ label: u.label, action: "keep" }, status, onIdentity);
+        });
+        cell.appendChild(el("div", { class: "correction-actions" }, [mapBtn, keepBtn]));
+        cell.appendChild(status);
+        ub.appendChild(el("tr", {}, [el("td", { class: "mono", text: u.label }), el("td", { text: u.reason || "" }), cell]));
+      });
+      ut.appendChild(ub);
+      host.appendChild(ut);
+    }
+    if (kept.length) {
+      var kl = el("ul", { class: "train-notes" });
+      kept.forEach(function (k) {
+        var status = el("span", { class: "form-hint", role: "status" });
+        var undo = el("button", { type: "button", class: "btn btn-small", text: "Undo" });
+        undo.addEventListener("click", function () {
+          undo.disabled = true;
+          trainIdentitySend({ label: k.label, action: "clear" }, status, onIdentity);
+        });
+        kl.appendChild(el("li", {}, [el("span", { text: k.text }), undo, status]));
+      });
+      host.appendChild(kl);
+    }
+  }
+
+  function renderTrainPreview(host, s, T, onPolicy, onIdentity) {
     clear(host);
     host.appendChild(el("h3", { text: "Preview" }));
     if (s.empty) {
@@ -6398,6 +6716,8 @@
       });
       host.appendChild(list);
     }
+
+    renderTrainIdentity(host, s.identity, onIdentity || function () {});
 
     var before = s.classes_before || [];
     if (before.length) {
@@ -6700,6 +7020,9 @@
       planHost.appendChild(modelKvRow("Downloaded from", "the standard package index"));
     }
     planHost.appendChild(modelKvRow("Installed into", plan.path));
+    if (plan.cluster_warning) {
+      planHost.appendChild(el("p", { class: "form-message" }, [badge("Disk space", "warn"), el("span", { text: " " + plan.cluster_warning })]));
+    }
     planHost.appendChild(trainNote(plan.internet_needed + " " + plan.installed_size_note));
     planHost.appendChild(trainNote((plan.torch_pins || []).length
       ? "Licences: PyTorch is BSD-3-Clause and the RF-DETR training library is Apache-2.0. The pretrained weights of each size are downloaded once, the first time that size is trained."
@@ -7085,7 +7408,8 @@
         : "Best validation mAP over IoU 0.50 to 0.95";
       card.appendChild(modelKvRow(bestLabel + (finished ? "" : " so far"), run.best_metric_value.toFixed(3)));
     }
-    card.appendChild(modelKvRow("Mode and size", (run.mode === "gentle" ? "Gentle" : "Full speed") + ", " + run.base_label));
+    card.appendChild(modelKvRow(run.modality === "acoustic" ? "Mode and base model" : "Mode and size",
+      (run.mode === "gentle" ? "Gentle" : "Full speed") + ", " + run.base_label));
     if (run.started_at) { card.appendChild(modelKvRow("Started", fmtTime(run.started_at))); }
     if (run.ended_at) { card.appendChild(modelKvRow("Ended", fmtTime(run.ended_at))); }
     if (run.stop_reason) { card.appendChild(trainNote(run.stop_reason, "form-message")); }
@@ -7112,6 +7436,14 @@
       var resume = el("button", { type: "button", class: "btn btn-primary", text: "Resume" });
       resume.addEventListener("click", function () { resume.disabled = true; act("resume"); });
       actions.appendChild(resume);
+    }
+    if (run.status === "completed") {
+      var see = el("button", { type: "button", class: "btn btn-primary", text: "See results" });
+      see.addEventListener("click", function () {
+        TRAIN_RESULTS.runId = run.id;
+        activateSubpanel("train-results");
+      });
+      actions.appendChild(see);
     }
     if (["completed", "cancelled"].indexOf(run.status) < 0) {
       var cancel = el("button", { type: "button", class: "btn",
@@ -7172,6 +7504,569 @@
       body.appendChild(trainNote("No epoch has finished yet."));
     }
     body.appendChild(el("pre", { class: "train-log", "data-run": run.id, text: (detail.log || "").slice(-20000) }));
+  }
+
+  // ----------------------------------------------------------------------
+  // 8d. Results: a finished run scored on its test set, beside the model in use
+  //
+  // Every chart is drawn once here as SVG from the series the server prepared,
+  // coloured from the theme's colour-blind-safe series tokens. The same drawing
+  // is turned into the PNG saved in the run folder, so the picture in the folder
+  // is the picture on the screen. The app prints numbers and differences and
+  // never ranks one model above the other.
+  // ----------------------------------------------------------------------
+
+  var TRAIN_SERIES_COLOURS = 8;
+  var TRAIN_CHART_W = 640;
+  var TRAIN_CHART_H = 360;
+  var TRAIN_RESULTS = { runId: null, poll: null };
+
+  function trainSeriesColour(index) {
+    return "var(--series-" + ((Math.max(0, index) % TRAIN_SERIES_COLOURS) + 1) + ")";
+  }
+
+  function trainFmt(v, digits) {
+    if (v === null || v === undefined || typeof v !== "number" || !isFinite(v)) { return "-"; }
+    return v.toFixed(digits === undefined ? 3 : digits);
+  }
+
+  function trainSigned(v) {
+    if (v === null || v === undefined || !isFinite(v)) { return "-"; }
+    return (v > 0 ? "+" : "") + v.toFixed(3);
+  }
+
+  function trainNiceRange(lo, hi) {
+    if (lo === null || hi === null || !isFinite(lo) || !isFinite(hi)) { return [0, 1]; }
+    if (lo === hi) { return [lo - 0.5, hi + 0.5]; }
+    var pad = (hi - lo) * 0.05;
+    return [lo - pad, hi + pad];
+  }
+
+  // Round tick positions inside the range, about count of them, on a step of 1, 2,
+  // 2.5 or 5 times a power of ten, so an axis reads 0.50, 0.60 rather than 0.59.
+  function trainTicks(lo, hi, count, minStep) {
+    var span = hi - lo;
+    if (!(span > 0)) { return [lo]; }
+    var raw = Math.max(span / Math.max(1, count), minStep || 0);
+    var power = Math.pow(10, Math.floor(Math.log(raw) / Math.LN10));
+    var step = [1, 2, 2.5, 5, 10].map(function (m) { return m * power; }).filter(function (v) { return v >= raw; })[0] || 10 * power;
+    var out = [];
+    for (var v = Math.ceil(lo / step - 1e-9) * step; v <= hi + step * 1e-9; v += step) { out.push(Math.round(v / step) * step); }
+    return out;
+  }
+
+  function trainTickDigits(lo, hi) {
+    var span = Math.abs(hi - lo);
+    return span >= 5 ? 0 : span >= 0.5 ? (span >= 2 ? 1 : 2) : 3;
+  }
+
+  function trainSvgText(x, y, text, attrs) {
+    var t = svgEl("text", Object.assign({ x: x, y: y, style: "fill: var(--text-2); font-size: 11px;" }, attrs || {}));
+    t.textContent = text;
+    return t;
+  }
+
+  function trainShort(text, max) {
+    text = String(text || "");
+    return text.length > max ? text.slice(0, max - 1) + "…" : text;
+  }
+
+  // A line chart of one or more series, with an optional set of markers.
+  function trainLineSvg(chart, visible) {
+    var W = TRAIN_CHART_W, H = TRAIN_CHART_H, L = 56, R = 16, T = 16, B = 44;
+    var svg = svgEl("svg", { viewBox: "0 0 " + W + " " + H, width: "100%", role: "img",
+      "aria-label": chart.title, class: "train-chart-svg" });
+    svg.appendChild(svgEl("rect", { x: 0, y: 0, width: W, height: H, style: "fill: var(--surface);" }));
+    var xs = [], ys = [];
+    chart.series.forEach(function (s) {
+      s.points.forEach(function (p) {
+        if (p[0] !== null && isFinite(p[0])) { xs.push(p[0]); }
+        if (p[1] !== null && isFinite(p[1])) { ys.push(p[1]); }
+      });
+    });
+    var xr = (chart.x.min !== null && chart.x.max !== null && chart.x.max > chart.x.min) ? [chart.x.min, chart.x.max]
+      : trainNiceRange(Math.min.apply(null, xs.length ? xs : [0]), Math.max.apply(null, xs.length ? xs : [1]));
+    var yr = (chart.y.min !== null && chart.y.max !== null) ? [chart.y.min, chart.y.max]
+      : trainNiceRange(Math.min.apply(null, ys.length ? ys : [0]), Math.max.apply(null, ys.length ? ys : [1]));
+    function px(x) { return L + (x - xr[0]) / (xr[1] - xr[0]) * (W - L - R); }
+    function py(y) { return H - B - (y - yr[0]) / (yr[1] - yr[0]) * (H - T - B); }
+    trainTicks(yr[0], yr[1], 5).forEach(function (v) {
+      svg.appendChild(svgEl("line", { x1: L, x2: W - R, y1: py(v), y2: py(v), style: "stroke: var(--border); stroke-width: 1;" }));
+      svg.appendChild(trainSvgText(L - 6, py(v) + 4, trainFmt(v, trainTickDigits(yr[0], yr[1])), { "text-anchor": "end" }));
+    });
+    // Whole-number data, such as epochs, gets whole-number ticks.
+    var whole = xs.length > 0 && xs.every(function (x) { return Math.round(x) === x; }) && (xr[1] - xr[0]) >= 1;
+    trainTicks(xr[0], xr[1], 5, whole ? 1 : 0).forEach(function (v) {
+      svg.appendChild(trainSvgText(px(v), H - B + 16, trainFmt(v, whole ? 0 : trainTickDigits(xr[0], xr[1])), { "text-anchor": "middle" }));
+    });
+    svg.appendChild(trainSvgText(L + (W - L - R) / 2, H - 8, chart.x.label, { "text-anchor": "middle" }));
+    svg.appendChild(trainSvgText(14, T + (H - T - B) / 2, chart.y.label,
+      { "text-anchor": "middle", transform: "rotate(-90 14 " + (T + (H - T - B) / 2) + ")" }));
+    chart.series.forEach(function (s) {
+      if (!visible[s.key]) { return; }
+      var d = "";
+      var started = false;
+      s.points.forEach(function (p) {
+        if (p[0] === null || p[1] === null || !isFinite(p[0]) || !isFinite(p[1])) { started = false; return; }
+        d += (started ? "L" : "M") + px(p[0]).toFixed(1) + " " + py(Math.max(yr[0], Math.min(yr[1], p[1]))).toFixed(1) + " ";
+        started = true;
+      });
+      if (!d) { return; }
+      var style = "fill: none; stroke: " + trainSeriesColour(s.index) + "; stroke-width: " + (s.role === "macro" ? 2.5 : 1.6) + ";";
+      if (s.dashed) { style += " stroke-dasharray: 6 4;"; }
+      svg.appendChild(svgEl("path", { d: d, style: style }));
+      if (s.points.length <= 40) {
+        s.points.forEach(function (p) {
+          if (p[0] === null || p[1] === null) { return; }
+          svg.appendChild(svgEl("circle", { cx: px(p[0]), cy: py(p[1]), r: 2.5, style: "fill: " + trainSeriesColour(s.index) + ";" }));
+        });
+      }
+    });
+    (chart.markers || []).forEach(function (m) {
+      if (m.x === null || m.y === null) { return; }
+      svg.appendChild(svgEl("circle", { cx: px(m.x), cy: py(m.y), r: 5, style: "fill: none; stroke: var(--text); stroke-width: 2;" }));
+      svg.appendChild(trainSvgText(px(m.x) + 8, py(m.y) - 8, m.label + " " + trainFmt(m.y) + " at " + trainFmt(m.x, 2),
+        { style: "fill: var(--text); font-size: 11px;" }));
+    });
+    return svg;
+  }
+
+  // Grouped bars, one group per class.
+  function trainBarSvg(chart, visible) {
+    var cats = chart.categories || [];
+    var W = TRAIN_CHART_W, L = 56, R = 16, T = 16, B = 110;
+    var H = TRAIN_CHART_H;
+    var svg = svgEl("svg", { viewBox: "0 0 " + W + " " + H, width: "100%", role: "img",
+      "aria-label": chart.title, class: "train-chart-svg" });
+    svg.appendChild(svgEl("rect", { x: 0, y: 0, width: W, height: H, style: "fill: var(--surface);" }));
+    function py(y) { return H - B - y * (H - T - B); }
+    trainTicks(0, 1, 5).forEach(function (v) {
+      svg.appendChild(svgEl("line", { x1: L, x2: W - R, y1: py(v), y2: py(v), style: "stroke: var(--border); stroke-width: 1;" }));
+      svg.appendChild(trainSvgText(L - 6, py(v) + 4, trainFmt(v, 1), { "text-anchor": "end" }));
+    });
+    var shown = chart.series.filter(function (s) { return visible[s.key]; });
+    var group = (W - L - R) / Math.max(1, cats.length);
+    var bar = Math.max(2, Math.min(28, (group - 6) / Math.max(1, shown.length)));
+    cats.forEach(function (cat, i) {
+      var x0 = L + i * group + (group - bar * shown.length) / 2;
+      shown.forEach(function (s, j) {
+        var v = s.values[i];
+        if (v === null || v === undefined || v === 0) {
+          svg.appendChild(trainSvgText(x0 + j * bar + bar / 2, py(0) - 4, v === 0 ? "0" : "n/a",
+            { "text-anchor": "middle", style: "fill: var(--text-2); font-size: 9px;" }));
+          return;
+        }
+        svg.appendChild(svgEl("rect", { x: x0 + j * bar, y: py(v), width: bar - 1, height: py(0) - py(v),
+          style: "fill: " + trainSeriesColour(s.index) + ";" }));
+      });
+      var lx = L + i * group + group / 2;
+      svg.appendChild(trainSvgText(lx, py(0) + 12, trainShort(cat, 22),
+        { "text-anchor": "end", transform: "rotate(-40 " + lx + " " + (py(0) + 12) + ")" }));
+    });
+    svg.appendChild(trainSvgText(14, T + (H - T - B) / 2, chart.y.label,
+      { "text-anchor": "middle", transform: "rotate(-90 14 " + (T + (H - T - B) / 2) + ")" }));
+    return svg;
+  }
+
+  // A confusion matrix: each cell shaded by its share of the row, with the count.
+  function trainMatrixSvg(chart) {
+    var labels = chart.row_labels || [];
+    var n = labels.length;
+    var cell = Math.max(18, Math.min(48, Math.floor(420 / Math.max(1, n))));
+    var L = 150, T = 16, B = 120;
+    var W = L + n * cell + 16, H = T + n * cell + B;
+    var svg = svgEl("svg", { viewBox: "0 0 " + W + " " + H, width: "100%", role: "img",
+      "aria-label": chart.title, class: "train-chart-svg" });
+    svg.appendChild(svgEl("rect", { x: 0, y: 0, width: W, height: H, style: "fill: var(--surface);" }));
+    for (var i = 0; i < n; i++) {
+      for (var j = 0; j < n; j++) {
+        var f = (chart.row_fractions[i] || [])[j];
+        var count = (chart.values[i] || [])[j];
+        svg.appendChild(svgEl("rect", { x: L + j * cell, y: T + i * cell, width: cell - 1, height: cell - 1,
+          style: "fill: var(--series-1); fill-opacity: " + (f === null || f === undefined ? 0.04 : (0.06 + 0.94 * f)).toFixed(3) + "; stroke: var(--border);" }));
+        if (count) {
+          svg.appendChild(trainSvgText(L + j * cell + cell / 2, T + i * cell + cell / 2 + 4, String(count),
+            { "text-anchor": "middle", style: "fill: " + (f !== null && f > 0.55 ? "var(--surface)" : "var(--text)") + "; font-size: " + (cell < 26 ? 9 : 11) + "px;" }));
+        }
+      }
+      svg.appendChild(trainSvgText(L - 6, T + i * cell + cell / 2 + 4, trainShort(labels[i], 22), { "text-anchor": "end" }));
+      var lx = L + i * cell + cell / 2, ly = T + n * cell + 10;
+      svg.appendChild(trainSvgText(lx, ly, trainShort(labels[i], 22), { "text-anchor": "end", transform: "rotate(-50 " + lx + " " + ly + ")" }));
+    }
+    svg.appendChild(trainSvgText(8, 12, chart.row_title + " (rows)", { style: "fill: var(--text-2); font-size: 10px;" }));
+    svg.appendChild(trainSvgText(W - 8, H - 6, chart.col_title + " (columns)", { "text-anchor": "end", style: "fill: var(--text-2); font-size: 10px;" }));
+    return svg;
+  }
+
+  // The drawing with every theme variable replaced by its value, ready to be a file.
+  function trainResolvedSvg(svg) {
+    var styles = getComputedStyle(document.documentElement);
+    var clone = svg.cloneNode(true);
+    var all = [clone].concat(Array.prototype.slice.call(clone.querySelectorAll("*")));
+    all.forEach(function (node) {
+      var style = node.getAttribute("style");
+      if (style && style.indexOf("var(") >= 0) {
+        node.setAttribute("style", style.replace(/var\((--[a-z0-9-]+)\)/g, function (m, name) {
+          return (styles.getPropertyValue(name) || "").trim() || "#888888";
+        }));
+      }
+    });
+    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+    clone.setAttribute("font-family", "system-ui, -apple-system, Segoe UI, Roboto, sans-serif");
+    var box = svg.viewBox.baseVal;
+    clone.setAttribute("width", String(box.width));
+    clone.setAttribute("height", String(box.height));
+    return clone;
+  }
+
+  function trainSvgToPng(svg, scale) {
+    return new Promise(function (resolve, reject) {
+      var clone = trainResolvedSvg(svg);
+      var text = new XMLSerializer().serializeToString(clone);
+      var img = new Image();
+      img.onload = function () {
+        var canvas = document.createElement("canvas");
+        canvas.width = Math.round(Number(clone.getAttribute("width")) * scale);
+        canvas.height = Math.round(Number(clone.getAttribute("height")) * scale);
+        var ctx = canvas.getContext("2d");
+        ctx.scale(scale, scale);
+        ctx.drawImage(img, 0, 0);
+        resolve(canvas.toDataURL("image/png"));
+      };
+      img.onerror = function () { reject(new Error("the chart could not be turned into a picture")); };
+      img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(text);
+    });
+  }
+
+  function trainDownload(name, href) {
+    var a = el("a", { href: href, download: name });
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  function trainCsvCell(v) {
+    if (v === null || v === undefined) { return ""; }
+    var s = String(v);
+    return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  function trainChartCsv(chart) {
+    var lines = [chart.csv.columns.map(trainCsvCell).join(",")];
+    chart.csv.rows.forEach(function (r) { lines.push(r.map(trainCsvCell).join(",")); });
+    return lines.join("\r\n") + "\r\n";
+  }
+
+  // One chart with its title, help line, series toggles and the two save buttons.
+  function trainChartFigure(chart, registry) {
+    var fig = el("figure", { class: "train-chart", "data-chart": chart.id });
+    fig.appendChild(el("figcaption", {}, [el("strong", { text: chart.title }), el("span", { class: "form-hint", text: " " + (chart.help || "") })]));
+    var visible = {};
+    (chart.series || []).forEach(function (s) { visible[s.key] = s.default_visible !== false; });
+    var holder = el("div", { class: "train-chart-holder" });
+    function draw() {
+      clear(holder);
+      var svg = chart.kind === "line" ? trainLineSvg(chart, visible)
+        : chart.kind === "bar" ? trainBarSvg(chart, visible) : trainMatrixSvg(chart);
+      holder.appendChild(svg);
+      registry[chart.id] = svg;
+    }
+    draw();
+    fig.appendChild(holder);
+    if (chart.kind !== "matrix" && (chart.series || []).length) {
+      var legend = el("div", { class: "train-legend" });
+      chart.series.forEach(function (s) {
+        var id = "lg-" + chart.id + "-" + s.key;
+        var box = el("input", { type: "checkbox", id: id });
+        box.checked = visible[s.key];
+        box.addEventListener("change", function () { visible[s.key] = box.checked; draw(); });
+        legend.appendChild(el("label", { for: id, class: "train-legend-item" }, [
+          box, el("span", { class: "train-swatch" + (s.dashed ? " dashed" : ""), style: "background: " + trainSeriesColour(s.index) + ";" }),
+          el("span", { text: s.label })
+        ]));
+      });
+      fig.appendChild(legend);
+    }
+    if (chart.note) { fig.appendChild(el("p", { class: "form-hint", text: chart.note })); }
+    var actions = el("div", { class: "form-actions" });
+    var png = el("button", { type: "button", class: "btn btn-small", text: "Save PNG" });
+    png.addEventListener("click", function () {
+      trainSvgToPng(registry[chart.id], 2).then(function (url) { trainDownload(chart.id + ".png", url); })
+        .catch(function (e) { window.alert(e.message); });
+    });
+    var csv = el("button", { type: "button", class: "btn btn-small", text: "Save CSV" });
+    csv.addEventListener("click", function () {
+      var url = URL.createObjectURL(new Blob([trainChartCsv(chart)], { type: "text/csv" }));
+      trainDownload(chart.id + ".csv", url);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+    });
+    actions.appendChild(png);
+    actions.appendChild(csv);
+    fig.appendChild(actions);
+    return fig;
+  }
+
+  function trainSaveCharts(runId, registry, status) {
+    var ids = Object.keys(registry);
+    status.textContent = "Saving " + fmtNum(ids.length) + " charts to the run folder.";
+    return Promise.all(ids.map(function (id) {
+      return trainSvgToPng(registry[id], 2).then(function (url) { return { id: id, png: url.split(",")[1] }; });
+    })).then(function (charts) {
+      return apiSend("/train/runs/" + encodeURIComponent(runId) + "/charts", "POST", { charts: charts });
+    }).then(function (res) {
+      status.textContent = "Saved " + fmtNum(res.saved.length) + " charts to " + res.folder + ".";
+    }).catch(function (e) { status.textContent = "Could not save the charts: " + e.message; });
+  }
+
+  function trainComparisonTable(rows, title) {
+    var t = el("table", { class: "trust-table train-table train-compare" });
+    t.appendChild(el("caption", { text: title }));
+    t.appendChild(el("thead", {}, [el("tr", {}, [
+      el("th", { text: "Figure" }), el("th", { class: "num", text: "Trained model" }),
+      el("th", { class: "num", text: "Model in use" }), el("th", { class: "num", text: "Difference" })
+    ])]));
+    var b = el("tbody");
+    rows.forEach(function (r) {
+      b.appendChild(el("tr", {}, [
+        el("td", { title: r.help || "", text: r.label }), el("td", { class: "num", text: trainFmt(r.challenger) }),
+        el("td", { class: "num", text: trainFmt(r.current) }), el("td", { class: "num", text: trainSigned(r.difference) })
+      ]));
+    });
+    t.appendChild(b);
+    return t;
+  }
+
+  function trainRenderComparison(host, res) {
+    var c = res.comparison;
+    if (!c) { return; }
+    host.appendChild(el("h4", { text: "Trained model and the model in use" }));
+    var ev = res.evaluation || {};
+    if (ev.current_model) {
+      host.appendChild(modelKvRow("Model in use", ev.current_model.label + (ev.current_model.version ? ", " + ev.current_model.version : "")));
+    }
+    host.appendChild(el("p", { class: "form-hint", text: c.note || "" }));
+    host.appendChild(trainComparisonTable(c.rows || [], "Every class in the test set"));
+    if (c.unknown_note) { host.appendChild(el("p", { class: "form-hint", text: c.unknown_note })); }
+    if ((c.not_in_current || []).length) {
+      host.appendChild(el("p", {}, [badge("Not in the model in use", "warn"),
+        el("span", { text: " " + c.not_in_current.join(", ") })]));
+    }
+    if (c.shared_rows) {
+      host.appendChild(trainComparisonTable(c.shared_rows, "Only the classes both models know: " + (c.shared_classes || []).join(", ")));
+    } else if (ev.current_model) {
+      host.appendChild(el("p", { class: "form-hint", text: "The two models share no class, so there is no like-for-like comparison." }));
+    }
+    var notes = [];
+    if (c.current_boxes_outside_dataset) { notes.push(fmtNum(c.current_boxes_outside_dataset) + " boxes from the model in use named species outside this dataset and were not scored."); }
+    if (c.challenger_boxes_beyond_dataset) { notes.push(fmtNum(c.challenger_boxes_beyond_dataset) + " boxes from the trained model fell outside its classes and were not scored."); }
+    var origin = (c.box_origin || ev.box_origin || {});
+    if (origin.note) { notes.push(origin.note); }
+    if (ev.scored_with) { notes.push(ev.scored_with); }
+    if (notes.length) {
+      var ul = el("ul", { class: "train-notes" });
+      notes.forEach(function (n) { ul.appendChild(el("li", { text: n })); });
+      host.appendChild(ul);
+    }
+  }
+
+  function trainRenderTable(host, table, title) {
+    if (!table || !(table.rows || []).length) { return; }
+    host.appendChild(el("h4", { text: title }));
+    var t = el("table", { class: "trust-table train-table" });
+    t.appendChild(el("thead", {}, [el("tr", {}, table.columns.map(function (c, i) {
+      return el("th", { class: i ? "num" : "", title: c.help || "", text: c.label });
+    }))]));
+    var b = el("tbody");
+    table.rows.forEach(function (r) {
+      b.appendChild(el("tr", { class: r.tested === false ? "muted-row" : "" }, table.columns.map(function (c, i) {
+        var v = r[c.key];
+        return el("td", { class: i ? "num" : "", text: i ? (typeof v === "number" && c.key.indexOf("n_") !== 0 ? trainFmt(v) : (v === null || v === undefined ? "-" : String(v))) : String(v) });
+      })));
+    });
+    t.appendChild(b);
+    host.appendChild(t);
+  }
+
+  function trainRenderCalibration(host, cal) {
+    if (!cal || !(cal.rows || []).length) { return; }
+    host.appendChild(el("h4", { text: "Calibrated thresholds" }));
+    host.appendChild(el("p", { class: "form-hint", text: cal.note }));
+    var t = el("table", { class: "trust-table train-table" });
+    t.appendChild(el("thead", {}, [el("tr", {}, [el("th", { text: "Class" }), el("th", { text: "State" }),
+      el("th", { class: "num", text: "Target probability" }), el("th", { class: "num", text: "Score threshold" })])]));
+    var b = el("tbody");
+    cal.rows.forEach(function (r) {
+      b.appendChild(el("tr", {}, [el("td", { text: r.class_name }), el("td", { text: r.status_text }),
+        el("td", { class: "num", text: trainFmt(r.target_probability, 2) }), el("td", { class: "num", text: trainFmt(r.threshold) })]));
+    });
+    t.appendChild(b);
+    host.appendChild(t);
+  }
+
+  function trainRenderExamples(host, runId, examples) {
+    if (!examples) { return; }
+    var kinds = [["correct", "Found correctly"], ["false_alarm", "False alarm"], ["missed", "Missed"]];
+    if (!kinds.some(function (k) { return (examples[k[0]] || []).length; })) { return; }
+    host.appendChild(el("h4", { text: "Example test images" }));
+    host.appendChild(el("p", { class: "form-hint", text: "Solid boxes are the labelled truth. Dashed boxes are the trained model's predictions at the reporting confidence." }));
+    kinds.forEach(function (k) {
+      var list = examples[k[0]] || [];
+      if (!list.length) { return; }
+      host.appendChild(el("h5", { text: k[1] }));
+      var grid = el("div", { class: "train-examples" });
+      list.forEach(function (x) {
+        var src = API + "/train/runs/" + encodeURIComponent(runId) + "/example?file=" + encodeURIComponent(x.file);
+        var fig = el("figure", { class: "train-example" });
+        var img = el("img", { src: src, alt: "Test image " + x.file, loading: "lazy" });
+        var overlay = svgEl("svg", { class: "train-example-boxes", preserveAspectRatio: "none" });
+        img.addEventListener("load", function () {
+          overlay.setAttribute("viewBox", "0 0 " + img.naturalWidth + " " + img.naturalHeight);
+          function rect(b, dashed) {
+            return svgEl("rect", { x: b[0], y: b[1], width: Math.max(1, b[2] - b[0]), height: Math.max(1, b[3] - b[1]),
+              "vector-effect": "non-scaling-stroke",
+              style: "fill: none; stroke: " + (dashed ? "var(--series-2)" : "var(--series-1)") + "; stroke-width: 2;" + (dashed ? " stroke-dasharray: 5 3;" : "") });
+          }
+          x.truth.forEach(function (b) { overlay.appendChild(rect(b.xyxy, false)); });
+          x.predicted.forEach(function (b) { overlay.appendChild(rect(b.xyxy, true)); });
+        });
+        fig.appendChild(el("div", { class: "train-example-frame" }, [img, overlay]));
+        var cap = x.truth.map(function (b) { return b.class; }).join(", ") || "no labelled box";
+        var pred = x.predicted.map(function (b) { return b.class + " " + trainFmt(b.score, 2); }).join(", ") || "nothing";
+        fig.appendChild(el("figcaption", { class: "form-hint", text: "Truth: " + cap + ". Predicted: " + pred + "." }));
+        grid.appendChild(fig);
+      });
+      host.appendChild(grid);
+    });
+  }
+
+  function trainScoreControls(host, res, onStart) {
+    var block = el("div", { class: "train-score" });
+    var select = el("select", { class: "form-input", "aria-label": "Model in use to compare with" });
+    select.appendChild(el("option", { value: "", text: "Nothing, score the trained model alone" }));
+    (res.candidates || []).forEach(function (c) {
+      var opt = el("option", { value: c.id, text: c.label + (c.version ? ", " + c.version : "") + (c.exists ? "" : ", file missing") });
+      if (!c.exists) { opt.disabled = true; }
+      select.appendChild(opt);
+    });
+    var firstReady = (res.candidates || []).filter(function (c) { return c.exists; })[0];
+    if (firstReady) { select.value = firstReady.id; }
+    var btn = el("button", { type: "button", class: "btn btn-primary", text: res.evaluated ? "Score again" : "Score on the test set" });
+    var msg = el("p", { class: "form-message", role: "status" });
+    btn.addEventListener("click", function () {
+      btn.disabled = true;
+      msg.textContent = "Starting.";
+      apiSend("/train/runs/" + encodeURIComponent(res.run.id) + "/evaluate", "POST", { current_id: select.value || null })
+        .then(function () { onStart(); })
+        .catch(function (e) { msg.textContent = e.message; btn.disabled = false; });
+    });
+    block.appendChild(el("label", { class: "form-label", text: "Compare with" }));
+    block.appendChild(select);
+    block.appendChild(el("div", { class: "form-actions" }, [btn]));
+    block.appendChild(msg);
+    host.appendChild(block);
+    return { button: btn, message: msg };
+  }
+
+  function trainRenderResults(host, res) {
+    clear(host);
+    var run = res.run;
+    host.appendChild(el("h4", { text: run.planned_model_name }));
+    var ds = res.dataset || {};
+    host.appendChild(modelKvRow("Dataset", ds.dataset_id || "-", "mono"));
+    host.appendChild(modelKvRow("Events divided", ds.split_mode === "event" ? "by event" : ds.split_mode === "station" ? "by station" : ds.split_mode ? "by time" : "-"));
+    if ((ds.untested_classes || []).length) {
+      host.appendChild(modelKvRow("Untested classes", ds.untested_classes.join(", ")));
+    }
+    var job = res.job || {};
+    var mine = job.run_id === run.id;
+    var running = job.status === "running" && mine;
+    var elsewhere = job.status === "running" && !mine;
+    var controls = trainScoreControls(host, res, function () { loadTrainResults(); });
+    if (running) {
+      controls.button.disabled = true;
+      controls.message.textContent = job.message || "Scoring.";
+    } else if (elsewhere) {
+      controls.button.disabled = true;
+      controls.message.textContent = "Another run is being scored. This one can be scored when it finishes.";
+    } else if (job.status === "error" && mine) {
+      controls.message.textContent = "The last scoring stopped: " + job.error;
+    }
+    var registry = {};
+    var charts = el("div", { class: "train-charts" });
+    if (!res.evaluated) {
+      host.appendChild(el("p", { class: "empty-state", text: running ? "Scoring the models on the test set. This page updates by itself."
+        : "This run has not been scored on its test set yet. Choose what to compare it with, then press Score on the test set." }));
+      (res.curves || []).forEach(function (chart) { charts.appendChild(trainChartFigure(chart, registry)); });
+      host.appendChild(charts);
+      return;
+    }
+    var bundle = res.results;
+    var ev = res.evaluation || {};
+    if (ev.note) { host.appendChild(trainNote(ev.note, "form-message")); }
+    if (bundle) {
+      host.appendChild(el("p", { class: "form-hint", text: bundle.honesty_line }));
+      host.appendChild(metricRow(bundle.cards.map(function (c) {
+        var card = metricCard(c.label, trainFmt(c.value));
+        card.setAttribute("title", c.help);
+        return card;
+      })));
+    }
+    trainRenderComparison(host, res);
+    var saveStatus = el("p", { class: "form-hint", role: "status" });
+    var saveBtn = el("button", { type: "button", class: "btn", text: "Save charts to the run folder" });
+    saveBtn.addEventListener("click", function () { trainSaveCharts(run.id, registry, saveStatus); });
+    host.appendChild(el("h4", { text: "Charts" }));
+    host.appendChild(el("div", { class: "form-actions" }, [saveBtn]));
+    host.appendChild(saveStatus);
+    (res.curves || []).concat(bundle ? bundle.charts : []).forEach(function (chart) {
+      charts.appendChild(trainChartFigure(chart, registry));
+    });
+    host.appendChild(charts);
+    if (bundle) {
+      trainRenderTable(host, bundle.class_table, "Figures for each class");
+      trainRenderCalibration(host, bundle.calibration);
+    }
+    trainRenderExamples(host, run.id, res.examples);
+    if (!(res.charts_saved || []).length && Object.keys(registry).length) {
+      trainSaveCharts(run.id, registry, saveStatus);
+    }
+  }
+
+  function loadTrainResults() {
+    var host = region("train-results");
+    if (!host) { return; }
+    if (TRAIN_RESULTS.poll) { clearTimeout(TRAIN_RESULTS.poll); TRAIN_RESULTS.poll = null; }
+    if (!host.hasChildNodes()) { host.appendChild(el("p", { class: "empty-state", text: "Loading the results." })); }
+    apiGet("/train/runs").then(function (data) {
+      var done = (data.runs || []).filter(function (r) { return r.status === "completed"; });
+      if (!done.length) {
+        clear(host);
+        host.appendChild(el("p", { class: "empty-state", text: "No run has finished yet. Results appear here when one does." }));
+        return null;
+      }
+      if (!done.some(function (r) { return r.id === TRAIN_RESULTS.runId; })) { TRAIN_RESULTS.runId = done[0].id; }
+      return apiGet("/train/runs/" + encodeURIComponent(TRAIN_RESULTS.runId) + "/results").then(function (res) {
+        if (!trainStillShown(host)) { return; }
+        var picker = el("select", { class: "form-input", "aria-label": "Finished run" });
+        done.forEach(function (r) {
+          picker.appendChild(el("option", { value: r.id, text: r.planned_model_name + ", " + (r.ended_at ? fmtTime(r.ended_at) : r.run_name) }));
+        });
+        picker.value = TRAIN_RESULTS.runId;
+        picker.addEventListener("change", function () { TRAIN_RESULTS.runId = picker.value; clear(host); loadTrainResults(); });
+        var body = el("div", { class: "train-results" });
+        trainRenderResults(body, res);
+        clear(host);
+        host.appendChild(el("label", { class: "form-label", text: "Finished run" }));
+        host.appendChild(picker);
+        host.appendChild(body);
+        if ((res.job || {}).status === "running" && (res.job || {}).run_id === res.run.id) {
+          TRAIN_RESULTS.poll = setTimeout(function () { if (trainStillShown(host)) { loadTrainResults(); } }, TRAIN_POLL_MS);
+        }
+      });
+    }).catch(function (e) {
+      clear(host);
+      host.appendChild(el("p", { class: "empty-state", text: "Could not read the results: " + e.message }));
+    });
   }
 
   // ----------------------------------------------------------------------

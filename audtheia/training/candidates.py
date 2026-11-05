@@ -284,8 +284,12 @@ def _combination_name(flags: dict) -> str:
     return "+".join(name for name in CRITERIA if flags.get(name)) or "none"
 
 
-def summarize(candidates: list, required: frozenset) -> dict:
+def summarize(candidates: list, required: frozenset, identity=None) -> dict:
     """Counts a person needs before building, from the same rows the builder uses.
+
+    identity, when given, is a taxon identity resolver with a resolve method, as in
+    taxon_identity.py, so the classes are counted under the identity the dataset
+    builder gives them and one species named two ways is counted as one class.
 
     Everything here is a count of events. How many frames or windows each one
     yields is decided when the dataset is planned, because it depends on the frame
@@ -298,6 +302,17 @@ def summarize(candidates: list, required: frozenset) -> dict:
     states: dict = {}
     eligible = 0
     disagreement = 0
+    resolved: dict = {}
+
+    def identity_of(taxon: dict) -> tuple:
+        if identity is None:
+            return taxon["class_key"], taxon["class_name"]
+        key = (taxon["class_key"], taxon["class_name"], taxon.get("gbif_usage_key"))
+        if key not in resolved:
+            got = identity.resolve(taxon["class_key"], taxon["class_name"], taxon.get("gbif_usage_key"))
+            resolved[key] = (got["class_key"], got["class_name"])
+        return resolved[key]
+
     for cand in candidates:
         flags = cand["criteria"]
         for name in CRITERIA:
@@ -312,15 +327,19 @@ def summarize(candidates: list, required: frozenset) -> dict:
             if cand["label_state"] == LABEL_NEGATIVE:
                 by_class["background"] = _bump(by_class.get("background"), "background")
             else:
+                counted = set()
                 for taxon in cand["taxa"]:
                     if taxon["verdict"] == "reject":
                         continue
-                    if cand["label_state"] == LABEL_MODEL or taxon["verdict"] is None:
-                        # An unjudged call is the model's own, so it is counted
-                        # under its own class and flagged as such.
-                        by_class[taxon["class_key"]] = _bump(by_class.get(taxon["class_key"]), taxon["class_name"], model=True)
-                    else:
-                        by_class[taxon["class_key"]] = _bump(by_class.get(taxon["class_key"]), taxon["class_name"])
+                    key, name = identity_of(taxon)
+                    model = cand["label_state"] == LABEL_MODEL or taxon["verdict"] is None
+                    if (key, model) in counted:
+                        # Two labels for one taxon in one event count the event once.
+                        continue
+                    counted.add((key, model))
+                    # An unjudged call is the model's own, so it is counted under
+                    # its own class and flagged as such.
+                    by_class[key] = _bump(by_class.get(key), name, model=model)
         if cand["disagreement_resolved"]:
             disagreement += 1
     return {
