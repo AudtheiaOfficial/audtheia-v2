@@ -332,6 +332,24 @@ def test_endpoints(root: Path) -> None:
           client.get(f"/api/train/runs/{rid}/example", params={"file": "manifest.json"}).status_code == 404)
     check("a path that climbs out of the dataset is refused",
           client.get(f"/api/train/runs/{rid}/example", params={"file": "test/../../../config/settings.json"}).status_code == 404)
+    check("class keys come with their names, so untested classes read as names",
+          all(isinstance(v, str) and v for v in body["dataset"]["class_names"].values()) and body["dataset"]["class_names"])
+    check("the number of test examples is reported", body["dataset"]["test_examples"] > 0)
+    small = World(root / "small")
+    e = small.vision_event([("Aplysina fistularis", 100)])
+    small.confirm(e)
+    tiny = Path(ds.build_dataset(small.db, small.settings, ds.options_from_request(small.settings, {
+        "modality": "vision", "required_criteria": ["expert_confirmed"], "min_examples_per_class": 1}),
+        rollup_lookup=fake_rollup({}))["path"])
+    bare = new_id()
+    w.db.create_training_run(TrainingRun(
+        id=bare, run_name="B", planned_model_name="Audtheia-B-V1", modality="vision", engine="vision_detector",
+        mode="gentle", status="completed", dataset_signature="s", dataset_dir=str(tiny), run_dir=rel(manager.run_dir(bare)),
+        seed=1, base_label="b", config_json="{}", created_by="tester", created_at=utc_now_iso()))
+    body = client.get(f"/api/train/runs/{bare}/results").json()
+    check("a run whose dataset has no test split says so", body["dataset"]["test_examples"] == 0)
+    r = client.post(f"/api/train/runs/{bare}/evaluate", json={})
+    check("scoring a run with no test split is refused with the reason", r.status_code == 422 and "no test" in r.json()["detail"])
     w.settings.raw["node"]["role"] = "pi"
     check("a field station refuses the results", client.get(f"/api/train/runs/{rid}/results").status_code == 403)
     w.settings.raw["node"]["role"] = "desktop"

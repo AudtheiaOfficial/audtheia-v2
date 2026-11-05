@@ -156,7 +156,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   itself is favoured. The app prints the figures and their differences and never
   says which model is better. The panel shows the headline figures, every chart
   of the evaluation, the figures for each class, calibrated thresholds for sound
-  models, and example test images with their truth and predicted boxes.
+  models, and example test images with their truth and predicted boxes. A run
+  whose dataset held no test examples is said to have no results, and is not
+  offered for scoring; its run log and epoch table say plainly when there were
+  no validation or test examples, so a falling training loss is not mistaken for
+  a model ready for the field.
 - **Charts in every theme, saved as pictures and tables.** Charts are drawn in
   the browser from a colour-blind-safe series palette defined for each of the
   seven themes, each colour at least 3:1 against the surface and the page. Each

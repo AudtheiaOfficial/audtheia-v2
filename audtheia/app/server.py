@@ -3590,6 +3590,9 @@ def create_app(settings, database):
                 split = manifest.get("split") or {}
                 out["dataset"] = {"dataset_id": manifest.get("dataset_id"), "split_mode": split.get("mode"),
                                   "seed": split.get("seed"), "untested_classes": split.get("untested_classes") or [],
+                                  "class_names": {c.get("class_key"): c.get("class_name")
+                                                  for c in manifest.get("classes") or [] if c.get("class_key")},
+                                  "test_examples": ((manifest.get("totals") or {}).get("test") or {}).get("examples"),
                                   "identity": manifest.get("identity")}
             except (OSError, ValueError):
                 out["dataset"] = None
@@ -3624,6 +3627,14 @@ def create_app(settings, database):
         run_dir = manager.run_dir(run_id)
         dataset_dir = settings.resolve_path(run["dataset_dir"])
         config = json.loads(run["config_json"]) if run.get("config_json") else {}
+        try:
+            totals = json.loads((dataset_dir / "manifest.json").read_text(encoding="utf-8")).get("totals") or {}
+        except (OSError, ValueError):
+            totals = {}
+        if ((totals.get("test") or {}).get("examples")) == 0:
+            raise HTTPException(status_code=422, detail=(
+                "the dataset of this run holds no test examples, so there is nothing to score. A species needs at"
+                " least three expert-confirmed events before one can be held out for test."))
 
         def job(update):
             update(run_id=run_id)

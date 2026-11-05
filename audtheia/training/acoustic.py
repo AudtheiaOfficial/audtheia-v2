@@ -713,7 +713,19 @@ class AcousticEngine:
         if not best:
             raise RuntimeError("no epoch finished, so there is no layer to export")
         W, b = best["W"], best["b"]
-        ctx.log(f"Training finished. The best epoch was {best['epoch']}. Calibrating and scoring the test windows.")
+        ctx.log(f"Training finished. The best epoch was {best['epoch']}.")
+        if x_val is None or not len(features["test"]):
+            missing = [name for name, n in (("validation", 0 if x_val is None else len(x_val)),
+                                            ("test", len(features["test"]))) if not n]
+            ctx.log(f"The dataset has no {' and no '.join(missing)} windows, so this model has no "
+                    + ("calibration and " if "validation" in missing else "")
+                    + ("no test score. " if "test" in missing else "no early stopping. ")
+                    + "It can be used to check that training works, not as a model for the field. A species needs at"
+                    " least three expert-confirmed events before one can be held out for validation and one for test.")
+        if cfg.get("calibrate") and x_val is not None:
+            ctx.log("Calibrating on the validation windows.")
+        if len(features["test"]):
+            ctx.log("Scoring the test windows.")
         ctx.update(stage="exporting")
 
         def scores_of(x):

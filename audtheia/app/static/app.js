@@ -7500,6 +7500,14 @@
       });
       table.appendChild(tb);
       body.appendChild(table);
+      var noVal = rows.every(function (p) {
+        return sound ? (p.val_loss == null && p.val_cmap == null)
+          : ((p.ema_map50 == null && p.map50 == null) && (p.ema_map50_95 == null && p.map50_95 == null));
+      });
+      if (noVal) {
+        body.appendChild(trainNote("The validation columns are empty because the dataset held no validation " +
+          (sound ? "windows" : "images") + ", so this run had no early stopping and no score on held-out events."));
+      }
     } else {
       body.appendChild(trainNote("No epoch has finished yet."));
     }
@@ -7975,7 +7983,20 @@
     host.appendChild(modelKvRow("Dataset", ds.dataset_id || "-", "mono"));
     host.appendChild(modelKvRow("Events divided", ds.split_mode === "event" ? "by event" : ds.split_mode === "station" ? "by station" : ds.split_mode ? "by time" : "-"));
     if ((ds.untested_classes || []).length) {
-      host.appendChild(modelKvRow("Untested classes", ds.untested_classes.join(", ")));
+      host.appendChild(modelKvRow("Untested classes", ds.untested_classes.map(function (k) {
+        return (ds.class_names || {})[k] || k;
+      }).join(", ")));
+    }
+    if (ds.test_examples === 0) {
+      host.appendChild(el("p", { class: "empty-state", text: "The dataset of this run holds no test " +
+        (run.modality === "acoustic" ? "windows" : "images") + ", so it cannot be scored and has no results. " +
+        "A species needs at least three expert-confirmed events before one can be held out for test. " +
+        "Confirm more events, build the dataset again and train a new run." }));
+      var curvesOnly = el("div", { class: "train-charts" });
+      var reg = {};
+      (res.curves || []).forEach(function (chart) { curvesOnly.appendChild(trainChartFigure(chart, reg)); });
+      host.appendChild(curvesOnly);
+      return;
     }
     var job = res.job || {};
     var mine = job.run_id === run.id;
