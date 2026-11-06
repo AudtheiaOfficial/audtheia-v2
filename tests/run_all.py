@@ -87,8 +87,40 @@ def run_module(path: Path) -> tuple[str, str]:
     return ("pass" if proc.returncode == 0 else "fail"), (proc.stdout + proc.stderr)
 
 
+def user_data_present() -> list[str]:
+    """What in this folder shows it is someone's working installation, not a fresh checkout.
+
+    Several tests derive their scenario configurations from config/settings.json
+    and some write beside it, so they must run where that file is the committed
+    one and no real record, machine path or installed training component can be
+    reached. A working installation is refused rather than risked.
+    """
+    import json
+
+    found = []
+    for rel in ("config/settings.local.json", "database/audtheia.db"):
+        if (REPO / rel).exists():
+            found.append(rel)
+    try:
+        raw = json.loads((REPO / "config" / "settings.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw = {}
+    for key, value in ((raw.get("training") or {}).get("paths") or {}).items():
+        if isinstance(value, str) and (Path(value).is_absolute() or ":" in value[:3]):
+            found.append(f"config/settings.json training.paths.{key} = {value}")
+    return found
+
+
 def main() -> int:
     print("Audtheia test suite")
+    present = user_data_present()
+    if present and "--allow-working-folder" not in sys.argv:
+        print("\nRefusing to run: this folder is a working installation, not a fresh checkout.")
+        for item in present:
+            print(f"  found {item}")
+        print("Run the tests in a fresh clone of the repository, so no test can reach your records,"
+              " settings or installed training components. docs/setup-guide.md explains how.")
+        return 2
     print("Libraries a full run uses: " + "; ".join(TEST_LIBRARIES))
 
     modules = discover()

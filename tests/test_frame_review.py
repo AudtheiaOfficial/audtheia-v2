@@ -33,6 +33,7 @@ import json
 import sqlite3
 import sys
 import tempfile
+from contextlib import closing
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -144,14 +145,14 @@ def test_migration(db_path: Path) -> None:
     import migrate_add_frame_review as mig  # noqa: E402
 
     db, obs = _db_with_event(db_path)
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn:
         conn.execute("DROP TABLE frame_review")
         conn.commit()
         before = conn.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
 
     rc = mig.main(["--db", str(db_path)])
     check("the migration reports success", rc == 0)
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn:
         exists = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='frame_review'"
         ).fetchone()
@@ -170,7 +171,7 @@ def test_ensure_schema_self_heal(db_path: Path) -> None:
     print("\nensure_schema re-adds a missing table on an existing database, data intact")
     db, obs = _db_with_event(db_path)
     # Simulate a database created by a version that predates frame_review.
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn:
         conn.execute("DROP TABLE frame_review")
         conn.commit()
 
@@ -269,7 +270,7 @@ def test_endpoints(tmp: Path) -> None:
     rep = _seed_frames_on_disk(settings, obs, [
         "Aplysina fistularis", "Aplysina fistularis", "Aplysina fistularis", "Aplysina fulva",
     ])
-    with sqlite3.connect(str(db_path)) as conn:
+    with closing(sqlite3.connect(str(db_path))) as conn:
         conn.execute("UPDATE observations SET representative_frame = ? WHERE id = ?", (rep, obs.id))
         conn.commit()
 

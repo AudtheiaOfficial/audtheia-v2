@@ -43,7 +43,7 @@ from audtheia.analysis.observation import QCEngine, TIER_DETERMINISTIC_FLAG, QC_
 from audtheia.inference.gguf_llm import GGUFInterpreter  # noqa: E402
 from audtheia.analysis.verify import VerificationContext, VerificationVerdict  # noqa: E402
 
-from test_observation import make_settings, fresh_db, write_pending_observation  # noqa: E402
+from test_observation import cleanup, make_settings, fresh_db, write_pending_observation  # noqa: E402
 
 
 CHECKS = {"passed": 0, "failed": 0}
@@ -228,11 +228,16 @@ def test_interpretive_skill_applied():
 
 
 def main() -> int:
-    test_field_flag_persists()
-    test_persist_is_idempotent()
-    test_rescan_finalized_and_clear_stale()
-    test_flag_counts()
-    test_interpretive_skill_applied()
+    try:
+        test_field_flag_persists()
+        test_persist_is_idempotent()
+        test_rescan_finalized_and_clear_stale()
+        test_flag_counts()
+        test_interpretive_skill_applied()
+    finally:
+        # The borrowed harness writes a scenario file beside the configuration;
+        # it is removed here as test_observation removes its own.
+        cleanup()
     print(f"\n==== skill execution: {CHECKS['passed']} passed, {CHECKS['failed']} failed ====")
     return 1 if CHECKS["failed"] else 0
 

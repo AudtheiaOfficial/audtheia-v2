@@ -72,6 +72,19 @@ python tests/run_all.py
 `run_all.py` discovers every `tests/test_*.py` automatically. Please run it before
 opening a pull request, and add or update tests for the behavior you change.
 
+Run the suite in a fresh clone, never in the folder you use for real monitoring.
+Several tests build their scenario configurations from `config/settings.json`, so
+`run_all.py` refuses to start where it finds a local settings file, a database or
+a machine-specific training path, which would mean real records, settings or
+installed training components could be reached. The interpreter of an existing
+installation can be used, since only the code under test comes from the clone:
+
+```
+git clone https://github.com/AudtheiaOfficial/audtheia-v2.git audtheia-test
+cd audtheia-test
+<path to your installation>/.venv/Scripts/python tests/run_all.py
+```
+
 ## Style and scope
 
 Configuration that varies between deployments belongs in `config/settings.json`

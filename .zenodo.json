@@ -1,6 +1,7 @@
 {
   "title": "Audtheia V2: A Fully Offline Environmental-Intelligence Platform",
   "upload_type": "software",
+  "version": "2.1.0",
   "description": "Audtheia V2 is a fully offline environmental-intelligence platform for biodiversity monitoring, Marine Protected Area designation support, and longitudinal pattern discovery. It runs on an ordinary personal computer and, optionally, connects to Raspberry Pi 5 field stations with a Hailo AI accelerator, requiring no internet connection at runtime. Detection is the trigger for everything: a detection or an acoustic onset becomes one multimodal observation that simultaneously captures audio, reads GPS and environmental sensors, and queries an offline taxonomic backbone. A desktop hub verifies each detection with a second model, runs a longitudinal pattern-discovery pass over the confirmed record, and generates reports in which every value is labeled by its provenance, so measured facts and downstream inferences remain permanently distinguishable at the database level.",
   "creators": [
     {

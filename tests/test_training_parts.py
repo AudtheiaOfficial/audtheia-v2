@@ -20,6 +20,7 @@ import os
 import random
 import sys
 import tempfile
+from contextlib import closing
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -365,7 +366,7 @@ def test_rollup(work: Path) -> None:
     info = taxon_rollup.rollup_targets(backbone, ["gbif:100", "gbif:101", "name:poecile carolinensis", "gbif:20", "gbif:10", "name:dup name", "gbif:999", "name:unknown thing", "gbif:5"], cache_path=cache)
 
     import sqlite3
-    with sqlite3.connect(backbone / "index.db") as probe:
+    with closing(sqlite3.connect(backbone / "index.db")) as probe:
         indexed = {r[0] for r in probe.execute("SELECT usage_key FROM taxon_index")}
     check("the test index holds species only, like the shipped one", "20" not in indexed and "10" not in indexed and "100" in indexed)
     check("a species finds its genus", taxon_rollup.parent_for(info["gbif:100"], "genus") == {"key": "20", "name": "Aplysina"})

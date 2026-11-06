@@ -25,6 +25,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from contextlib import closing
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -120,18 +121,18 @@ def test_migration(work: Path) -> None:
     with d.connect() as conn:
         for name in ("model_activation_log", "trained_models", "training_runs", "frame_box_correction"):
             conn.execute(f"DROP TABLE {name}")
-    with sqlite3.connect(str(old_path)) as c:
+    with closing(sqlite3.connect(str(old_path))) as c:
         before = c.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
     probe = run_migration(old_path, "--check")
     check("check mode reports the migration is needed", probe.returncode == 0 and "needed" in probe.stdout)
-    with sqlite3.connect(str(old_path)) as c:
+    with closing(sqlite3.connect(str(old_path))) as c:
         gone = c.execute("SELECT COUNT(*) FROM sqlite_master WHERE name = 'training_runs'").fetchone()[0]
     check("check mode changed nothing", gone == 0 and not list(work.glob("old.db.backup-*")))
 
     result = run_migration(old_path)
     check("migration succeeds", result.returncode == 0)
     check("a backup was written first", len(list(work.glob("old.db.backup-*"))) == 1)
-    with sqlite3.connect(str(old_path)) as c:
+    with closing(sqlite3.connect(str(old_path))) as c:
         after = c.execute("SELECT COUNT(*) FROM observations").fetchone()[0]
         check("observations are untouched", after == before == 1)
         migrated_tables = normalised(c, "table", TABLES)
@@ -148,11 +149,11 @@ def test_migration(work: Path) -> None:
     check("a second run writes no second backup", len(list(work.glob("old.db.backup-*"))) == 1)
 
     # Partial: only some tables missing.
-    with sqlite3.connect(str(old_path)) as c:
+    with closing(sqlite3.connect(str(old_path))) as c:
         c.execute("DROP TABLE model_activation_log")
         c.execute("DROP TABLE trained_models")
     partial = run_migration(old_path)
-    with sqlite3.connect(str(old_path)) as c:
+    with closing(sqlite3.connect(str(old_path))) as c:
         names = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     check("a partly migrated database is completed", partial.returncode == 0 and set(TABLES) <= names)
 
@@ -163,7 +164,7 @@ def test_migration(work: Path) -> None:
         for name in ("model_activation_log", "trained_models", "training_runs", "frame_box_correction"):
             c.execute(f"DROP TABLE {name}")
     launch.ensure_schema(SCHEMA)
-    with sqlite3.connect(str(work / "launch.db")) as c:
+    with closing(sqlite3.connect(str(work / "launch.db"))) as c:
         names = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         problems = c.execute("PRAGMA foreign_key_check").fetchall()
     check("launching an older database adds the tables on its own", set(TABLES) <= names and problems == [])
@@ -310,7 +311,7 @@ def test_storage(work: Path) -> None:
     del b
 
     legacy = Database(str(work / "legacy.db"))
-    with sqlite3.connect(str(work / "legacy.db")) as c:
+    with closing(sqlite3.connect(str(work / "legacy.db"))) as c:
         c.execute("CREATE TABLE observations (id TEXT PRIMARY KEY)")
     check("readers degrade to empty on a database without the tables",
           legacy.list_training_runs() == [] and legacy.list_trained_models() == []

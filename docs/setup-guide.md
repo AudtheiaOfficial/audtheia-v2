@@ -167,6 +167,10 @@ The sidebar keeps things organized:
 
 Everything that varies between deployments lives in `config/settings.json`, never in code: the stations and their sensors, the model paths, the capture tuning, the desktop capture source, the report and longitudinal-pass schedules, and the display time zone. Timestamps are always stored in coordinated universal time and localized only for display. Every setting is documented with examples in `config/README.md`.
 
+## Running the tests
+
+The test suite checks the whole application on simulated hardware. Run it in a fresh clone of the repository, never in the folder that holds your records: some tests derive their configurations from `config/settings.json`, and `tests/run_all.py` refuses to start in a folder that holds a database, a local settings file or a machine-specific training path. The steps are in [CONTRIBUTING.md](../CONTRIBUTING.md#running-the-tests).
+
 ## Troubleshooting
 
 - **Setup stops on a package.** The message names the package and the reason. The most common cause is an older Python; Audtheia needs 3.11 or newer. Install a current Python and run setup again.

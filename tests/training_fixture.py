@@ -42,6 +42,14 @@ class World:
         base["paths"]["db_path"] = str((self.repo / "database" / "audtheia.db").resolve())
         base["paths"]["schema_path"] = str(SCHEMA)
         base["paths"]["gbif_backbone_path"] = str((self.repo / "backbone").resolve())
+        # Every training folder lives inside this temporary repository, whatever
+        # the configuration it was copied from says, so no test can reach a real
+        # installation's training components, datasets, runs or models.
+        base.setdefault("training", {})["paths"] = {
+            "envs_dir": str((self.repo / "train_envs").resolve()),
+            "datasets_dir": str((self.repo / "exports" / "train").resolve()),
+            "models_dir": str((self.repo / "models" / "trained").resolve()),
+        }
         self.settings_path = self.repo / "config" / "settings.json"
         self.settings_path.write_text(json.dumps(base), encoding="utf-8")
         self.settings = load_settings(self.settings_path)

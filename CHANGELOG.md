@@ -244,6 +244,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   they sit in a config folder, so two temporary configurations named
   settings.json in one folder cannot share a stale local file. This only affects
   test configurations; the application's own settings file is unchanged.
+- **The test suite refuses to run in a working installation.** tests/run_all.py
+  stops, naming what it found, in a folder that holds a database, a local
+  settings file or a machine-specific training path, because several tests build
+  their configurations from config/settings.json and one of them removes a
+  training environment it installed. The shared test fixture also keeps every
+  training folder inside its own temporary repository, whatever the copied
+  configuration says. Run the suite in a fresh clone, as CONTRIBUTING.md and the
+  setup guide describe.
+- **Tests close every database they open**, so the temporary folders they use can
+  be deleted on Windows, and remove every scenario file they write, so a full run
+  leaves the checkout exactly as it found it.
+- **The Zenodo record names its version.** .zenodo.json carries the release
+  version, so the archived record is labelled 2.1.0.
 - **Dataset rules version 2.** Datasets built from now on carry rules version 2,
   because merging labels of one taxon can change what a selection holds. A
   dataset built before stays valid and is recognised as built under version 1.
