@@ -8,7 +8,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-1f6feb?style=flat)](#system-requirements)
 [![Runtime](https://img.shields.io/badge/Runtime-100%25%20offline-2ea44f?style=flat)](#why-it-exists)
 [![Edge AI](https://img.shields.io/badge/Edge%20AI-Raspberry%20Pi%205%20%2B%20Hailo-c51a4a?style=flat&logo=raspberrypi&logoColor=white)](docs/hardware.md)
-[![Version](https://img.shields.io/badge/version-2.0.0-blue?style=flat)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.1.0-blue?style=flat)](CHANGELOG.md)
 [![Documentation](https://img.shields.io/badge/docs-latest-8250df?style=flat)](docs/)
 [![GitHub Stars](https://img.shields.io/github/stars/AudtheiaOfficial/audtheia-v2?style=flat&logo=github&cacheSeconds=3600)](https://github.com/AudtheiaOfficial/audtheia-v2/stargazers)
 [![GitHub Forks](https://img.shields.io/github/forks/AudtheiaOfficial/audtheia-v2?style=flat&logo=github&cacheSeconds=3600)](https://github.com/AudtheiaOfficial/audtheia-v2/network/members)
@@ -128,6 +128,7 @@ audtheia-v2/
 
 - [Setup guide](docs/setup-guide.md): installing and running Audtheia, desktop and field-station, step by step with screenshots and demos.
 - [Hardware guide](docs/hardware.md): the parts, the reference builds, the power-and-solar budget method, and the camera anti-fouling plan.
+- [Training guide](docs/training.md): building datasets from reviewed events, training image and sound models on this computer, scoring them against the model in use, switching a model on, and sharing models and datasets.
 - [Custom models guide](docs/custom-models.md): training your own detectors, compiling a field model to the accelerator, exporting the desktop model, and training acoustic classifiers.
 - [Dream pass guide](docs/dream-pass.md): how the longitudinal analysis works and how to read its candidate hypotheses.
 

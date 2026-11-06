@@ -89,9 +89,46 @@ def test_full_push_sends_code():
         check("the Pi-side setup IS run in a full connect", any("setup-pi.sh" in cmd for cmd in _runs(runner)))
 
 
+def test_settings_with_models():
+    print("\n[3] A model switched on the desktop reaches the Pi with its labels")
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        (root / "config").mkdir()
+        base = json.loads((REPO / "config" / "settings.json").read_text(encoding="utf-8"))
+        base["node"]["role"] = "desktop"
+        folder = root / "models" / "trained" / "Audtheia-Reef-V1"
+        folder.mkdir(parents=True)
+        (folder / "model.tflite").write_bytes(b"tflite")
+        (folder / "labels.txt").write_text("Poecile carolinensis\n", encoding="utf-8")
+        station = base["stations"][0]
+        station.setdefault("models", {}).setdefault("acoustic", {}).update(
+            {"path": "models/trained/Audtheia-Reef-V1/model.tflite",
+             "labels_path": "models/trained/Audtheia-Reef-V1/labels.txt", "version": "Audtheia-Reef-V1"})
+        path = root / "config" / "settings.push.json"
+        path.write_text(json.dumps(base), encoding="utf-8")
+        settings = load_settings(path)
+        runner = LoggingRunner("pi.local", "pi", 22)
+        provision(settings, station["station_id"], runner=runner, work_dir=root,
+                  make_key=False, generate_key=False, preauthorized_key=root / "fake_key",
+                  settings_only=True, with_models=True)
+        remotes = _puts(runner)
+        check("the model file is sent to the path its configuration names",
+              any(r.endswith("models/trained/Audtheia-Reef-V1/model.tflite") for r in remotes))
+        check("its labels file travels with it",
+              any(r.endswith("models/trained/Audtheia-Reef-V1/labels.txt") for r in remotes))
+        check("the code archive is still not sent", not any("audtheia-code.tar.gz" in r for r in remotes))
+        check("the Pi-side setup is still not re-run", not any("setup-pi.sh" in cmd for cmd in _runs(runner)))
+        runner = LoggingRunner("pi.local", "pi", 22)
+        provision(settings, station["station_id"], runner=runner, work_dir=root,
+                  make_key=False, generate_key=False, preauthorized_key=root / "fake_key", settings_only=True)
+        check("without the models choice no model file is sent",
+              not any(r.endswith(".tflite") or r.endswith("labels.txt") for r in _puts(runner)))
+
+
 def main() -> int:
     test_settings_only_sends_config_only()
     test_full_push_sends_code()
+    test_settings_with_models()
     print(f"\n==== Pi push-config: {CHECKS['passed']} passed, {CHECKS['failed']} failed ====")
     return 1 if CHECKS["failed"] else 0
 

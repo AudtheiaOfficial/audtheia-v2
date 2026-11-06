@@ -599,6 +599,16 @@
         onChange();
       });
       bar.appendChild(el("label", { class: "filter-field" }, [el("span", { text: "Species" }), sp]));
+      // The model that made each call, filled from the versions actually stored
+      // on the loaded record, with "not recorded" for events stored without one.
+      var ms = el("select", { class: "filter-model", "aria-label": "Model" });
+      ms.appendChild(el("option", { value: "", text: "All models" }));
+      ms.addEventListener("change", function () {
+        spCtx.modelFilter = ms.value;
+        onChange();
+      });
+      spCtx.modelSelect = ms;
+      bar.appendChild(el("label", { class: "filter-field" }, [el("span", { text: "Model" }), ms]));
     }
 
     var refresh = el("button", { type: "button", class: "btn", "aria-label": "Refresh" }, [
@@ -837,6 +847,33 @@
   // Refill the species dropdown from the names present in the current load,
   // keeping the active choice selected even when nothing matches it this time,
   // so a chosen species does not silently reset on refresh.
+  function populateModels(ctx, list) {
+    var select = ctx.modelSelect;
+    if (!select) { return; }
+    var current = ctx.modelFilter || "";
+    clear(select);
+    select.appendChild(el("option", { value: "", text: "All models" }));
+    var found = false;
+    list.forEach(function (m) {
+      var o = el("option", { value: m.value, text: m.label + " (" + fmtNum(m.count) + ")" });
+      if (m.value === current) { o.selected = true; found = true; }
+      select.appendChild(o);
+    });
+    if (current && !found) {
+      var o = el("option", { value: current, text: current });
+      o.selected = true;
+      select.appendChild(o);
+    }
+  }
+
+  // Which models made a card's call, from the versions stored on the event when
+  // it was captured. An empty version is said plainly rather than filled in.
+  function modelLine(parts) {
+    return el("div", { class: "card-model", text: parts.map(function (p) {
+      return p[0] + " " + (p[1] ? p[1] : "model version not recorded");
+    }).join("  \u00b7  ") });
+  }
+
   function populateSpecies(ctx, names) {
     var select = document.querySelector(".filter-species");
     if (!select) { return; }
@@ -1915,23 +1952,24 @@
     return {
       stationId: store(opts.stationStoreKey) || "",
       stationStoreKey: opts.stationStoreKey,
-      speciesFilter: "", ids: [], selecting: false, selection: {},
+      speciesFilter: "", modelFilter: "", ids: [], selecting: false, selection: {},
       pageSize: 100, pageOffset: 0, sig: null,
       listEndpoint: opts.listEndpoint,
       speciesEndpoint: opts.speciesEndpoint,
+      modelsEndpoint: opts.modelsEndpoint,
       deleteEndpoint: opts.deleteEndpoint,
       unit: opts.unit,
       reload: opts.reload
     };
   }
   state.det = makeListCtx({
-    listEndpoint: "/detections", speciesEndpoint: "/detections/species",
+    listEndpoint: "/detections", speciesEndpoint: "/detections/species", modelsEndpoint: "/detections/models",
     deleteEndpoint: "/detections/delete", unit: "detection",
     stationStoreKey: STORE.stationDetections,
     reload: function () { loaders.detections(); }
   });
   state.aud = makeListCtx({
-    listEndpoint: "/audio", speciesEndpoint: "/audio/species",
+    listEndpoint: "/audio", speciesEndpoint: "/audio/species", modelsEndpoint: "/audio/models",
     deleteEndpoint: "/detections/delete", unit: "acoustic detection",
     stationStoreKey: STORE.stationAudio,
     reload: function () { loaders.audio(); }
@@ -2085,7 +2123,8 @@
     "train-dataset": function () { loadTrainDataset(); },
     "train-train": function () { loadTrainSetup(); },
     "train-runs": function () { loadTrainRuns(); },
-    "train-results": function () { loadTrainResults(); }
+    "train-results": function () { loadTrainResults(); },
+    "train-models": function () { loadTrainModels(); }
   };
 
   // Each panel with sub-panels keeps its own choice. Brain keeps the original
@@ -2140,8 +2179,11 @@
     }
     // Reset to the first page whenever the station, species, or page size
     // changes; a plain page turn (prev/next) keeps the same signature.
-    var sig = ctx.stationId + "|" + ctx.speciesFilter + "|" + ctx.pageSize;
+    var sig = ctx.stationId + "|" + ctx.speciesFilter + "|" + ctx.modelFilter + "|" + ctx.pageSize;
     if (sig !== ctx.sig) { ctx.pageOffset = 0; ctx.sig = sig; }
+    apiGet(ctx.modelsEndpoint + query({ station_id: ctx.stationId }))
+      .then(function (list) { populateModels(ctx, list || []); })
+      .catch(function () {});
 
     // Fill the species dropdown from the full server-side list (every recorded
     // species), not just the current page.
@@ -2152,6 +2194,7 @@
     apiGet(ctx.listEndpoint + query({
       station_id: ctx.stationId,
       species: ctx.speciesFilter,
+      model: ctx.modelFilter,
       limit: ctx.pageSize,
       offset: ctx.pageOffset
     })).then(function (resp) {
@@ -2192,6 +2235,8 @@
         }
         card.appendChild(el("div", { class: "card-meta", text: meta }));
         card.appendChild(el("div", { class: "card-title", text: displaySpecies(obs, species) }));
+        card.appendChild(modelLine([["Screened by", obs.screening_model_version]].concat(obs.verification
+          ? [["Verified by", obs.verification.rfdetr_version]] : [["Desktop verification", "not run"]])));
         card.appendChild(el("div", { class: "card-stats", text:
           "tracked across " + fmtNum(obs.frame_count) + " frames" +
           "  ·  " + fmtNum(obs.duration, 1) + "s" +
@@ -2267,8 +2312,11 @@
       filters.appendChild(captureRunControl("audio", loaders.audio, dock));
       filters.appendChild(deleteControl(ctx, dock));
     }
-    var sig = ctx.stationId + "|" + ctx.speciesFilter + "|" + ctx.pageSize;
+    var sig = ctx.stationId + "|" + ctx.speciesFilter + "|" + ctx.modelFilter + "|" + ctx.pageSize;
     if (sig !== ctx.sig) { ctx.pageOffset = 0; ctx.sig = sig; }
+    apiGet(ctx.modelsEndpoint + query({ station_id: ctx.stationId }))
+      .then(function (list) { populateModels(ctx, list || []); })
+      .catch(function () {});
 
     apiGet(ctx.speciesEndpoint + query({ station_id: ctx.stationId }))
       .then(function (list) { populateSpecies(ctx, list || []); })
@@ -2277,6 +2325,7 @@
     apiGet(ctx.listEndpoint + query({
       station_id: ctx.stationId,
       species: ctx.speciesFilter,
+      model: ctx.modelFilter,
       limit: ctx.pageSize,
       offset: ctx.pageOffset
     })).then(function (resp) {
@@ -2315,6 +2364,7 @@
           "aria-label": "Open audit for this acoustic detection" });
         head.appendChild(el("div", { class: "card-meta", text: (a.event_name || a.id) + " · " + fmtTime(a.first_seen) }));
         head.appendChild(el("div", { class: "card-title", text: displaySpecies(a, species) }));
+        head.appendChild(modelLine([["Heard by", a.acoustic_model_version]]));
         head.appendChild(el("div", { class: "card-stats", text:
           "true duration: " + fmtNum(a.audio_true_duration_seconds, 1) + "s" +
           (a.audio_capped ? " (stored clip capped)" : "") +
@@ -8087,6 +8137,226 @@
     }).catch(function (e) {
       clear(host);
       host.appendChild(el("p", { class: "empty-state", text: "Could not read the results: " + e.message }));
+    });
+  }
+
+  // ----------------------------------------------------------------------
+  // 8e. Models: the registry, switching a model on and off, and sharing
+  //
+  // A finished run becomes a model only when a person adds it. A model is
+  // switched on by writing it into one slot of the settings, kept in the local
+  // settings file so the committed configuration never changes, and every switch
+  // can be put back exactly. Packages are made on this computer; nothing is
+  // uploaded anywhere.
+  // ----------------------------------------------------------------------
+
+  var TRAIN_SLOT_TEXT = {
+    desktop_verifier: "Desktop verification model",
+    desktop_screening: "Desktop screening model",
+    station_acoustic: "Sound model"
+  };
+
+  function trainLicenceBadge(m) {
+    if (!m.license_spdx) { return badge("Licence not confirmed", "warn"); }
+    return badge(m.license_spdx, m.needs_acknowledgement ? "warn" : "ok");
+  }
+
+  function trainSlotName(s) {
+    return TRAIN_SLOT_TEXT[s.slot] + (s.station_name ? ", " + s.station_name : "");
+  }
+
+  function trainAckField(data, m) {
+    if (!m.needs_acknowledgement) { return null; }
+    return el("input", { type: "text", class: "form-input train-ack", "aria-label": "Licence acknowledgement",
+      placeholder: "Type: " + data.acknowledgement });
+  }
+
+  function trainPackageResult(host, res) {
+    clear(host);
+    var href = API + "/train/packages/" + encodeURIComponent(res.name);
+    host.appendChild(el("p", { class: "form-hint" }, [
+      el("span", { text: "Saved " + res.name + " (" + fmtNum(Math.round(res.bytes / 1024)) + " KB) in " + res.path.replace(/[\\/][^\\/]*$/, "") + ". " }),
+      el("a", { href: href, download: res.name, text: "Download it" })
+    ]));
+  }
+
+  function trainModelCard(data, m) {
+    var card = el("div", { class: "info-block train-model", "data-model": m.id });
+    card.appendChild(el("h4", { text: m.name }));
+    card.appendChild(el("div", { class: "badge-row" }, [
+      badge(m.modality === "acoustic" ? "Sound" : "Images", "neutral"), trainLicenceBadge(m),
+      (m.metrics && m.metrics.tested) ? badge("Tested", "ok") : badge("No test score", "warn")
+    ]));
+    card.appendChild(modelKvRow("Base", m.base_label));
+    card.appendChild(modelKvRow("Classes", fmtNum(m.class_count)));
+    card.appendChild(modelKvRow("Created", fmtTime(m.created_at)));
+    card.appendChild(modelKvRow("Folder", m.folder, "mono"));
+    var h = (m.metrics || {}).headline;
+    if (h) {
+      var figures = Object.keys(h).filter(function (k) { return k !== "kind" && typeof h[k] === "number"; })
+        .map(function (k) { return humanize(k) + " " + trainFmt(h[k]); });
+      card.appendChild(modelKvRow("Test figures", figures.join(", ")));
+    } else if (m.metrics && m.metrics.note) {
+      card.appendChild(trainNote(m.metrics.note, "form-message"));
+    }
+    card.appendChild(el("p", { class: "form-hint", text: m.license_note || "" }));
+    if (!m.folder_exists) {
+      card.appendChild(trainNote("The model file is missing from its folder, so it cannot be switched on or packaged.", "form-message"));
+      return card;
+    }
+    var msg = el("p", { class: "form-message", role: "status" });
+    var slots = (data.slots || []).filter(function (s) {
+      return m.modality === "acoustic" ? s.slot === "station_acoustic" : s.slot !== "station_acoustic";
+    });
+    var pick = el("select", { class: "form-input", "aria-label": "Where to switch " + m.name + " on" });
+    slots.forEach(function (s, i) { pick.appendChild(el("option", { value: String(i), text: trainSlotName(s) })); });
+    var ack = trainAckField(data, m);
+    var on = el("button", { type: "button", class: "btn btn-primary", text: "Switch on" });
+    on.addEventListener("click", function () {
+      var s = slots[Number(pick.value)];
+      if (!s) { return; }
+      on.disabled = true;
+      msg.textContent = "Saving.";
+      apiSend("/train/models/" + encodeURIComponent(m.id) + "/activate", "POST",
+        { slot: s.slot, station_id: s.station_id, acknowledgement: ack ? ack.value : null })
+        .then(function (res) { msg.textContent = res.note; loadTrainModels(); })
+        .catch(function (e) { msg.textContent = e.message; on.disabled = false; });
+    });
+    var pkgHost = el("div");
+    var pkg = el("button", { type: "button", class: "btn", text: "Make a package" });
+    pkg.addEventListener("click", function () {
+      pkg.disabled = true;
+      msg.textContent = "Packaging.";
+      apiSend("/train/models/" + encodeURIComponent(m.id) + "/package", "POST", { acknowledgement: ack ? ack.value : null })
+        .then(function (res) { msg.textContent = ""; trainPackageResult(pkgHost, res); })
+        .catch(function (e) { msg.textContent = e.message; })
+        .then(function () { pkg.disabled = false; });
+    });
+    if (slots.length) {
+      card.appendChild(el("label", { class: "form-label", text: "Switch on as" }));
+      card.appendChild(pick);
+    } else {
+      card.appendChild(trainNote(m.modality === "acoustic" ? "Add a station first; a sound model is switched on for one station."
+        : "There is no slot for an image model yet."));
+    }
+    if (ack) {
+      card.appendChild(el("p", { class: "form-hint", text: "This licence limits use. Type the sentence below to switch the model on or package it." }));
+      card.appendChild(ack);
+    }
+    var actions = el("div", { class: "form-actions" }, slots.length ? [on, pkg] : [pkg]);
+    card.appendChild(actions);
+    card.appendChild(msg);
+    card.appendChild(pkgHost);
+    return card;
+  }
+
+  function trainSlotRow(s) {
+    var row = el("div", { class: "info-block train-slot" });
+    row.appendChild(el("h5", { text: trainSlotName(s) }));
+    var e = s.entry || {};
+    row.appendChild(modelKvRow("Model", e.version || (e.path ? "version not recorded" : "none")));
+    if (e.path) { row.appendChild(modelKvRow("File", e.path, "mono")); }
+    var msg = el("p", { class: "form-message", role: "status" });
+    var actions = el("div", { class: "form-actions" });
+    if (s.revertible) {
+      var back = el("button", { type: "button", class: "btn", text: "Put back the previous model" });
+      back.addEventListener("click", function () {
+        back.disabled = true;
+        apiSend("/train/slots/revert", "POST", { slot: s.slot, station_id: s.station_id })
+          .then(function () { loadTrainModels(); })
+          .catch(function (err) { msg.textContent = err.message; back.disabled = false; });
+      });
+      actions.appendChild(back);
+    }
+    if (s.slot === "station_acoustic" && s.station_kind === "pi" && e.path) {
+      var push = el("button", { type: "button", class: "btn", text: "Send to the field station" });
+      push.addEventListener("click", function () {
+        push.disabled = true;
+        msg.textContent = "Sending the configuration and the model files.";
+        apiSend("/stations/" + encodeURIComponent(s.station_id) + "/push-config" + query({ with_models: "true" }), "POST")
+          .then(function (res) { msg.textContent = res.note || "Sending. Progress is shown in Settings for this station."; })
+          .catch(function (err) { msg.textContent = err.message; push.disabled = false; });
+      });
+      actions.appendChild(push);
+    }
+    if (s.slot === "desktop_screening" && s.station_kind === "pi") {
+      row.appendChild(trainNote("A field station screens with a model compiled for its accelerator (.hef). An ONNX model switched on here is used for desktop capture only; compiling is described in docs/custom-models.md."));
+    }
+    if (actions.childNodes.length) { row.appendChild(actions); }
+    row.appendChild(msg);
+    return row;
+  }
+
+  function trainDatasetExports(host, datasets) {
+    if (!(datasets || []).length) { return; }
+    host.appendChild(el("h4", { text: "Share a dataset" }));
+    host.appendChild(el("p", { class: "form-hint", text:
+      "A zip of one layout with its class list and manifest, so every label's origin travels with it. COCO with images suits Roboflow and most detection tools." }));
+    datasets.forEach(function (d) {
+      var row = el("div", { class: "box-row" }, [el("span", { class: "mono", text: d.dataset_id + "  " })]);
+      var out = el("span", { class: "form-hint" });
+      (d.modality === "audio" ? [["windows", "Sound windows"]] : [["coco", "COCO"], ["yolo_txt", "YOLO text"]]).forEach(function (l) {
+        var b = el("button", { type: "button", class: "btn btn-small", text: l[1] });
+        b.addEventListener("click", function () {
+          b.disabled = true;
+          out.textContent = " Packaging.";
+          apiSend("/train/dataset/" + encodeURIComponent(d.dataset_id) + "/export/" + l[0], "POST")
+            .then(function (res) { trainPackageResult(out, res); })
+            .catch(function (e) { out.textContent = " " + e.message; })
+            .then(function () { b.disabled = false; });
+        });
+        row.appendChild(b);
+      });
+      row.appendChild(out);
+      host.appendChild(row);
+    });
+  }
+
+  function loadTrainModels() {
+    var host = region("train-models");
+    if (!host) { return; }
+    if (!host.hasChildNodes()) { host.appendChild(el("p", { class: "empty-state", text: "Loading the models." })); }
+    Promise.all([apiGet("/train/models"), apiGet("/train/status").catch(function () { return {}; })]).then(function (res) {
+      var data = res[0], status = res[1] || {};
+      if (!trainStillShown(host)) { return; }
+      clear(host);
+      if ((data.unregistered_runs || []).length) {
+        host.appendChild(el("h4", { text: "Finished runs not yet added" }));
+        data.unregistered_runs.forEach(function (r) {
+          var msg = el("span", { class: "form-hint", role: "status" });
+          var add = el("button", { type: "button", class: "btn btn-primary btn-small", text: "Add as a model" });
+          add.addEventListener("click", function () {
+            add.disabled = true;
+            msg.textContent = " Adding.";
+            apiSend("/train/runs/" + encodeURIComponent(r.id) + "/register", "POST", {})
+              .then(function () { loadTrainModels(); })
+              .catch(function (e) { msg.textContent = " " + e.message; add.disabled = false; });
+          });
+          host.appendChild(el("div", { class: "box-row" }, [el("span", { text: r.planned_model_name + ", finished " + fmtTime(r.ended_at) + "  " }), add, msg]));
+        });
+        host.appendChild(el("p", { class: "form-hint", text: "The name is issued when the model is added, as the next version of its name." }));
+      }
+      host.appendChild(el("h4", { text: "Models" }));
+      if (!(data.models || []).length) {
+        host.appendChild(el("p", { class: "empty-state", text: "No model has been added yet. Add a finished run above." }));
+      } else {
+        var grid = el("div", { class: "train-models" });
+        data.models.forEach(function (m) { grid.appendChild(trainModelCard(data, m)); });
+        host.appendChild(grid);
+      }
+      host.appendChild(el("h4", { text: "Where models are switched on" }));
+      host.appendChild(el("p", { class: "form-hint", text:
+        "Switching a model on is saved in this computer's local settings file, so the committed settings never change. It is used the next time Audtheia starts; a field station uses it after the change is sent and the station restarts. Records already captured keep the model they were captured with." }));
+      (data.slots || []).forEach(function (s) { host.appendChild(trainSlotRow(s)); });
+      trainDatasetExports(host, status.datasets || []);
+      host.appendChild(el("h4", { text: "Sharing" }));
+      host.appendChild(el("p", { class: "form-hint", text:
+        "iNaturalist does not take uploaded models; its identification model is trained by iNaturalist from community observations. What you can contribute there are observations with photos or sounds, from your own iNaturalist account." }));
+      host.appendChild(el("p", { class: "form-hint", text:
+        "A model package holds MODEL_CARD.md, which a Hugging Face model page reads, and for an image model the PyTorch checkpoint that Roboflow's custom-weights upload needs. The steps are in docs/training.md. Nothing is uploaded by Audtheia." }));
+    }).catch(function (e) {
+      clear(host);
+      host.appendChild(el("p", { class: "empty-state", text: "Could not read the models: " + e.message }));
     });
   }
 

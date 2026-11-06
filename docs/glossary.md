@@ -90,11 +90,15 @@ A plain-language dictionary of the terms used across the Audtheia V2 master conc
 
 ## L
 
+**Label map.** A small file beside the datasets in which an expert ties a label no rule could match, such as a model's own class name, to its species in the backbone, or keeps it as its own class. Used when datasets are built; the record itself is never changed.
+
 **llm_inferred.** The provenance tag for downstream interpretation such as ecological role, rarity, anomaly flags, cross-modal source attribution, and skill outputs. It is always generated on the desktop, never at field capture, and always labeled as inference.
 
 ## M
 
 **Measured versus inferred firewall.** The overarching guarantee that measured observations and downstream inferences are stored so they remain permanently distinguishable. It is enforced by the `data_source` tag and the field tier's refusal to write interpretive claims as data.
+
+**Model slot.** One place a model is used: the desktop verification model, a station's desktop screening model, or a station's sound model. Switching a trained model on writes the slot in this computer's local settings file, and every switch is logged so it can be put back exactly.
 
 **Model trust.** A per-species reliability figure for a detection model, computed as a Laplace-smoothed precision from confirmed reviews and combined with detection evidence. It tells the user how much to trust a given model's call for a given species.
 
@@ -109,6 +113,8 @@ A plain-language dictionary of the terms used across the Audtheia V2 master conc
 **Observation.** The atomic unit of the record: one multimodal event memory, identified by a UUID and a human-legible name, carrying its `trigger_source`, representative frame, frame count, first and last seen times, duration, sensor readings, and provenance tags.
 
 **Occipital gate.** The rule that NREM consolidation uses all synced observations, but REM generative integration runs only over observations the verification step has cleared. It keeps every candidate pattern anchored to confirmed detections.
+
+**One identity per species.** The rule that every label in a training dataset is matched to the GBIF backbone before classes are counted, so one species named two ways becomes one class. Labels no rule can read are listed for an expert to map, never guessed.
 
 ## P
 
@@ -139,6 +145,10 @@ A plain-language dictionary of the terms used across the Audtheia V2 master conc
 **station_telemetry.** The schema table recording station health, observation effort, and optional energy figures (energy populated only when a meter is configured), kept separate from the observation data itself.
 
 ## T
+
+**Test split.** The events held out of training and validation and used only to score a finished model. Whole events go to one split, so frames of one event are never on both sides.
+
+**Trained model.** A model trained in the Train tab from reviewed events, named Audtheia-Name-Vn, with its licence, test figures and model card. It is a model output, not a measurement.
 
 **trigger_source.** The field on every observation recording what started it: `vision`, `audio`, or `sensor`. It makes the origin of each event explicit and queryable.
 

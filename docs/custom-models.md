@@ -124,6 +124,10 @@ Every model is registered in the settings file, never in code. Each entry carrie
 
 Because these travel with every observation and every report, your outputs always disclose which model, at which version, produced each detection. That is part of what makes Audtheia's records defensible: a reader can always trace a result back to the exact model behind it.
 
+## Training from your own reviewed events
+
+Audtheia can also train models from the events your experts have reviewed, on this computer, through the Train tab: an RF-DETR image model that can be switched on as the desktop verifier or a station's desktop screening model, and a sound model built on BirdNET for a station. The [training guide](training.md) covers it end to end.
+
 ## Where to go next
 
 - To build the physical station that runs a field model, see the [hardware guide](hardware.md).

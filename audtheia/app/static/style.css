@@ -2985,3 +2985,32 @@ textarea:hover {
   padding: 6px 0;
   border-bottom: 1px solid var(--border-subtle);
 }
+
+/* The model that made a card's call, read from the event's stored versions. */
+.card-model {
+  font-size: 0.8rem;
+  color: var(--text-2);
+  margin: 2px 0 4px;
+  overflow-wrap: anywhere;
+}
+
+/* The species and model choices share one toolbar row with the station and
+   Refresh, so both are kept compact; the open list still shows full names. */
+.filter-bar .filter-species {
+  max-width: 12rem;
+}
+
+.filter-bar .filter-model {
+  max-width: 10rem;
+}
+
+/* Models: the registry cards and the slots a model is switched on in. */
+.train-models {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr));
+  gap: 12px;
+}
+
+.train-ack {
+  margin: 6px 0;
+}

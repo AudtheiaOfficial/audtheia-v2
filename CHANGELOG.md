@@ -5,7 +5,7 @@ All notable changes to Audtheia V2 are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.1.0] - 2026-11-05
 
 ### Added
 
@@ -181,6 +181,39 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   The install plan now reads the block size of the drive the environments go to
   and, above 64 KB, says plainly how much more space they could take and how to
   choose a folder on another drive, before anything is downloaded.
+- **Train tab: Models.** A finished run becomes a model when a person adds it, as
+  the next numbered version of its name, Audtheia-Name-Vn, in a folder of its own
+  under models/trained with the model file, its labels, the PyTorch checkpoint or
+  the trained sound layer and calibration, the test figures and a model card. A
+  folder is never overwritten and a run is never added twice. The licence is
+  inherited from what the model was trained from, and recorded as not confirmed
+  when it cannot be known, such as for a person's own starting checkpoint.
+- **Switching a model on, and back.** A model can be switched on as the desktop
+  verification model, a station's desktop screening model, or a station's sound
+  model. The change is saved through the guarded settings writer into this
+  computer's local settings file, so the committed settings file stays byte for
+  byte the same, and every switch is logged with the slot before and after so
+  Put back the previous model restores it exactly. A slot changed elsewhere in the
+  meantime is not reverted blindly. A model with a non-commercial licence, such as
+  a sound model built on BirdNET, asks for a typed acknowledgement first. For a
+  field station, the sound model and its labels can be sent with the configuration
+  to a Pi that has been connected once.
+- **Model labels and the Model filter.** Detection cards say which models
+  screened and verified each event, and Audio cards which model heard it, read
+  from the versions stored with the event, with "model version not recorded" where
+  none was stored. Detections and Audio gain a Model filter listing the versions
+  actually present, including events without one. Reports and CSV exports already
+  carry these versions, so a switched-on trained model is named in them by its
+  registry name.
+- **Sharing packages.** A model package zips the model's folder, whose model card
+  front matter a Hugging Face model page reads. A dataset can be exported as COCO
+  with images, YOLO text, or sound windows, each with its class list and manifest.
+  Packages are written beside the datasets and never overwritten, and nothing is
+  uploaded by Audtheia.
+- **Training guide.** docs/training.md describes the Train tab end to end,
+  including what data a model needs, the identity rules, the comparison, switching
+  models on, and how to share with Hugging Face and Roboflow. The glossary, the
+  custom models guide and the README point to it.
 
 ### Changed
 
@@ -199,6 +232,18 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   field, instead of the browser's plain white box.
 - **Sound run cards** name the base model as such, Mode and base model, rather
   than a model size.
+- **Saving settings that change nothing committed leaves the file untouched.** A
+  save whose committed content is unchanged no longer rewrites or reformats
+  config/settings.json.
+- **Model slots live in the local settings file.** Any member of the desktop
+  verification, desktop screening or station sound model slots that differs from
+  the committed value is kept in config/settings.local.json, so which model a
+  computer uses is a property of that computer. A slot already published in the
+  committed file is read exactly as before.
+- **Scenario settings files no longer read the machine's local overrides** unless
+  they sit in a config folder, so two temporary configurations named
+  settings.json in one folder cannot share a stale local file. This only affects
+  test configurations; the application's own settings file is unchanged.
 - **Dataset rules version 2.** Datasets built from now on carry rules version 2,
   because merging labels of one taxon can change what a selection holds. A
   dataset built before stays valid and is recognised as built under version 1.

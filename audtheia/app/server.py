@@ -41,6 +41,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -850,6 +851,22 @@ def _persist_settings(settings) -> list:
 
     tracked = copy.deepcopy(settings.raw)
     from audtheia.config import apply_local_overrides as _apply
+    from audtheia.config import local_only_values
+
+    # A model slot is this machine's deployment. Any member that differs from the
+    # committed value is kept in the local file and the committed file keeps what
+    # it already published, so switching a model never changes a tracked file. A
+    # slot the committed file does not have yet, such as a station just added, is
+    # saved normally.
+    _missing = object()
+    model_slot_stand_in = {}
+    for pointer, value in local_only_values(settings.raw).items():
+        published = pointer_value(previous, pointer, _missing)
+        if published is _missing or published == value or pointer in overrides:
+            continue
+        overrides[pointer] = value
+        model_slot_stand_in[pointer] = published
+    _apply(tracked, model_slot_stand_in)
 
     warnings: list = []
 
@@ -860,6 +877,8 @@ def _persist_settings(settings) -> list:
     stand_in = {}
     polluted = []
     for pointer in overrides:
+        if pointer in model_slot_stand_in:
+            continue
         prior = pointer_value(previous, pointer)
         if _is_absolute_path_value(prior) or _contains_machine_path(prior):
             stand_in[pointer] = None
@@ -894,7 +913,11 @@ def _persist_settings(settings) -> list:
             "and must go to the local override file instead."
         )
 
-    _write_json_atomically(target, tracked, ".settings-")
+    # A save that changes nothing in the committed configuration leaves the file
+    # untouched, byte for byte, so switching a model, whose slot lives in the
+    # local file, never rewrites or reformats a tracked file.
+    if tracked != previous:
+        _write_json_atomically(target, tracked, ".settings-")
 
     local_target = Path(settings.local_overrides_path)
     if overrides or local_target.exists():
@@ -1903,16 +1926,46 @@ def create_app(settings, database):
 
     # -- detections (visual events plus the desktop verification verdict) --
 
+    # The model that made each call, as stored on the event when it was captured:
+    # the screening model for a visual event, the sound model for an acoustic one.
+    # Old records keep whatever they were stored with, and an empty value is its
+    # own choice, "not recorded", so those events stay reachable.
+    _MODEL_NOT_RECORDED = "__not_recorded__"
+
+    def _model_field(trigger: str) -> str:
+        return "screening_model_version" if trigger == "vision" else "acoustic_model_version"
+
+    def _events_page(trigger, station_id, since, until, sp, model, limit, offset) -> tuple:
+        if not model:
+            total = db.count_observations(station_id=station_id, since=since, until=until, species=sp, trigger=trigger)
+            rows = db.list_observations(station_id=station_id, since=since, until=until, species=sp,
+                                        trigger=trigger, limit=limit, offset=offset)
+            return total, rows
+        field = _model_field(trigger)
+        wanted = None if model == _MODEL_NOT_RECORDED else model
+        every = db.list_observations(station_id=station_id, since=since, until=until, species=sp, trigger=trigger)
+        matching = [r for r in every if ((r.get(field) or "").strip() or None) == wanted]
+        return len(matching), matching[offset: offset + limit]
+
+    def _models_present(trigger: str, station_id) -> list:
+        field = _model_field(trigger)
+        counts: dict = {}
+        for row in db.list_observations(station_id=station_id, trigger=trigger):
+            key = (row.get(field) or "").strip() or None
+            counts[key] = counts.get(key, 0) + 1
+        return [{"version": k, "value": k if k is not None else _MODEL_NOT_RECORDED,
+                 "label": k if k is not None else "model version not recorded", "count": n}
+                for k, n in sorted(counts.items(), key=lambda kv: (kv[0] is None, (kv[0] or "").lower()))]
+
     @app.get(f"{API_PREFIX}/detections")
     def detections(station_id: str | None = Query(default=None), since: str | None = Query(default=None),
                    until: str | None = Query(default=None), species: str | None = Query(default=None),
+                   model: str | None = Query(default=None),
                    limit: int = Query(default=100, ge=1, le=100000), offset: int = Query(default=0, ge=0)):
         sp = species.strip() if species and species.strip() else None
         # The Detections view is visual events only; acoustic events live on the
         # Audio tab, so they are never mixed into this list.
-        total = db.count_observations(station_id=station_id, since=since, until=until, species=sp, trigger="vision")
-        rows = db.list_observations(station_id=station_id, since=since, until=until, species=sp,
-                                    trigger="vision", limit=limit, offset=offset)
+        total, rows = _events_page("vision", station_id, since, until, sp, (model or "").strip() or None, limit, offset)
         # Built once per request, not per card: the accuracy lookup Model trust
         # needs is derived from the whole reviewed record and is the same for
         # every event in the page.
@@ -1938,6 +1991,11 @@ def create_app(settings, database):
     @app.get(f"{API_PREFIX}/detections/species")
     def detection_species(station_id: str | None = Query(default=None)):
         return db.list_species(station_id=station_id, modality="vision")
+
+    @app.get(f"{API_PREFIX}/detections/models")
+    def detection_models(station_id: str | None = Query(default=None)):
+        """The screening model versions present on visual events, for the Model filter."""
+        return _models_present("vision", station_id)
 
     @app.post(f"{API_PREFIX}/detections/delete")
     def delete_detections(request: ObservationDeleteRequest):
@@ -2617,12 +2675,11 @@ def create_app(settings, database):
     @app.get(f"{API_PREFIX}/audio")
     def audio(station_id: str | None = Query(default=None), since: str | None = Query(default=None),
               until: str | None = Query(default=None), species: str | None = Query(default=None),
+              model: str | None = Query(default=None),
               limit: int = Query(default=100, ge=1, le=100000), offset: int = Query(default=0, ge=0)):
         sp = species.strip() if species and species.strip() else None
         # Acoustic events only (trigger 'audio'); visual events live on Detections.
-        total = db.count_observations(station_id=station_id, since=since, until=until, species=sp, trigger="audio")
-        rows = db.list_observations(station_id=station_id, since=since, until=until, species=sp,
-                                    trigger="audio", limit=limit, offset=offset)
+        total, rows = _events_page("audio", station_id, since, until, sp, (model or "").strip() or None, limit, offset)
         trust_index = db.event_trust_index()
         out = []
         for obs in rows:
@@ -2638,6 +2695,11 @@ def create_app(settings, database):
     @app.get(f"{API_PREFIX}/audio/species")
     def audio_species(station_id: str | None = Query(default=None)):
         return db.list_species(station_id=station_id, modality="audio")
+
+    @app.get(f"{API_PREFIX}/audio/models")
+    def audio_models(station_id: str | None = Query(default=None)):
+        """The sound model versions present on acoustic events, for the Model filter."""
+        return _models_present("audio", station_id)
 
     # -- gps -------------------------------------------------------------
 
@@ -3709,6 +3771,148 @@ def create_app(settings, database):
             raise HTTPException(status_code=404, detail="no such test image.")
         return FileResponse(str(target))
 
+    # -- models: the registry, switching a model on, and sharing ------------------
+
+    def _persist_draft(draft: dict) -> list:
+        """Validate and save a configuration draft through the guarded writer, or change nothing."""
+        from audtheia.training import deploy
+
+        original = settings.raw
+        settings.raw = draft
+        try:
+            return list(_persist_settings(settings) or [])
+        except BackendError as exc:
+            settings.raw = original
+            raise deploy.DeployError(str(exc)) from exc
+
+    def _model_view(row: dict) -> dict:
+        from audtheia.training import registry
+
+        out = dict(row)
+        try:
+            out["metrics"] = json.loads(row.get("metrics_json") or "{}")
+        except ValueError:
+            out["metrics"] = {}
+        out.pop("metrics_json", None)
+        folder = registry.model_folder(settings, row)
+        out["folder_exists"] = (folder / row["model_file"]).is_file()
+        out["needs_acknowledgement"] = registry.requires_acknowledgement(row.get("license_spdx"))
+        return out
+
+    def _slot_views() -> list:
+        from audtheia.training import deploy
+
+        views = [deploy.slot_state(settings, db, "desktop_verifier")]
+        for station in settings.stations():
+            sid = station.get("station_id")
+            for slot in ("desktop_screening", "station_acoustic"):
+                view = deploy.slot_state(settings, db, slot, sid)
+                view["station_name"] = station.get("station_name")
+                view["station_kind"] = "pi" if (station.get("provisioning") or {}).get("host") else "desktop"
+                views.append(view)
+        return views
+
+    @app.get(f"{API_PREFIX}/train/models")
+    def train_models():
+        """The registry, the slots a model can be switched on in, and the finished runs not yet added."""
+        _require_desktop_for_training()
+        from audtheia.training import deploy
+
+        models = [_model_view(m) for m in db.list_trained_models()]
+        registered = {m["run_id"] for m in models}
+        runs = [r for r in db.list_training_runs(status="completed") if r["id"] not in registered]
+        return {"models": models, "slots": _slot_views(), "unregistered_runs": runs,
+                "acknowledgement": deploy.ACKNOWLEDGEMENT}
+
+    @app.post(API_PREFIX + "/train/runs/{run_id}/register", status_code=201)
+    def train_run_register(run_id: str, request: dict = Body(default={})):
+        """Add a finished run to the registry as the next version of its name."""
+        _require_desktop_for_training()
+        from audtheia.training import registry
+
+        try:
+            row = registry.register_run(settings, db, run_id,
+                                        created_by=str(request.get("created_by") or "").strip() or _DEFAULT_CORRECTOR)
+        except registry.RegistryError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {"model": _model_view(row)}
+
+    @app.post(API_PREFIX + "/train/models/{model_id}/activate")
+    def train_model_activate(model_id: str, request: dict = Body(default={})):
+        """Switch a model on in one slot. Takes effect the next time Audtheia or the station starts."""
+        _require_desktop_for_training()
+        from audtheia.training import deploy
+
+        try:
+            row = deploy.activate(settings, db, model_id, str(request.get("slot") or ""),
+                                  station_id=request.get("station_id") or None,
+                                  acknowledgement=request.get("acknowledgement"),
+                                  activated_by=str(request.get("activated_by") or "").strip() or _DEFAULT_CORRECTOR,
+                                  persist=_persist_draft)
+        except deploy.DeployError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        return {"activation": row, "slots": _slot_views(),
+                "note": "Saved. The model is used the next time Audtheia starts, or for a field station, after the"
+                        " change is pushed to it and it restarts."}
+
+    @app.post(f"{API_PREFIX}/train/slots/revert")
+    def train_slot_revert(request: dict = Body(default={})):
+        """Put a slot back exactly as it was before the model now in it was switched on."""
+        _require_desktop_for_training()
+        from audtheia.training import deploy
+
+        try:
+            row = deploy.revert(settings, db, str(request.get("slot") or ""), station_id=request.get("station_id") or None,
+                                activated_by=str(request.get("activated_by") or "").strip() or _DEFAULT_CORRECTOR,
+                                persist=_persist_draft)
+        except deploy.DeployError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        return {"activation": row, "slots": _slot_views()}
+
+    @app.post(API_PREFIX + "/train/models/{model_id}/package", status_code=201)
+    def train_model_package(model_id: str, request: dict = Body(default={})):
+        """Zip a model's folder for sharing. Nothing is uploaded."""
+        _require_desktop_for_training()
+        from audtheia.training import sharing
+
+        model = db.get_trained_model(model_id)
+        if model is None:
+            raise HTTPException(status_code=404, detail="there is no model with that identifier.")
+        try:
+            return sharing.package_model(settings, model, acknowledgement=request.get("acknowledgement"))
+        except sharing.SharingError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+
+    @app.post(API_PREFIX + "/train/dataset/{dataset_id}/export/{layout}", status_code=201)
+    def train_dataset_export(dataset_id: str, layout: str):
+        """Zip one layout of a built dataset for sharing. Nothing is uploaded."""
+        _require_desktop_for_training()
+        from audtheia.training import dataset as dataset_rules, sharing
+
+        if not re.fullmatch(r"(vision|audio)-[0-9a-f]{16}", dataset_id or ""):
+            raise HTTPException(status_code=404, detail="that dataset was not found.")
+        try:
+            return sharing.export_dataset(settings, dataset_rules._datasets_root(settings) / dataset_id, layout)
+        except sharing.SharingError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        except dataset_rules.DatasetError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get(API_PREFIX + "/train/packages/{name}")
+    def train_package_download(name: str):
+        """Download a package made on this computer."""
+        _require_desktop_for_training()
+        from fastapi.responses import FileResponse
+        from audtheia.training import sharing
+
+        root = sharing.packages_dir(settings).resolve()
+        target = (root / name).resolve()
+        if target.parent != root or target.suffix != ".zip" or not target.is_file():
+            raise HTTPException(status_code=404, detail="no such package.")
+        return FileResponse(str(target), filename=target.name, media_type="application/zip")
+
     @app.post(API_PREFIX + "/train/runs/{run_id}/{action}")
     def train_run_action(run_id: str, action: str):
         """Pause, resume or cancel a run."""
@@ -4661,7 +4865,7 @@ def create_app(settings, database):
         return {"state": "running", "note": "connecting to the Pi; poll the status endpoint for progress."}
 
     @app.post(f"{API_PREFIX}/stations/{{station_id}}/push-config")
-    def push_config(station_id):
+    def push_config(station_id, with_models: bool = Query(default=False)):
         """Push the station's current configuration to its already-connected Pi.
 
         A config edit on the desktop, such as adding a target species, reaches a
@@ -4694,7 +4898,8 @@ def create_app(settings, database):
         try:
             proc = subprocess.Popen(
                 [sys.executable, str(_pi_script()), "--station-id", station_id,
-                 "--host", host, "--user", user, "--port", str(port), "--key-auth", "--settings-only"],
+                 "--host", host, "--user", user, "--port", str(port), "--key-auth", "--settings-only",
+                 *(["--with-models"] if with_models else [])],
                 stdout=log, stderr=subprocess.STDOUT, cwd=str(settings.repo_root),
             )
         finally:

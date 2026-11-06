@@ -205,6 +205,13 @@ def station_model_files(settings, station_id: str) -> list[tuple[Path, str]]:
         p = settings.resolve_path(apath)
         if p.exists():
             files.append((p, apath))
+    # The labels travel with the model, so the station names what it hears
+    # instead of numbering it.
+    lpath = acoustic.get("labels_path")
+    if lpath and not Path(lpath).is_absolute():
+        p = settings.resolve_path(lpath)
+        if p.is_file():
+            files.append((p, lpath))
 
     return files
 
@@ -260,6 +267,7 @@ def provision(
     generate_key: bool = True,
     preauthorized_key: Optional[Path] = None,
     settings_only: bool = False,
+    with_models: bool = False,
 ) -> None:
     """Send everything a station needs and run the Pi-side setup, through the runner.
 
@@ -326,6 +334,15 @@ def provision(
         runner.put(pi_settings, f"{REMOTE_ROOT}/settings.json", use_key=send_with_key)
         if pi_secrets is not None:
             runner.put(pi_secrets, f"{REMOTE_ROOT}/secrets.json", use_key=send_with_key)
+        if with_models:
+            # A model switched on the desktop reaches the station with its files,
+            # at the repository-relative paths its configuration names.
+            models = station_model_files(settings, station_id)
+            _step(f"Sending {len(models)} model file(s) to the Pi")
+            for local, rel in models:
+                parent = str(Path(rel).parent.as_posix())
+                runner.run(f"mkdir -p ~/{REMOTE_ROOT}/{parent}", use_key=send_with_key)
+                runner.put(local, f"{REMOTE_ROOT}/{rel}", use_key=send_with_key)
         _step("Done")
         _info("The station's configuration was updated; it applies the next time the station starts.")
         return
@@ -407,6 +424,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         action="store_true",
         help="Push only the updated configuration to an already-connected Pi, without re-sending code or models.",
     )
+    parser.add_argument(
+        "--with-models",
+        action="store_true",
+        help="With --settings-only, also send the station's model files, for a model switched on the desktop.",
+    )
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     try:
@@ -444,6 +466,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 generate_key=(not args.no_key) and (not args.dry_run) and (not args.key_auth),
                 preauthorized_key=preauthorized,
                 settings_only=args.settings_only,
+                with_models=args.with_models,
             )
         return 0
 

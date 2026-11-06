@@ -767,6 +767,15 @@ _IDENTITY_KEYS = ("station_id", "channel_id", "id")
 # save and is gone on the next load.
 _MACHINE_VALUE_CONTAINERS = ("capture.source",)
 
+# Model slots whose whole entry belongs to this machine. Which model a computer or
+# a station runs is a deployment made on that machine: activating a trained model
+# from the Train tab rewrites the slot, and a version name or a labels file that
+# describes one installation has no place in the committed file. Every scalar
+# member of these slots is addressable by an override, and the save path keeps any
+# member that differs from the committed value in the local file, so the
+# committed configuration never changes because a model was switched.
+LOCAL_ONLY_MODEL_SLOTS = ("desktop_models.visual_rfdetr", "models.visual_desktop", "models.acoustic")
+
 
 def _is_path_key(key: str) -> bool:
     """Whether a configuration key holds a filesystem path."""
@@ -779,7 +788,20 @@ def _is_machine_value_container(prefix: str) -> bool:
     Matched on the pointer rather than on a station identifier so it holds for
     every station, and for a desktop configuration that has no station list.
     """
-    return any(prefix == name or prefix.endswith("." + name) for name in _MACHINE_VALUE_CONTAINERS)
+    return any(prefix == name or prefix.endswith("." + name)
+               for name in _MACHINE_VALUE_CONTAINERS + LOCAL_ONLY_MODEL_SLOTS)
+
+
+def is_local_only_pointer(pointer: str) -> bool:
+    """Whether a pointer names a member of a model slot kept in the local file."""
+    container = pointer.rsplit(".", 1)[0] if "." in pointer else ""
+    return any(container == name or container.endswith("." + name) for name in LOCAL_ONLY_MODEL_SLOTS)
+
+
+def local_only_values(raw: dict) -> dict:
+    """Every scalar member of the local-only model slots, as a pointer to value map."""
+    return {pointer: value for pointer, _key, _container, value in _walk_path_values(raw)
+            if is_local_only_pointer(pointer)}
 
 
 def _is_absolute_path_value(value: Any) -> bool:
@@ -1021,7 +1043,11 @@ def load_settings(
     # describes itself completely and inherits nothing from this machine.
     local_path = local_overrides_path_for(raw, repo_root)
     if apply_local is None:
-        apply_local = settings_path.name == CANONICAL_SETTINGS_FILENAME
+        # The canonical file sits in the config folder. A file of the same name
+        # anywhere else is a scenario configuration: without this, two such files
+        # in one temporary folder would share, and inherit, one stale local file.
+        apply_local = (settings_path.name == CANONICAL_SETTINGS_FILENAME
+                       and settings_path.resolve().parent.name == "config")
     local_overrides = _load_local_overrides(local_path) if apply_local else {}
     stale_pointers = apply_local_overrides(raw, local_overrides)
 
