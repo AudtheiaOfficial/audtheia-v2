@@ -255,6 +255,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **Tests close every database they open**, so the temporary folders they use can
   be deleted on Windows, and remove every scenario file they write, so a full run
   leaves the checkout exactly as it found it.
+- **The training run check compares folder contents the same way on every
+  system.** It listed changed files with the system's own path separator, so on
+  Windows the database was reported as an unexpected change. Paths are now
+  compared in the forward-slash form on every system.
+- **A failing check file shows every failed check.** tests/run_all.py now prints
+  each failed check of that file first, wherever it appears in the output,
+  followed by the end of the output, instead of only the last twenty lines.
 - **The Zenodo record names its version.** .zenodo.json carries the release
   version, so the archived record is labelled 2.1.0.
 - **Dataset rules version 2.** Datasets built from now on carry rules version 2,

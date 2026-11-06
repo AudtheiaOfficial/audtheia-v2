@@ -132,7 +132,15 @@ def main() -> int:
         mark = {"pass": "PASS", "fail": "FAIL", "skip": "SKIP"}[status]
         print(f"\n[{mark}] {path.stem}")
         if status == "fail":
-            tail = output.strip().splitlines()[-20:]
+            lines = output.strip().splitlines()
+            # Every failed check first, wherever it appears in the output, then the
+            # end of the output for a traceback or a summary.
+            failed_checks = [line for line in lines if line.lstrip().startswith("FAIL")]
+            if failed_checks:
+                print("      failed checks:")
+                print("\n".join("        " + line.strip() for line in failed_checks))
+                print("      end of the output:")
+            tail = lines[-20:]
             print("\n".join("      " + line for line in tail))
         elif status == "skip":
             print(f"      skipped: {output}")
