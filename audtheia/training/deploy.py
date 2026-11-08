@@ -137,6 +137,18 @@ def activate(settings, db, model_id: str, slot: str, *, station_id: Optional[str
                                    acknowledged_license=needs_ack)
 
 
+def _same_entry(entry: Mapping, logged_json: str) -> bool:
+    """Whether a slot still holds what an activation wrote, compared by value.
+
+    Compared as values, not as text, because a number written as 3.0 is read
+    back from the settings file as 3 after a restart and is still the same.
+    """
+    try:
+        return dict(entry) == json.loads(logged_json)
+    except (TypeError, ValueError):
+        return False
+
+
 def undoable(history: list) -> Optional[dict]:
     """The most recent activation that has not been put back yet, from a newest-first history.
 
@@ -169,7 +181,7 @@ def revert(settings, db, slot: str, *, station_id: Optional[str] = None, activat
     draft = copy.deepcopy(settings.raw)
     entry = slot_entry(draft, slot, station_id)
     current = copy.deepcopy(entry)
-    if json.dumps(current, sort_keys=True) != latest["new_json"]:
+    if not _same_entry(current, latest["new_json"]):
         raise DeployError("This slot was changed elsewhere after the model was switched on, so it is not reverted"
                           " automatically. Check it in Settings.", 409)
     restored = json.loads(latest["previous_json"])
@@ -186,7 +198,7 @@ def slot_state(settings, db, slot: str, station_id: Optional[str] = None) -> dic
     entry = copy.deepcopy(slot_entry(copy.deepcopy(settings.raw), slot, station_id))
     history = db.model_activations(slot, station_id)
     latest = undoable(history)
-    revertible = bool(latest and json.dumps(entry, sort_keys=True) == latest["new_json"])
+    revertible = bool(latest and _same_entry(entry, latest["new_json"]))
     return {"slot": slot, "station_id": station_id, "label": SLOTS[slot]["label"], "entry": entry,
             "model_id": latest["model_id"] if revertible else None,
             "revertible": revertible, "history": history}

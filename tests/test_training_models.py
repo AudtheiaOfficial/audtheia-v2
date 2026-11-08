@@ -375,6 +375,30 @@ def main() -> int:
         check("the interface offers the removal with a second press to confirm",
               "Remove its files" in client.get("/app.js").text and "Press again to remove" in client.get("/app.js").text)
 
+        print("\n[7] Putting a model back after Audtheia restarts")
+        sid2 = w.settings.stations()[1]["station_id"]
+        published = json.loads(settings_file.read_text(encoding="utf-8"))
+        for st in published["stations"]:
+            if st["station_id"] == sid2:
+                # A published shape that already matches the trained model, written as whole numbers,
+                # so the switched-on values stay in the committed file and come back as 3, not 3.0.
+                st["models"]["acoustic"].update({"sample_rate": 48000, "window_seconds": 3})
+        settings_file.write_text(json.dumps(published, indent=2), encoding="utf-8")
+        first_app = TestClient(srv.create_app(load_settings(settings_file), w.db))
+        sound2 = {"slot": "station_acoustic", "station_id": sid2}
+        on = first_app.post(f"/api/train/models/{m_snd['id']}/activate", json=dict(sound2, acknowledgement=ACK))
+        before_sound = json.loads(w.db.model_activations("station_acoustic", sid2)[0]["previous_json"])
+        restarted = TestClient(srv.create_app(load_settings(settings_file), w.db))
+        reread = load_settings(settings_file).station(sid2)["models"]["acoustic"]
+        check("after a restart the window length is read back as the whole number 3",
+              on.status_code == 200 and reread["window_seconds"] == 3 and isinstance(reread["window_seconds"], int))
+        view = [s_ for s_ in restarted.get("/api/train/models").json()["slots"]
+                if s_["slot"] == "station_acoustic" and s_["station_id"] == sid2][0]
+        check("the model switched on before the restart is still offered to put back", view["revertible"] is True)
+        back = restarted.post("/api/train/slots/revert", json=sound2)
+        check("and putting it back restores the slot as it was",
+              back.status_code == 200 and load_settings(settings_file).station(sid2)["models"]["acoustic"] == before_sound)
+
     for name in ("registry.py", "deploy.py", "sharing.py"):
         text = (REPO / "audtheia" / "training" / name).read_text(encoding="utf-8")
         check(f"{name} is ASCII only", text.isascii())
