@@ -191,9 +191,16 @@ def main() -> int:
         res = act(m_snd["id"], {"slot": "station_acoustic", "station_id": sid})
         check("a sound model with a limiting licence needs the typed acknowledgement",
               res.status_code == 428 and ACK in res.json()["detail"])
-        res = act(m_snd["id"], {"slot": "station_acoustic", "station_id": sid, "acknowledgement": ACK})
+        check("a sentence that is not the acknowledgement is refused",
+              act(m_snd["id"], {"slot": "station_acoustic", "station_id": sid,
+                                "acknowledgement": "I accept the terms"}).status_code == 428)
+        check("the acknowledgement is read whatever the case, spacing or full stop, and in American spelling",
+              all(deploy.acknowledged(t) for t in (ACK, "I accept the license terms", "  i ACCEPT the License terms. "))
+              and not deploy.acknowledged("I do not accept the licence terms"))
+        res = act(m_snd["id"], {"slot": "station_acoustic", "station_id": sid,
+                                "acknowledgement": "I accept the license terms"})
         entry = load_settings(settings_file).station(sid)["models"]["acoustic"]
-        check("with it, the station's sound model is set with its labels and audio shape",
+        check("with it, in either spelling, the station's sound model is set with its labels and audio shape",
               res.status_code == 200 and entry["version"] == "Audtheia-Dawn-V1" and entry["labels_path"].endswith("labels.txt")
               and entry["sample_rate"] == 48000 and entry["window_seconds"] == 3.0)
         check("and the acknowledgement is recorded", res.json()["activation"]["acknowledged_license"] == 1)
@@ -233,7 +240,8 @@ def main() -> int:
         check("a second package never overwrites the first", again["path"] != pkg["path"] and Path(pkg["path"]).is_file())
         check("a limiting licence needs the acknowledgement to package",
               client.post(f"/api/train/models/{m_snd['id']}/package", json={}).status_code == 428
-              and client.post(f"/api/train/models/{m_snd['id']}/package", json={"acknowledgement": ACK}).status_code == 201)
+              and client.post(f"/api/train/models/{m_snd['id']}/package",
+                              json={"acknowledgement": "I accept the license terms"}).status_code == 201)
         dl = client.get(f"/api/train/packages/{pkg['name']}")
         check("a package can be downloaded", dl.status_code == 200 and dl.content[:2] == b"PK")
         check("a name outside the packages folder is refused", client.get("/api/train/packages/..%2Fsettings.json").status_code == 404)

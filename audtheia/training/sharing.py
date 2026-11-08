@@ -78,10 +78,9 @@ def _zip(target: Path, files: list) -> Path:
 
 def package_model(settings, model: Mapping, *, acknowledgement: Optional[str] = None) -> dict:
     """Zip a registered model's folder."""
-    from audtheia.training.deploy import ACKNOWLEDGEMENT
+    from audtheia.training.deploy import ACKNOWLEDGEMENT, acknowledged
 
-    if registry.requires_acknowledgement(model.get("license_spdx")) and \
-            (acknowledgement or "").strip() != ACKNOWLEDGEMENT:
+    if registry.requires_acknowledgement(model.get("license_spdx")) and not acknowledged(acknowledgement):
         raise SharingError(f"This model is licensed {model['license_spdx']}. Type \"{ACKNOWLEDGEMENT}\" to confirm"
                            " you will share it within those terms.", 428)
     folder = registry.model_folder(settings, model)

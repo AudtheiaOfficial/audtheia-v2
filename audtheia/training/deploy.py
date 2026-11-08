@@ -28,7 +28,7 @@ from typing import Callable, Mapping, Optional
 
 from audtheia.training import registry
 
-__all__ = ["DeployError", "SLOTS", "ACKNOWLEDGEMENT", "slot_entry", "activate", "revert", "slot_state"]
+__all__ = ["DeployError", "SLOTS", "ACKNOWLEDGEMENT", "acknowledged", "slot_entry", "activate", "revert", "slot_state"]
 
 SLOTS = {
     "desktop_verifier": {"modality": "vision", "station": False, "label": "Desktop verification model"},
@@ -36,6 +36,17 @@ SLOTS = {
     "station_acoustic": {"modality": "acoustic", "station": True, "label": "Sound model of a station"},
 }
 ACKNOWLEDGEMENT = "I accept the licence terms"
+
+
+def acknowledged(text: Optional[str]) -> bool:
+    """Whether a person typed the acknowledgement.
+
+    Letter case, spacing, quotation marks and a final full stop do not matter, and
+    the American spelling "license" is accepted as well as "licence", so a person
+    who means it is never refused over how they spell it.
+    """
+    words = " ".join(str(text or "").lower().split()).strip("\"'").rstrip(".")
+    return words.replace("license", "licence") == ACKNOWLEDGEMENT.lower()
 
 
 class DeployError(RuntimeError):
@@ -104,8 +115,8 @@ def activate(settings, db, model_id: str, slot: str, *, station_id: Optional[str
     folder = registry.model_folder(settings, model)
     if not (folder / model["model_file"]).is_file():
         raise DeployError(f"The model file is missing from {folder}.", 409)
-    acknowledged = registry.requires_acknowledgement(model.get("license_spdx"))
-    if acknowledged and (acknowledgement or "").strip() != ACKNOWLEDGEMENT:
+    needs_ack = registry.requires_acknowledgement(model.get("license_spdx"))
+    if needs_ack and not acknowledged(acknowledgement):
         raise DeployError(f"This model is licensed {model['license_spdx']}. Type \"{ACKNOWLEDGEMENT}\" to confirm"
                           " you will use it within those terms.", 428)
     draft = copy.deepcopy(settings.raw)
@@ -118,7 +129,7 @@ def activate(settings, db, model_id: str, slot: str, *, station_id: Optional[str
     return db.add_model_activation(model_id, slot=slot, action="activate", station_id=station_id,
                                    previous_json=json.dumps(previous, sort_keys=True),
                                    new_json=json.dumps(new, sort_keys=True), activated_by=activated_by,
-                                   acknowledged_license=acknowledged)
+                                   acknowledged_license=needs_ack)
 
 
 def revert(settings, db, slot: str, *, station_id: Optional[str] = None, activated_by: str,

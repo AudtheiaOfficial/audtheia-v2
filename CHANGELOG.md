@@ -283,6 +283,13 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   account or a drive, so it stays in the run folder and is no longer copied into
   metrics.json, which is packaged and shared. The model card also reads "An image
   detection model".
+- **The licence acknowledgement is read as meant.** Typing it in American
+  spelling, "I accept the license terms", in any letter case, or with a final
+  full stop is accepted, both to switch a model on and to package it. Any other
+  sentence is still refused.
+- **The desktop verifier's line on a card reads "Desktop verification by".** It
+  names the model that ran the check, and no longer reads as a verdict beside a
+  "not verified" label. A saved package's size is shown in megabytes.
 - **Citation points to every version.** The README badge, the citation text,
   the BibTeX entry and CITATION.cff now carry the concept DOI
   10.5281/zenodo.21940754, which always resolves to the latest archived release.

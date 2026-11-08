@@ -2236,7 +2236,7 @@
         card.appendChild(el("div", { class: "card-meta", text: meta }));
         card.appendChild(el("div", { class: "card-title", text: displaySpecies(obs, species) }));
         card.appendChild(modelLine([["Screened by", obs.screening_model_version]].concat(obs.verification
-          ? [["Verified by", obs.verification.rfdetr_version]] : [["Desktop verification", "not run"]])));
+          ? [["Desktop verification by", obs.verification.rfdetr_version]] : [["Desktop verification", "not run"]])));
         card.appendChild(el("div", { class: "card-stats", text:
           "tracked across " + fmtNum(obs.frame_count) + " frames" +
           "  ·  " + fmtNum(obs.duration, 1) + "s" +
@@ -8220,7 +8220,7 @@
     clear(host);
     var href = API + "/train/packages/" + encodeURIComponent(res.name);
     host.appendChild(el("p", { class: "form-hint" }, [
-      el("span", { text: "Saved " + res.name + " (" + fmtNum(Math.round(res.bytes / 1024)) + " KB) in " + res.path.replace(/[\\/][^\\/]*$/, "") + ". " }),
+      el("span", { text: "Saved " + res.name + " (" + fmtBytes(res.bytes) + ") in " + res.path.replace(/[\\/][^\\/]*$/, "") + ". " }),
       el("a", { href: href, download: res.name, text: "Download it" })
     ]));
   }
