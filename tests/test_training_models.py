@@ -200,6 +200,9 @@ def main() -> int:
         res = act(m_snd["id"], {"slot": "station_acoustic", "station_id": sid,
                                 "acknowledgement": "I accept the license terms"})
         entry = load_settings(settings_file).station(sid)["models"]["acoustic"]
+        check("the running application holds the new model at once, so the next capture start uses it",
+              w.settings.station(sid)["models"]["acoustic"]["version"] == "Audtheia-Dawn-V1"
+              and "next time that station's capture is started" in res.json()["note"])
         check("with it, in either spelling, the station's sound model is set with its labels and audio shape",
               res.status_code == 200 and entry["version"] == "Audtheia-Dawn-V1" and entry["labels_path"].endswith("labels.txt")
               and entry["sample_rate"] == 48000 and entry["window_seconds"] == 3.0)

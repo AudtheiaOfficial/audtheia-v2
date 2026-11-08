@@ -554,6 +554,96 @@ def scenario_ring_buffer_bounded(settings):
     check("recent audio is still available", recent.size > 0 and r == rate)
 
 
+def _clip_matches_tone(clip: Path, start_seconds: float, amp: float = 0.2) -> bool:
+    """Whether a written clip begins with the tone as it sounded from start_seconds."""
+    with wave.open(str(clip), "rb") as w:
+        rate = w.getframerate()
+        pcm = np.frombuffer(w.readframes(2000), dtype="<i2").astype(np.float64) / 32767.0
+    t = start_seconds + np.arange(pcm.size) / rate
+    expected = amp * np.sin(2 * np.pi * 440.0 * t)
+    return pcm.size == 2000 and float(np.max(np.abs(pcm - expected))) < 2e-3
+
+
+def scenario_long_sound_keeps_its_clip(settings):
+    print("\n[11] A sound event longer than the buffer still keeps its clip")
+    clean_audio_dir(settings)
+    station = settings.active_station()
+    audio_cfg = station["capture"]["audio"]
+    max_clip = float(audio_cfg["max_clip_seconds"])
+    pre = float(audio_cfg["pre_roll_seconds"])
+    rate = 8000
+    det = AcousticDetection(class_id=3, class_name="fish_call", confidence=0.8)
+    last_call = int(station["capture"]["max_event_duration_seconds"]) + 60
+    script = {i: [det] for i in range(5, last_call)}
+    model = ScriptedAcousticModel({3: "fish_call"}, script, sample_rate=rate, window_seconds=1.0)
+    src = ScriptedAudioSource([tone_block(i, rate, 1.0) for i in range(last_call + 6)])
+    with tempfile.TemporaryDirectory() as d:
+        db = fresh_db(settings, Path(d))
+        mon = AcousticMonitor(settings=settings, station=station, db=db, audio_source=src, model=model,
+                              visual_context=NullVisualContext(), onset_threshold=DEFAULT_ONSET_THRESHOLD,
+                              silence_close_seconds=3.0)
+        mon.run()
+        obs = db.list_observations()
+        check("the long stretch is one observation", len(obs) == 1)
+        if not obs:
+            return
+        row = obs[0]
+        check("its true duration is the whole stretch", abs(row["audio_true_duration_seconds"] - (last_call - 5)) < 0.01)
+        check("a clip was written although the event outlasted the buffer", row["audio_clip_path"] is not None)
+        if row["audio_clip_path"] is None:
+            return
+        clip = Path(settings.repo_root) / row["audio_clip_path"]
+        with wave.open(str(clip), "rb") as w:
+            clip_seconds = w.getnframes() / w.getframerate()
+        check("the clip is as long as the cap", abs(clip_seconds - max_clip) < 0.05)
+        check("the clip is the lead-in, from the pre-roll before the first call", _clip_matches_tone(clip, 5.0 - pre))
+
+
+def scenario_long_vision_event_keeps_its_audio(settings):
+    print("\n[12] A vision encounter as long as the station allows still finds its audio")
+    clean_audio_dir(settings)
+    station = settings.active_station()
+    audio_cfg = station["capture"]["audio"]
+    max_clip = float(audio_cfg["max_clip_seconds"])
+    pre = float(audio_cfg["pre_roll_seconds"])
+    longest = float(station["capture"]["max_event_duration_seconds"])
+    rate = 8000
+    model = ScriptedAcousticModel({3: "fish_call"}, {}, sample_rate=rate, window_seconds=1.0)
+    with tempfile.TemporaryDirectory() as d:
+        db = fresh_db(settings, Path(d))
+        mon = AcousticMonitor(settings=settings, station=station, db=db, audio_source=ScriptedAudioSource([]),
+                              model=model, visual_context=NullVisualContext())
+        ring = mon.ring_buffer
+        check("the shared buffer covers the longest encounter with its rolls",
+              ring.capacity_seconds >= longest + pre + float(audio_cfg["post_roll_seconds"]))
+        start_s = 10.0
+        end_s = start_s + longest
+        # The encounter closes a few seconds after its last sighting.
+        for i in range(int(end_s + 20)):
+            ring.append(tone_block(i, rate, 1.0))
+        sink = AcousticTriggerSink(settings=settings, station=station, ring_buffer=ring,
+                                   acoustic_model_version="scripted-1.0")
+        event = TrackEvent(
+            observation_id="obs-long", event_name=f"{station['station_name']}_2026-06-30_long",
+            station_id=station["station_id"], track_id=9,
+            first_seen=(BASE + timedelta(seconds=start_s)).strftime(ISO),
+            last_seen=(BASE + timedelta(seconds=end_s)).strftime(ISO),
+            duration=longest, frame_count=5, time_provisional=0, best_confidence=0.8,
+            representative_frame=None, screening_model_version=None,
+            event_dir=Path("."), segment_count=1, children=[],
+        )
+        result = sink.on_event(event)
+        check("the encounter's clip was written", result.audio_clip_path is not None)
+        if result.audio_clip_path is None:
+            return
+        clip = Path(settings.repo_root) / result.audio_clip_path
+        with wave.open(str(clip), "rb") as w:
+            clip_seconds = w.getnframes() / w.getframerate()
+        check("it is capped at the stored length and keeps the lead-in",
+              result.audio_capped == 1 and abs(clip_seconds - max_clip) < 0.05
+              and _clip_matches_tone(clip, start_s - pre))
+
+
 def main():
     settings, cfg_path = make_pi_settings(active_index=0)
     try:
@@ -568,6 +658,8 @@ def main():
         scenario_model_selection(settings)
         scenario_soundscape_default_off(settings)
         scenario_ring_buffer_bounded(settings)
+        scenario_long_sound_keeps_its_clip(settings)
+        scenario_long_vision_event_keeps_its_audio(settings)
         clean_audio_dir(settings)  # leave the tree clean
     finally:
         if cfg_path.exists():

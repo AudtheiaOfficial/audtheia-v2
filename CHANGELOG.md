@@ -5,7 +5,7 @@ All notable changes to Audtheia V2 are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.1.0] - 2026-11-05
+## [2.1.0] - 2026-11-07
 
 ### Added
 
@@ -290,6 +290,19 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **The desktop verifier's line on a card reads "Desktop verification by".** It
   names the model that ran the check, and no longer reads as a verdict beside a
   "not verified" label. A saved package's size is shown in megabytes.
+- **Long events keep their audio clip.** The shared audio buffer held only the
+  stored clip's length plus its rolls, so a sound event that lasted longer than
+  about half a minute, or a vision encounter of that length on a field station,
+  closed after its lead-in had already left the buffer and was saved with no
+  clip, though its true duration was kept. The buffer now covers the longest
+  encounter a station records, and a sound event takes its capped clip as soon as
+  the clip's span has been heard, so an event of any length keeps its first
+  stretch of audio. At 48 kHz the buffer holds about 64 MB.
+- **A switched-on model needs no restart.** The Models view and the guide now say
+  what the application does: the running application holds the new setting at
+  once, capture on this computer uses it the next time that station's capture is
+  started, and the desktop verification model the next time verification runs. A
+  capture already running keeps the model it started with.
 - **Citation points to every version.** The README badge, the citation text,
   the BibTeX entry and CITATION.cff now carry the concept DOI
   10.5281/zenodo.21940754, which always resolves to the latest archived release.

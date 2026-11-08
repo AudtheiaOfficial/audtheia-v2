@@ -8391,7 +8391,7 @@
       }
       host.appendChild(el("h4", { text: "Where models are switched on" }));
       host.appendChild(el("p", { class: "form-hint", text:
-        "Switching a model on is saved in this computer's local settings file, so the committed settings never change. It is used the next time Audtheia starts; a field station uses it after the change is sent and the station restarts. Records already captured keep the model they were captured with." }));
+        "Switching a model on is saved in this computer's local settings file, so the committed settings never change. Capture on this computer uses it the next time that station's capture is started, and the desktop verification model the next time verification runs, with no need to restart Audtheia. A capture already running keeps the model it started with, so no event is split between two models. A field station uses it after the change is sent and the station restarts. Records already captured keep the model they were captured with." }));
       (data.slots || []).forEach(function (s) { host.appendChild(trainSlotRow(s)); });
       trainDatasetExports(host, status.datasets || []);
       host.appendChild(el("h4", { text: "Sharing" }));

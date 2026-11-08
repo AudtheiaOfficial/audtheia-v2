@@ -3855,9 +3855,20 @@ def create_app(settings, database):
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {"model": _model_view(row)}
 
+    _MODEL_SWITCH_NOTE = (
+        "Capture on this computer uses it the next time that station's capture is started, and the desktop"
+        " verification model is used the next time verification runs. A capture already running keeps the model"
+        " it started with, so no event is split between two models. A field station uses it after the change is"
+        " sent and the station restarts.")
+
     @app.post(API_PREFIX + "/train/models/{model_id}/activate")
     def train_model_activate(model_id: str, request: dict = Body(default={})):
-        """Switch a model on in one slot. Takes effect the next time Audtheia or the station starts."""
+        """Switch a model on in one slot.
+
+        The running application holds the new setting at once. Capture uses it the
+        next time a station's capture is started, so a capture already running is
+        never switched mid-event; a field station uses it after it restarts.
+        """
         _require_desktop_for_training()
         from audtheia.training import deploy
 
@@ -3870,8 +3881,7 @@ def create_app(settings, database):
         except deploy.DeployError as exc:
             raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
         return {"activation": row, "slots": _slot_views(),
-                "note": "Saved. The model is used the next time Audtheia starts, or for a field station, after the"
-                        " change is pushed to it and it restarts."}
+                "note": "Saved. " + _MODEL_SWITCH_NOTE}
 
     @app.post(f"{API_PREFIX}/train/slots/revert")
     def train_slot_revert(request: dict = Body(default={})):

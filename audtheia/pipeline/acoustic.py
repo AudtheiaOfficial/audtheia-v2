@@ -118,6 +118,11 @@ DEFAULT_SILENCE_CLOSE_SECONDS = 3.0
 # rule while keeping memory bounded.
 DEFAULT_QUEUE_MAXSIZE = 128
 
+# Seconds the shared audio buffer keeps beyond the longest encounter and its
+# rolls, for the time an encounter takes to close after its last sighting. At
+# 48 kHz a 300 second encounter makes the buffer about 64 MB.
+RING_MARGIN_SECONDS = 30.0
+
 # Fallback audio shape, used only when a configuration carries no sample rate or
 # window and none can be read from the model file. These are not tied to any
 # model family: they are a last resort so a misconfigured station fails at the
@@ -312,8 +317,10 @@ class AudioRingBuffer:
     buffer is longer than its capacity, so memory stays flat no matter how long
     the station runs. A clip is cut from it by absolute time, which is what lets
     a vision event, closed after the fact, still recover the audio that
-    surrounded it. The capacity is set from the longest clip the station can
-    store plus its rolls, so the audio a clip needs is always still present.
+    surrounded it. The capacity covers the longest encounter a station records
+    plus its rolls and a margin, so a vision event that closes after the fact can
+    still recover its audio. A sound event that runs longer than that keeps its
+    clip by taking it as soon as the clip's span has been heard.
     """
 
     def __init__(self, capacity_seconds: float) -> None:
@@ -342,6 +349,13 @@ class AudioRingBuffer:
                 self._blocks.popleft()
             else:
                 break
+
+    def newest_end(self) -> Optional[datetime]:
+        """When the newest audio held ends, or None while the buffer is empty."""
+        with self._lock:
+            if not self._blocks:
+                return None
+            return self._block_span(self._blocks[-1])[1]
 
     def extract(self, start: datetime, end: datetime) -> tuple[np.ndarray, int]:
         """Return the audio between two absolute times, and its sample rate.
@@ -536,6 +550,9 @@ class _AcousticAggregator:
         self.time_provisional = 0
         self.class_peak: dict[int, float] = {}
         self.class_label: dict[int, str] = {}
+        # The capped clip, taken while its audio is still held, for an event that
+        # outlasts the buffer. None until then, and for a short event.
+        self.early_clip: Optional[tuple[np.ndarray, int]] = None
 
     def _begin(self, window_start: str, time_provisional: int) -> None:
         date_part = window_start[:10]
@@ -644,9 +661,13 @@ class AcousticMonitor:
         self._audio_dir = Path(settings.path("detections_audio_dir"))
         self._repo_root = Path(settings.repo_root)
 
-        # The buffer must hold the longest clip a station can store plus its
-        # rolls, so a just-closed event can still recover its audio.
-        capacity = self._max_clip_seconds + self._pre_roll + self._post_roll + 1.0
+        # The buffer holds the longer of the stored clip and the longest vision
+        # encounter, which reads this same buffer when it closes, with the rolls
+        # and a margin for the encounter's closing delay. A sound event that runs
+        # longer still keeps its clip, taken early by _take_capped_clip.
+        longest = max(self._max_clip_seconds,
+                      float(station["capture"].get("max_event_duration_seconds") or 0.0))
+        capacity = longest + self._pre_roll + self._post_roll + RING_MARGIN_SECONDS
         self._ring = ring_buffer or AudioRingBuffer(capacity)
 
         self._window_seconds = float(model.window_seconds)
@@ -768,6 +789,25 @@ class AcousticMonitor:
             self._pending.add_window(start_iso, end_iso, time_provisional, detections)
         elif self._pending is not None and self._pending.is_stale(window_end):
             self._close_pending()
+        self._take_capped_clip()
+
+    def _take_capped_clip(self) -> None:
+        """Keep the capped clip of a long event while its audio is still held.
+
+        A clip longer than the cap keeps the lead-in, the span from pre-roll
+        before the first call to the cap. Once that span has been heard it is
+        copied out, so an event that goes on for longer than the buffer holds
+        still has its clip when it closes.
+        """
+        agg = self._pending
+        if agg is None or agg.early_clip is not None or agg.first_seen is None:
+            return
+        clip_start = _parse_iso(agg.first_seen) - timedelta(seconds=self._pre_roll)
+        clip_end = clip_start + timedelta(seconds=self._max_clip_seconds)
+        newest = self._ring.newest_end()
+        if newest is None or newest < clip_end:
+            return
+        agg.early_clip = self._ring.extract(clip_start, clip_end)
 
     def _close_pending(self) -> None:
         if self._pending is None:
@@ -791,7 +831,10 @@ class AcousticMonitor:
             post_roll=self._post_roll,
             max_clip_seconds=self._max_clip_seconds,
         )
-        samples, rate = self._ring.extract(clip_start, clip_end)
+        if capped and agg.early_clip is not None and agg.early_clip[0].size > 0:
+            samples, rate = agg.early_clip
+        else:
+            samples, rate = self._ring.extract(clip_start, clip_end)
 
         clip_rel: Optional[str] = None
         if samples.size > 0 and rate > 0:
