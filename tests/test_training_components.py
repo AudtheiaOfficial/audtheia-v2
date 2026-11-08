@@ -192,7 +192,7 @@ def test_plan():
               plan["vendor_key"] == "cpu" and plan["index_url"] == INDEXES["cpu"] and plan["device"] == "cpu")
         check("PyTorch is pinned to exactly what the location offers",
               plan["torch_pins"] == ["torch==2.14.1+cpu", "torchvision==0.29.1+cpu"])
-        check("the training libraries come from the settings", plan["packages"] == ["rfdetr[train,onnx]"])
+        check("the training libraries come from the settings", plan["packages"] == ["rfdetr[train,onnx]==1.12.0"])
         check("the download size is the sum of the sizes the servers report",
               plan["download_bytes"] == 130_000_000 + 2_000_000 + 900_000)
         check("a file whose size the server did not report is counted and said",
@@ -204,7 +204,7 @@ def test_plan():
               pip_calls[0][pip_calls[0].index("--index-url") + 1] == INDEXES["cpu"])
         check("the second keeps the standard index and adds the PyTorch location",
               "--extra-index-url" in pip_calls[1] and "torch==2.14.1+cpu" in pip_calls[1]
-              and "rfdetr[train,onnx]" in pip_calls[1])
+              and "rfdetr[train,onnx]==1.12.0" in pip_calls[1])
         plan_gpu = w.components().plan("vision_detector", NVIDIA)
         check("an NVIDIA card gets the CUDA 13 build", plan_gpu["index_url"].endswith("cu130")
               and plan_gpu["torch_pins"][0] == "torch==2.14.1+cu130")
@@ -278,7 +278,7 @@ def test_install_and_remove():
         check("PyTorch is installed from the chosen location with the exact pins",
               steps[1][steps[1].index("--index-url") + 1] == INDEXES["cpu"] and steps[1][-2:] == plan["torch_pins"])
         check("then the libraries, keeping PyTorch pinned",
-              "--extra-index-url" in steps[2] and plan["torch_pins"][0] in steps[2] and steps[2][-1] == "rfdetr[train,onnx]")
+              "--extra-index-url" in steps[2] and plan["torch_pins"][0] in steps[2] and steps[2][-1] == "rfdetr[train,onnx]==1.12.0")
         check("every step runs inside the new environment, never the application's",
               all(s[0] == str(C.env_python(env)) for s in steps[1:]))
         log = comp.log_path("vision_detector").read_text(encoding="utf-8")

@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21940755-blue?style=flat)](https://doi.org/10.5281/zenodo.21940755)
+[![DOI](https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21940754-blue?style=flat)](https://doi.org/10.5281/zenodo.21940754)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-1f6feb?style=flat)](#system-requirements)
@@ -159,15 +159,15 @@ The best place to start is a [GitHub issue or discussion](https://github.com/Aud
 
 ## Citation
 
-If you use Audtheia V2 in your research, please cite it. A machine-readable [`CITATION.cff`](CITATION.cff) is included; GitHub renders a "Cite this repository" button from it. The archived v2.0.0 release is citable with the DOI [10.5281/zenodo.21940755](https://doi.org/10.5281/zenodo.21940755).
+If you use Audtheia V2 in your research, please cite it. A machine-readable [`CITATION.cff`](CITATION.cff) is included; GitHub renders a "Cite this repository" button from it. The DOI [10.5281/zenodo.21940754](https://doi.org/10.5281/zenodo.21940754) cites Audtheia V2 as a whole and always resolves to the latest archived release; each release also has a DOI of its own, listed on its Zenodo page, for citing that exact version.
 
 ```bibtex
 @software{audtheia_v2,
   author  = {Portalatin, Andy},
   title   = {Audtheia V2: A Fully Offline Environmental-Intelligence Platform},
   year    = {2026},
-  version = {2.0.0},
-  doi     = {10.5281/zenodo.21940755},
+  version = {2.1.0},
+  doi     = {10.5281/zenodo.21940754},
   publisher = {Zenodo},
   url     = {https://github.com/AudtheiaOfficial/audtheia-v2}
 }

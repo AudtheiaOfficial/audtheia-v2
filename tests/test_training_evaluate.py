@@ -20,6 +20,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -158,6 +159,18 @@ def test_vision(root: Path) -> None:
           {c[0] for c in calls} == {"trained model", "model in use"})
     check("the model in use is recorded with its version", rec["current_model"]["version"] == "V9")
 
+    older = d.parent / (d.name + "-older")
+    shutil.copytree(d, older)
+    plain = [dict(c, class_key="name:" + c["class_name"].lower(), gbif_usage_key=None) for c in classes]
+    (older / "classes.json").write_text(json.dumps(plain), encoding="utf-8")
+    with ti.Resolver(Path(w.settings.path("gbif_backbone_path"))) as r:
+        rec_old = ev.evaluate_vision(older, older / "challenger.onnx",
+                                     {"id": "x", "label": "In use", "path": str(older / "current.onnx"), "entry": {},
+                                      "version": "V9"}, resolver=r, load=load, options={"report_confidence": 0.3})
+    check("a dataset whose classes carry plain-name keys is matched to the model in use by identity too",
+          sorted(rec_old["comparison"]["shared_classes"]) == sorted(["Aplysina fistularis", "Poecile carolinensis"])
+          and rec_old["comparison"]["not_in_current"] == ["mystery-bird"])
+
     print("\n[2] Images: with nothing to compare with")
     with ti.Resolver(None) as r:
         alone = ev.evaluate_vision(d, d / "challenger.onnx", None, resolver=r, load=load, options={})
@@ -271,6 +284,18 @@ def test_acoustic(root: Path) -> None:
     check("two labels for one species keep the higher score, so every window passes the threshold",
           shared["macro_recall"]["current"] == 1.0)
     check("every sound model opened was closed", all(m.closed for m in made) and len(made) == 2)
+    older = d.parent / (d.name + "-older")
+    shutil.copytree(d, older)
+    rows_ = json.loads((older / "classes.json").read_text(encoding="utf-8"))
+    plain = [dict(c, class_key="name:" + c["class_name"].lower(), gbif_usage_key=None) for c in rows_]
+    (older / "classes.json").write_text(json.dumps(plain), encoding="utf-8")
+    with ti.Resolver(Path(w.settings.path("gbif_backbone_path"))) as r:
+        rec_old = ev.evaluate_acoustic(older, export, {"sample_rate": 24000, "window_seconds": 3.0,
+                                                       "report_confidence": 0.5},
+                                       {"id": "s", "label": "Reef sound model", "path": str(root / "birdnet.tflite"),
+                                        "entry": {}, "station": None}, resolver=r, load=load)
+    check("a sound dataset whose classes carry plain-name keys is matched by identity too",
+          rec_old["comparison"]["shared_classes"] == ["Poecile carolinensis"])
     (export / "test_metrics.json").write_text(json.dumps(dict(rec["challenger"], marker="from the run")), encoding="utf-8")
     with ti.Resolver(None) as r:
         rec2 = ev.evaluate_acoustic(d, export, {"sample_rate": 24000, "window_seconds": 3.0}, None, resolver=r, load=load)
@@ -373,6 +398,38 @@ def _record(d: Path) -> dict:
             "examples": {"correct": [], "false_alarm": [], "missed": []}}
 
 
+def test_older_dataset(root: Path) -> None:
+    print("\n[6b] A dataset built before identities were resolved")
+    backbone = make_backbone(root / "backbone")
+
+    def row(name, usage=None):
+        key = f"gbif:{usage}" if usage else f"name:{name.lower()}"
+        return {"class_key": key, "class_name": name, "gbif_usage_key": usage}
+
+    older = [row("blue-jay"), row("Aplysina fistularis")]
+    keys = [r["class_key"] for r in older]
+    model = {0: "Aplysina fistularis", 1: "Verongia fistularis", 2: "blue-jay", 3: "Aplysina lacunosa"}
+    with ti.Resolver(backbone) as r:
+        before = ev.class_mapping(model, keys, r)
+        after = ev.class_mapping(model, keys, r, older)
+        check("without the dataset classes, a species named by a plain-name key is not matched",
+              before[0] is None and before[1] is None)
+        check("with them, the model's species meets the dataset class of the same species", after[0] == 1)
+        check("a synonym in the model meets the accepted species in the dataset", after[1] == 1)
+        check("a label no rule can read still matches by its exact name", after[2] == 0 and before[2] == 0)
+        check("a species the dataset does not hold stays unmatched", after[3] is None)
+        both = [row("Aplysina fistularis"), row("Aplysina fistularis", "100")]
+        exact = ev.class_mapping({0: "Aplysina fistularis"}, [b["class_key"] for b in both], r, both)
+        check("a class already keyed by the species is preferred over one that only resolves to it", exact[0] == 1)
+        twin = [row("Aplysina fistularis"), row("Verongia fistularis")]
+        split = ev.class_mapping({0: "Aplysina fistularis"}, [t["class_key"] for t in twin], r, twin)
+        check("when two dataset classes are the same species, neither is credited", split[0] is None)
+        current = [row("Aplysina fistularis", "100"), row("blue-jay")]
+        check("a dataset built with resolved identities matches exactly as before",
+              ev.class_mapping(model, [c["class_key"] for c in current], r, current)
+              == ev.class_mapping(model, [c["class_key"] for c in current], r))
+
+
 def test_text() -> None:
     print("\n[7] The module text")
     text = (REPO / "audtheia" / "training" / "evaluate.py").read_text(encoding="utf-8")
@@ -388,6 +445,7 @@ def main() -> int:
         test_candidates(w)
         test_acoustic(root / "a")
         test_endpoints(root / "e")
+        test_older_dataset(root / "o")
     test_text()
     print(f"\nResult: {CHECKS['passed']} passed, {CHECKS['failed']} failed")
     return 0 if CHECKS["failed"] == 0 else 1

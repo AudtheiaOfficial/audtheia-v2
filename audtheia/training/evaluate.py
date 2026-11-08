@@ -140,21 +140,38 @@ def current_candidates(settings, modality: str) -> list:
 # ---------------------------------------------------------------------------
 
 
-def class_mapping(model_names: Mapping, dataset_keys: Sequence[str], resolver) -> dict:
+def class_mapping(model_names: Mapping, dataset_keys: Sequence[str], resolver,
+                  dataset_classes: Optional[Sequence[Mapping]] = None) -> dict:
     """For each model class index, the dataset class index it names, or None.
 
     Every model label goes through the same identity rules as the dataset, so a
-    label and a dataset class match when they are the same taxon.
+    label and a dataset class match when they are the same taxon. When the dataset
+    classes are given, each is also resolved through those rules, so a dataset built
+    before identities were resolved, whose class keys are plain names, still meets a
+    model label of the same species. A resolved identity two dataset classes share
+    is left unmatched rather than credited to one of them.
     """
+    from audtheia.training.candidates import taxon_key
+
     position = {key: i for i, key in enumerate(dataset_keys)}
+    resolved: dict = {}
+    for i, row in enumerate(dataset_classes or ()):
+        name = str(row.get("class_name") or "").strip()
+        usage = row.get("gbif_usage_key")
+        key = taxon_key(usage, name)
+        if key is None:
+            continue
+        identity = resolver.resolve(key, name, usage)["class_key"]
+        resolved.setdefault(identity, set()).add(i)
+    for identity, indices in resolved.items():
+        if identity not in position and len(indices) == 1:
+            position[identity] = next(iter(indices))
     out = {}
     for index, label in model_names.items():
         text = str(label or "").strip()
         if not text:
             out[int(index)] = None
             continue
-        from audtheia.training.candidates import taxon_key
-
         got = resolver.resolve(taxon_key(None, text), text, None)
         out[int(index)] = position.get(got["class_key"])
     return out
@@ -343,7 +360,7 @@ def evaluate_vision(dataset_dir, challenger_path, current: Optional[Mapping] = N
 
     model = load(Path(current["path"]), current.get("entry"))
     try:
-        mapping = class_mapping(model.class_names, keys, resolver)
+        mapping = class_mapping(model.class_names, keys, resolver, classes)
         cur_pred, outside = _predict(model, dataset_dir, files, mapping, progress, "model in use")
     finally:
         model.close()
@@ -410,7 +427,8 @@ def evaluate_acoustic(dataset_dir, export_dir, run_config: Mapping, current: Opt
     dataset_dir = Path(dataset_dir)
     export_dir = Path(export_dir)
     names, _keys, _tested, splits = TA.dataset_windows(dataset_dir)
-    keys = [str(c["class_key"]) for c in _dataset_classes(dataset_dir)]
+    classes = _dataset_classes(dataset_dir)
+    keys = [str(c["class_key"]) for c in classes]
     items = splits.get("test") or []
     threshold = float(run_config.get("report_confidence", M.DEFAULT_REPORT_CONFIDENCE))
     own_path = export_dir / TA.TEST_METRICS_NAME
@@ -440,7 +458,7 @@ def evaluate_acoustic(dataset_dir, export_dir, run_config: Mapping, current: Opt
         return record
     model = load(Path(current["path"]), current.get("entry") or {}, settings=settings, station=current.get("station"))
     try:
-        mapping = class_mapping(model.class_names, keys, resolver)
+        mapping = class_mapping(model.class_names, keys, resolver, classes)
         cur_scores = _window_scores(model, dataset_dir, items, mapping, len(names), progress, "model in use")
     finally:
         model.close()

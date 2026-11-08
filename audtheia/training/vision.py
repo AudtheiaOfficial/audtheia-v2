@@ -35,7 +35,7 @@ ENGINE_KEY = "vision_detector"
 
 # The rfdetr releases this engine was tested against. Another release still runs,
 # with a note in the log, and the hook this engine needs is checked at start.
-TESTED_RFDETR = ("1.11.",)
+TESTED_RFDETR = ("1.12.",)
 
 # The rfdetr class for each base-model key in the settings.
 SIZE_CLASSES = {"nano": "RFDETRNano", "small": "RFDETRSmall", "medium": "RFDETRMedium", "large": "RFDETRLarge"}

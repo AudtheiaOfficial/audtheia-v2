@@ -262,7 +262,7 @@
         "amd_linux": "https://download.pytorch.org/whl/rocm7.2"
       },
       "packages": {
-        "vision": ["rfdetr[train,onnx]"],
+        "vision": ["rfdetr[train,onnx]==1.12.0"],
         "acoustic": ["tensorflow", "ai-edge-litert"]
       }
     },

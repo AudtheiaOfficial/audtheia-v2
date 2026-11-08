@@ -132,6 +132,24 @@ def main() -> int:
         res = client.post(f"/api/train/runs/{r3}/register", json={})
         check("an existing folder is never overwritten", res.status_code == 409 and "never overwritten" in res.json()["detail"])
         check("and no number is spent on it", len(w.db.list_trained_models()) == 2)
+        scored = make_run(w, "Scored", "vision", d)
+        ev_dir = w.repo / w.db.get_training_run(scored)["run_dir"] / "evaluation"
+        ev_dir.mkdir(parents=True)
+        private = str(w.repo / "Private Folder" / "models" / "visual" / "in_use.onnx")
+        challenger = {"kind": "detection", "map50": 0.5, "map50_95": 0.3, "counts": {}, "class_names": ["A"],
+                      "top1_accuracy_on_matched_boxes": {"value": 0.9},
+                      "at_confidence": {"confidence": 0.3, "macro_precision": 0.4, "macro_recall": 0.5, "macro_f1": 0.45}}
+        (ev_dir / "evaluation.json").write_text(json.dumps({
+            "challenger": challenger, "comparison": {"rows": []}, "box_origin": None,
+            "current_model": {"label": "Reef screening model", "path": private, "version": "V12"}}), encoding="utf-8")
+        ms = client.post(f"/api/train/runs/{scored}/register", json={}).json()["model"]
+        kept = (w.repo / ms["folder"] / "metrics.json").read_text(encoding="utf-8")
+        check("the model it was compared with is named by its file, never by this computer's path",
+              "Private Folder" not in kept and json.loads(kept)["current_model"] ==
+              {"label": "Reef screening model", "version": "V12", "file": "in_use.onnx"})
+        card = (w.repo / ms["folder"] / "MODEL_CARD.md").read_text(encoding="utf-8")
+        check("the card reads correctly and carries no path of this computer",
+              "\nAn image detection model trained with Audtheia" in card and "Private Folder" not in card)
         bare = make_run(w, "Bare", "vision", d, files=False)
         check("a run whose model file is missing is refused",
               client.post(f"/api/train/runs/{bare}/register", json={}).status_code == 422)
@@ -145,7 +163,7 @@ def main() -> int:
               m_snd["license_spdx"] == "CC-BY-NC-SA-4.0" and m_snd["needs_acknowledgement"])
         listing = client.get("/api/train/models").json()
         check("the registry lists the models and the runs not yet added",
-              len(listing["models"]) == 4 and {r["id"] for r in listing["unregistered_runs"]} >= {r3, bare})
+              len(listing["models"]) == 5 and {r["id"] for r in listing["unregistered_runs"]} >= {r3, bare})
         check("adding models left the committed settings unchanged", sha(settings_file) == tracked_before)
 
         print("\n[2] Switching a model on writes only the local settings file")
@@ -247,6 +265,84 @@ def main() -> int:
               client.get("/api/detections", params={"model": "Audtheia-Reef-V2"}).json()["total"] == 0)
         check("the committed settings differ only by the theme saved through the settings page",
               {k for k in tracked if tracked[k] != json.loads(settings_file.read_text(encoding="utf-8"))[k]} == set())
+
+        print("\n[6] Removing the files of a run that did not become a model")
+        spare = make_run(w, "Spare", "vision", d)
+        spare_dir = w.repo / w.db.get_training_run(spare)["run_dir"]
+        kept_files = {"run.json": "{}", "status.json": "{}", "log.txt": "Starting the run.\n",
+                      "progress.jsonl": '{"epoch": 1}\n', "train_output/metrics.csv": "epoch,loss\n1,2\n",
+                      "evaluation/evaluation.json": "{}", "evaluation/png/loss.png": "png"}
+        for name, text in kept_files.items():
+            (spare_dir / name).parent.mkdir(parents=True, exist_ok=True)
+            (spare_dir / name).write_text(text, encoding="utf-8")
+        (spare_dir / "train_output" / "last.ckpt").write_bytes(b"x" * 5000)
+        (spare_dir / "checkpoints").mkdir()
+        (spare_dir / "checkpoints" / "epoch1.pth").write_bytes(b"y" * 3000)
+        outside = w.root / "outside"
+        outside.mkdir()
+        (outside / "precious.txt").write_text("keep me", encoding="utf-8")
+        linked = False
+        try:
+            (spare_dir / "link_out").symlink_to(outside, target_is_directory=True)
+            linked = True
+        except (OSError, NotImplementedError):
+            pass
+        doomed = [p for p in spare_dir.rglob("*") if p.is_file() and not p.is_symlink()
+                  and p.relative_to(spare_dir).as_posix() not in kept_files]
+        doomed_bytes = sum(p.stat().st_size for p in doomed)
+        row_before = w.db.get_training_run(spare)
+        listed = {r["id"]: r for r in client.get("/api/train/runs").json()["runs"]}
+        check("the Runs view shows how much space a run takes and offers removal",
+              listed[spare]["files"]["removable"] is True and listed[spare]["files"]["bytes"] >= doomed_bytes)
+        check("a run added as a model names its model and is not offered removal",
+              listed[r1]["files"]["model"] == "Audtheia-Reef-V1" and listed[r1]["files"]["removable"] is False)
+        refused = client.post(f"/api/train/runs/{r1}/remove-files")
+        check("removing the files of a run added as a model is refused", refused.status_code == 409
+              and (w.repo / w.db.get_training_run(r1)["run_dir"] / "export" / "model.onnx").is_file())
+        res = client.post(f"/api/train/runs/{spare}/remove-files")
+        body = res.json()
+        check("the large files are removed and the space freed is reported",
+              res.status_code == 200 and body["removed"]["freed_bytes"] == doomed_bytes
+              and not any(p.exists() for p in doomed))
+        check("the record, settings, log, figures by epoch and test scores are kept",
+              all((spare_dir / n).read_text(encoding="utf-8") == t for n, t in kept_files.items()))
+        check("emptied folders are tidied away and a note says when and how much",
+              not (spare_dir / "export").exists() and not (spare_dir / "checkpoints").exists()
+              and json.loads((spare_dir / R.REMOVED_FILE).read_text(encoding="utf-8"))["freed_bytes"] == doomed_bytes)
+        check("the database record of the run is unchanged", w.db.get_training_run(spare) == row_before)
+        if linked:
+            check("a link inside the run folder is removed without touching what it points to",
+                  not (spare_dir / "link_out").exists() and (outside / "precious.txt").read_text(encoding="utf-8") == "keep me")
+        check("removing twice is refused", client.post(f"/api/train/runs/{spare}/remove-files").status_code == 409)
+        after = {r["id"]: r for r in client.get("/api/train/runs").json()["runs"]}[spare]["files"]
+        check("the Runs view then says the files were removed",
+              after["removed"]["freed_bytes"] == doomed_bytes and after["removable"] is False)
+        results = client.get(f"/api/train/runs/{spare}/results").json()
+        check("Results still opens and says the files were removed", results["files_removed"] is not None)
+        check("such a run cannot be scored again",
+              client.post(f"/api/train/runs/{spare}/evaluate", json={}).status_code == 409)
+        check("or added as a model", client.post(f"/api/train/runs/{spare}/register", json={}).status_code == 409)
+        check("and it is no longer offered in the Models list",
+              spare not in {r["id"] for r in client.get("/api/train/models").json()["unregistered_runs"]})
+        failed_run = make_run(w, "Broken", "vision", d, status="failed")
+        check("a failed run's files can be removed",
+              client.post(f"/api/train/runs/{failed_run}/remove-files").status_code == 200)
+        paused = make_run(w, "Held", "vision", d, status="paused")
+        check("a paused run's files are kept until it is cancelled",
+              client.post(f"/api/train/runs/{paused}/remove-files").status_code == 409
+              and (w.repo / w.db.get_training_run(paused)["run_dir"] / "export" / "model.onnx").is_file())
+        check("an unknown action is a plain 404", client.post(f"/api/train/runs/{spare}/delete").status_code == 404)
+        if linked:
+            stray = make_run(w, "Stray", "vision", d)
+            stray_dir = w.repo / w.db.get_training_run(stray)["run_dir"]
+            elsewhere = w.root / "elsewhere"
+            stray_dir.rename(elsewhere)
+            stray_dir.symlink_to(elsewhere, target_is_directory=True)
+            check("a run folder that is a link to somewhere else is never emptied",
+                  client.post(f"/api/train/runs/{stray}/remove-files").status_code in (404, 409)
+                  and (elsewhere / "export" / "model.onnx").is_file())
+        check("the interface offers the removal with a second press to confirm",
+              "Remove its files" in client.get("/app.js").text and "Press again to remove" in client.get("/app.js").text)
 
     for name in ("registry.py", "deploy.py", "sharing.py"):
         text = (REPO / "audtheia" / "training" / name).read_text(encoding="utf-8")

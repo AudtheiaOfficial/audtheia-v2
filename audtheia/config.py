@@ -234,7 +234,7 @@ DEFAULT_TRAINING = {   'enabled': True,
                                                 'cpu': 'https://download.pytorch.org/whl/cpu',
                                                 'apple': 'https://pypi.org/simple',
                                                 'amd_linux': 'https://download.pytorch.org/whl/rocm7.2'},
-                   'packages': {   'vision': ['rfdetr[train,onnx]'],
+                   'packages': {   'vision': ['rfdetr[train,onnx]==1.12.0'],
                                    'acoustic': ['tensorflow', 'ai-edge-litert']}},
     'sharing': {   'package_include_checkpoint': True,
                    'dataset_export_formats': ['coco', 'yolo_txt']}}

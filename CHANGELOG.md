@@ -214,6 +214,14 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   including what data a model needs, the identity rules, the comparison, switching
   models on, and how to share with Hugging Face and Roboflow. The glossary, the
   custom models guide and the README point to it.
+- **Removing a run's files.** A run that finished, was cancelled or failed, and
+  was not added as a model, can have its files removed from the Runs view to free
+  the disk, after a second press to confirm. Only the checkpoints, the exported
+  model and the training library's output are deleted. The record, the run
+  settings, the log, the figures by epoch and any test scores are kept, with a
+  note of when the files were removed and how much space that freed. Such a run
+  can no longer be scored again or added as a model, and the Runs view shows how
+  much space each run takes.
 
 ### Changed
 
@@ -264,12 +272,31 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   followed by the end of the output, instead of only the last twenty lines.
 - **The Zenodo record names its version.** .zenodo.json carries the release
   version, so the archived record is labelled 2.1.0.
+- **Results match the model in use by species for datasets built earlier.** A
+  dataset built before species identities were resolved names some classes by a
+  plain label. Each dataset class is now resolved by the same rules as the model's
+  labels, so a species the model in use knows is no longer counted as one it
+  cannot name. A species two classes of one dataset both resolve to is left
+  unmatched rather than credited to either.
+- **A model's own folder names the model it was compared with by its file.** The
+  full path of that file belongs to the computer that scored it and can name an
+  account or a drive, so it stays in the run folder and is no longer copied into
+  metrics.json, which is packaged and shared. The model card also reads "An image
+  detection model".
+- **Citation points to every version.** The README badge, the citation text,
+  the BibTeX entry and CITATION.cff now carry the concept DOI
+  10.5281/zenodo.21940754, which always resolves to the latest archived release.
+  CITATION.cff also lists the 2.0.0 version DOI and the release date.
 - **Dataset rules version 2.** Datasets built from now on carry rules version 2,
   because merging labels of one taxon can change what a selection holds. A
   dataset built before stays valid and is recognised as built under version 1.
 - **PyTorch download locations.** The training install settings now hold the
-  official PyTorch 2.14 download locations instead of empty values, which by
-  design blocked installing.
+  official PyTorch download locations instead of empty values, which by design
+  blocked installing.
+- **The image training library is pinned.** The training install now asks for
+  RF-DETR 1.12.0, the release Audtheia's image training was verified with on
+  Windows, so every installation trains with the same library. A different
+  release, installed by hand, still runs with a note in the run's log.
 
 ## [2.0.0] - 2026-08-15
 

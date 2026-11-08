@@ -7463,6 +7463,15 @@
     if (run.started_at) { card.appendChild(modelKvRow("Started", fmtTime(run.started_at))); }
     if (run.ended_at) { card.appendChild(modelKvRow("Ended", fmtTime(run.ended_at))); }
     if (run.stop_reason) { card.appendChild(trainNote(run.stop_reason, "form-message")); }
+    var files = run.files || {};
+    if (files.removed) {
+      card.appendChild(modelKvRow("Files", "removed " + fmtTime(files.removed.removed_at) + ", " +
+        fmtBytes(files.removed.freed_bytes) + " freed"));
+    } else if (files.model) {
+      card.appendChild(modelKvRow("Added as", files.model));
+    } else if (files.bytes) {
+      card.appendChild(modelKvRow("Files on disk", fmtBytes(files.bytes)));
+    }
     var msg = el("p", { class: "form-message", text: view.messages[run.id + ":" + run.status] || "" });
     var actions = el("div", { class: "form-actions" });
     function say(text) { view.messages[run.id + ":" + run.status] = text; msg.textContent = text; }
@@ -7504,6 +7513,29 @@
         act("cancel");
       });
       actions.appendChild(cancel);
+    }
+    if (files.removable) {
+      var rmKey = run.id + ":remove";
+      var remove = el("button", { type: "button", class: "btn",
+        text: view.armed[rmKey] ? "Press again to remove " + fmtBytes(files.bytes) : "Remove its files" });
+      remove.addEventListener("click", function () {
+        if (!view.armed[rmKey]) {
+          view.armed[rmKey] = true;
+          remove.textContent = "Press again to remove " + fmtBytes(files.bytes);
+          say("This deletes the checkpoints and the model file of this run for good. The record, the log, the figures" +
+            " by epoch and any test scores are kept. It cannot be added as a model afterwards.");
+          return;
+        }
+        remove.disabled = true;
+        apiSend("/train/runs/" + encodeURIComponent(run.id) + "/remove-files", "POST")
+          .then(function (r) {
+            delete view.armed[rmKey];
+            say("Removed. " + fmtBytes((r.removed || {}).freed_bytes || 0) + " freed.");
+            loadTrainRuns();
+          })
+          .catch(function (e) { delete view.armed[rmKey]; remove.disabled = false; say(e.message); });
+      });
+      actions.appendChild(remove);
     }
     card.appendChild(actions);
     card.appendChild(msg);
@@ -8052,7 +8084,20 @@
     var mine = job.run_id === run.id;
     var running = job.status === "running" && mine;
     var elsewhere = job.status === "running" && !mine;
-    var controls = trainScoreControls(host, res, function () { loadTrainResults(); });
+    if (res.files_removed) {
+      host.appendChild(trainNote("This run's files were removed " + fmtTime(res.files_removed.removed_at) +
+        ", so its model can no longer be scored. " + (res.evaluated ? "The scores saved before are shown."
+        : "It was never scored, so only its figures by epoch are kept."), "form-message"));
+      if (!res.evaluated) {
+        var kept = el("div", { class: "train-charts" });
+        var keptReg = {};
+        (res.curves || []).forEach(function (chart) { kept.appendChild(trainChartFigure(chart, keptReg)); });
+        host.appendChild(kept);
+        return;
+      }
+    }
+    var controls = res.files_removed ? { button: el("button"), message: el("p") }
+      : trainScoreControls(host, res, function () { loadTrainResults(); });
     if (running) {
       controls.button.disabled = true;
       controls.message.textContent = job.message || "Scoring.";

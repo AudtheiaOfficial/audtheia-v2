@@ -14,6 +14,7 @@ authors:
 repository-code: "https://github.com/AudtheiaOfficial/audtheia-v2"
 url: "https://github.com/AudtheiaOfficial/audtheia-v2"
 version: "2.1.0"
+date-released: "2026-11-05"
 license: MIT
 keywords:
   - biodiversity monitoring
@@ -22,4 +23,11 @@ keywords:
   - offline
   - provenance
   - bioacoustics
-doi: "10.5281/zenodo.21940755"
+doi: "10.5281/zenodo.21940754"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.21940754"
+    description: "All versions of Audtheia V2; resolves to the latest release."
+  - type: doi
+    value: "10.5281/zenodo.21940755"
+    description: "Audtheia V2 version 2.0.0."

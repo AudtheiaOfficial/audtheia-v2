@@ -15,6 +15,13 @@ and Resume continues it from its last saved epoch.
 
 Only one run may train at a time, so a laptop is never asked to do two at once.
 
+A run that ended without becoming a model can have its files removed to free the
+disk. Only the large files go: checkpoints, the exported model and the training
+library's output. The record in the database, the run settings, the log, the
+figures by epoch and any test scores stay, with a note of when the files were
+removed and how much space that freed, so the history of what was trained is
+never lost.
+
 Standard library only.
 """
 
@@ -43,6 +50,12 @@ LOG_CHUNK_BYTES = 65536
 ACTIVE = ("queued", "preparing", "running")
 RESUMABLE = ("paused", "interrupted")
 FINAL = ("completed", "cancelled")
+REMOVABLE = ("completed", "cancelled", "failed")
+REMOVED_FILE = "removed.json"
+OUTPUT_FILE = "worker_output.txt"
+KEPT_FILES = (W.RUN_FILE, W.CONTROL_FILE, W.STATUS_FILE, W.PROGRESS_FILE, W.LOG_FILE, OUTPUT_FILE, REMOVED_FILE,
+              "train_output/metrics.csv", "train_output/training_config.json")
+KEPT_FOLDERS = ("evaluation",)
 
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 RESERVED_NAMES = {"con", "prn", "aux", "nul"} | {f"com{i}" for i in range(1, 10)} | {f"lpt{i}" for i in range(1, 10)}
@@ -110,7 +123,7 @@ class ProcessLauncher:
         # the same on every computer.
         env["PYTHONUTF8"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
-        out = open(Path(run_dir) / "worker_output.txt", "ab")  # noqa: SIM115 - handed to the child
+        out = open(Path(run_dir) / OUTPUT_FILE, "ab")  # noqa: SIM115 - handed to the child
         kwargs: dict = {"cwd": str(code_root), "env": env, "stdout": out, "stderr": subprocess.STDOUT,
                         "stdin": subprocess.DEVNULL}
         if sys.platform.startswith("win"):
@@ -420,6 +433,95 @@ class RunManager:
             row = self.db.update_training_run(run_id, status="cancelled", stop_reason="Cancelled at your request.",
                                               ended_at=utc_iso(self.clock()))
         return row
+
+    # -- removing a finished run's files -------------------------------------
+
+    def _own_folder(self, run_id: str) -> Path:
+        """The run's folder, only when it is a real folder directly inside the runs folder."""
+        folder = self.run_dir(run_id)
+        if folder.is_symlink() or not folder.is_dir():
+            raise RunError("The run folder was not found.", 404)
+        if folder.resolve().parent != self.runs_root.resolve():
+            raise RunError("The run folder is not inside the runs folder, so nothing is removed.", 409)
+        return folder
+
+    @staticmethod
+    def _kept(relative: str) -> bool:
+        return relative in KEPT_FILES or relative.split("/", 1)[0] in KEPT_FOLDERS
+
+    def removed_info(self, run_id: str) -> dict | None:
+        """When the run's files were removed and how much that freed, or None."""
+        return W.read_json(self.run_dir(run_id) / REMOVED_FILE)
+
+    def folder_bytes(self, run_id: str) -> int:
+        folder = self.run_dir(run_id)
+        total = 0
+        for base, _dirs, files in os.walk(folder, followlinks=False):
+            for name in files:
+                try:
+                    total += os.lstat(os.path.join(base, name)).st_size
+                except OSError:
+                    pass
+        return total
+
+    def files_view(self, row: Mapping, model_names: Mapping) -> dict:
+        """What the interface shows about a run's files and whether they can be removed."""
+        run_id = row["id"]
+        removed = self.removed_info(run_id)
+        model = model_names.get(run_id)
+        on_disk = self.folder_bytes(run_id) if self.run_dir(run_id).is_dir() else 0
+        return {"removed": removed, "bytes": on_disk, "model": model,
+                "removable": removed is None and model is None and row["status"] in REMOVABLE and on_disk > 0}
+
+    def remove_files(self, run_id: str) -> dict:
+        """Delete the large files of a run that ended without becoming a model."""
+        row = self.refresh(run_id)
+        if row["status"] not in REMOVABLE:
+            raise RunError(f"The run is {row['status']}. Only a finished, cancelled or failed run can have its files"
+                           " removed. Cancel it first.", 409)
+        if any(m["run_id"] == run_id for m in self.db.list_trained_models()):
+            raise RunError("This run was added as a model. Its files are kept.", 409)
+        if self.removed_info(run_id) is not None:
+            raise RunError("This run's files were already removed.", 409)
+        folder = self._own_folder(run_id)
+        doomed, links, subfolders = [], [], []
+        for base, dirs, files in os.walk(folder, topdown=True, followlinks=False):
+            for name in list(dirs):
+                sub = Path(base) / name
+                # A link or junction to a folder elsewhere is removed as a link and never entered.
+                if sub.is_symlink() or getattr(sub, "is_junction", lambda: False)():
+                    dirs.remove(name)
+                    links.append(sub)
+                else:
+                    subfolders.append(sub)
+            for name in files:
+                path = Path(base) / name
+                if not self._kept(path.relative_to(folder).as_posix()):
+                    doomed.append(path)
+        freed, count = 0, 0
+        for path in doomed:
+            size = os.lstat(path).st_size
+            try:
+                path.unlink()
+            except PermissionError:
+                os.chmod(path, 0o666)
+                path.unlink()
+            freed += size
+            count += 1
+        for link in links:
+            try:
+                link.unlink()
+            except OSError:
+                os.rmdir(link)
+        for sub in sorted(subfolders, key=lambda p: len(p.parts), reverse=True):
+            try:
+                sub.rmdir()
+            except OSError:
+                pass
+        info = {"removed_at": utc_iso(self.clock()), "freed_bytes": freed, "files_removed": count,
+                "kept": "the run settings, the log, the figures by epoch and any test scores"}
+        W.write_json_atomic(folder / REMOVED_FILE, info)
+        return {"run": self.db.get_training_run(run_id), "removed": info}
 
     def detail(self, run_id: str) -> dict:
         row = self.refresh(run_id)

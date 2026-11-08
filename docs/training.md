@@ -33,6 +33,8 @@ The plan also reads the allocation unit of the drive. A drive formatted with lar
 - **Gentle or Full speed.** Gentle uses fewer processor threads at a lower priority so the computer stays usable and cooler; the learning itself is the same.
 - **Safety.** A run does not start on battery power, and pauses, keeping every finished epoch, when the charger is removed, the battery or free disk falls below its limit, the graphics card is nearly out of memory, or the computer reports heat slowdown for two minutes.
 - **Runs.** Follow progress, pause, resume or cancel. A run keeps going if the window is closed. When a dataset has no validation or test examples, the log and the epoch table say so plainly: such a run checks that training works and is not a model for the field.
+- **Removing a run's files.** A run that finished, was cancelled or failed, and was not added as a model, shows how much disk it takes and offers **Remove its files**. Press it twice to confirm. The checkpoints and the exported model are deleted; the record, the log, the figures by epoch and any test scores stay. Such a run can no longer be scored again or added as a model. A run added as a model keeps its files, and its model lives in its own folder.
+- **Training library.** Image training installs RF-DETR 1.12.0, the release it was verified with, so every installation trains the same way.
 - **Sound models** train a final layer on top of BirdNET 2.4, downloaded once from Zenodo. BirdNET is licensed CC BY-NC-SA 4.0, so a sound model built on it may be used for non-commercial purposes only, with attribution, and shared only under the same terms.
 
 ## Results

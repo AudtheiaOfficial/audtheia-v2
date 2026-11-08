@@ -142,11 +142,26 @@ def metrics_summary(run_dir: Path, modality: str) -> dict:
         "class_names": challenger.get("class_names"),
         "comparison": {k: comparison.get(k) for k in ("rows", "shared_rows", "shared_classes", "not_in_current",
                                                      "note", "unknown_note")} if comparison else None,
-        "current_model": (record or {}).get("current_model"),
+        "current_model": _shareable_model((record or {}).get("current_model")),
         "box_origin": (record or {}).get("box_origin"),
         "scored_with": (record or {}).get("scored_with"),
         "note": None,
     }
+
+
+def _shareable_model(entry: Optional[Mapping]) -> Optional[dict]:
+    """The model a run was compared with, named by its file alone.
+
+    The full path of that file belongs to this computer, and can name a person's
+    account or drive, so it is kept in the run folder and never in a model's own
+    folder, which is the one that is packaged and shared.
+    """
+    if not entry:
+        return None
+    out = {k: entry.get(k) for k in ("label", "version")}
+    path = str(entry.get("path") or "").strip()
+    out["file"] = path.replace("\\", "/").rsplit("/", 1)[-1] if path else None
+    return out
 
 
 def _fmt(value: Any) -> str:
@@ -160,7 +175,7 @@ def model_card(row: Mapping, run: Mapping, metrics: Mapping, manifest: Mapping, 
              "tags:", "- audtheia", "- biodiversity", "- " + ("object-detection" if row["modality"] == "vision"
                                                                else "audio-classification"),
              "---", "", f"# {row['name']}", "",
-             f"A {'image detection' if row['modality'] == 'vision' else 'sound classification'} model trained with"
+             f"{'An image detection' if row['modality'] == 'vision' else 'A sound classification'} model trained with"
              f" Audtheia from events that experts reviewed. Base: {row['base_label']}.", "",
              "## Licence", "", licence.get("license_note") or "Not recorded.", "",
              "## Training data", "",

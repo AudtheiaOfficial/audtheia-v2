@@ -3573,12 +3573,14 @@ def create_app(settings, database):
         from audtheia.training import runs as run_control
 
         manager = _train_runs()
+        models = {m["run_id"]: m["name"] for m in db.list_trained_models()}
         out = []
         for row in db.list_training_runs():
             try:
                 row = dict(manager.refresh(row["id"]))
                 if row["status"] in run_control.ACTIVE:
                     row["live"] = manager.live(row["id"])
+                row["files"] = manager.files_view(row, models)
             except run_control.RunError:
                 pass
             out.append(row)
@@ -3643,6 +3645,7 @@ def create_app(settings, database):
             "curves": charts_data.training_curve_charts(progress) if progress else [],
             "results": None, "current_results": None, "comparison": None, "examples": None,
             "charts_saved": sorted(p.stem for p in (run_dir / "evaluation" / "png").glob("*.png")),
+            "files_removed": manager.removed_info(run_id),
         }
         dataset_dir = settings.resolve_path(run["dataset_dir"])
         manifest_path = dataset_dir / "manifest.json"
@@ -3676,6 +3679,10 @@ def create_app(settings, database):
         from audtheia.training import dataset as dataset_rules, evaluate
 
         manager, run, _progress = _finished_run(run_id)
+        if manager.removed_info(run_id) is not None:
+            raise HTTPException(status_code=409, detail=(
+                "this run's files were removed, so its model can no longer be scored. The scores saved before are"
+                " still shown."))
         modality = _results_modality(run)
         wanted = request.get("current_id")
         current = None
@@ -3820,7 +3827,9 @@ def create_app(settings, database):
 
         models = [_model_view(m) for m in db.list_trained_models()]
         registered = {m["run_id"] for m in models}
-        runs = [r for r in db.list_training_runs(status="completed") if r["id"] not in registered]
+        manager = _train_runs()
+        runs = [r for r in db.list_training_runs(status="completed")
+                if r["id"] not in registered and manager.removed_info(r["id"]) is None]
         return {"models": models, "slots": _slot_views(), "unregistered_runs": runs,
                 "acknowledgement": deploy.ACKNOWLEDGEMENT}
 
@@ -3829,7 +3838,14 @@ def create_app(settings, database):
         """Add a finished run to the registry as the next version of its name."""
         _require_desktop_for_training()
         from audtheia.training import registry
+        from audtheia.training import runs as run_control
 
+        try:
+            removed = _train_runs().removed_info(run_id)
+        except run_control.RunError as exc:
+            raise _training_error(exc) from exc
+        if removed is not None:
+            raise HTTPException(status_code=409, detail="this run's files were removed, so it cannot be added as a model.")
         try:
             row = registry.register_run(settings, db, run_id,
                                         created_by=str(request.get("created_by") or "").strip() or _DEFAULT_CORRECTOR)
@@ -3915,15 +3931,20 @@ def create_app(settings, database):
 
     @app.post(API_PREFIX + "/train/runs/{run_id}/{action}")
     def train_run_action(run_id: str, action: str):
-        """Pause, resume or cancel a run."""
+        """Pause, resume or cancel a run, or remove the files of one that ended without becoming a model."""
         _require_desktop_for_training()
         from audtheia.training import runs as run_control
 
         manager = _train_runs()
         handlers = {"pause": manager.pause, "resume": manager.resume, "cancel": manager.cancel}
-        if action not in handlers:
-            raise HTTPException(status_code=404, detail="the action is pause, resume or cancel.")
+        if action not in handlers and action != "remove-files":
+            raise HTTPException(status_code=404, detail="the action is pause, resume, cancel or remove-files.")
         try:
+            if action == "remove-files":
+                job = _job_snapshot("train-evaluate")
+                if job.get("status") == "running" and job.get("run_id") == run_id:
+                    raise HTTPException(status_code=409, detail="this run is being scored; remove its files afterwards.")
+                return manager.remove_files(run_id)
             return {"run": handlers[action](run_id)}
         except run_control.RunError as exc:
             raise _training_error(exc) from exc
