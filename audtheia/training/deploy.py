@@ -15,6 +15,10 @@ was switched. Every activation and revert is appended to the activation log with
 the slot exactly as it was before and after, so a revert restores it exactly. A
 record already captured keeps the model version it was captured with.
 
+Put back works as an undo history. Each press undoes the most recent change
+from the Train tab that has not been undone yet, so after two models were
+switched on in a slot, two presses return it to how it was before either.
+
 A model whose licence limits use, such as a sound model built on BirdNET, is
 switched on only after a person types the acknowledgement.
 """
@@ -28,7 +32,8 @@ from typing import Callable, Mapping, Optional
 
 from audtheia.training import registry
 
-__all__ = ["DeployError", "SLOTS", "ACKNOWLEDGEMENT", "acknowledged", "slot_entry", "activate", "revert", "slot_state"]
+__all__ = ["DeployError", "SLOTS", "ACKNOWLEDGEMENT", "acknowledged", "slot_entry", "activate", "revert", "undoable",
+           "slot_state"]
 
 SLOTS = {
     "desktop_verifier": {"modality": "vision", "station": False, "label": "Desktop verification model"},
@@ -132,16 +137,34 @@ def activate(settings, db, model_id: str, slot: str, *, station_id: Optional[str
                                    acknowledged_license=needs_ack)
 
 
+def undoable(history: list) -> Optional[dict]:
+    """The most recent activation that has not been put back yet, from a newest-first history.
+
+    Each revert in the log undid the most recent activation still in effect at
+    the time, so walking back, every revert cancels the next activation found.
+    """
+    pending = 0
+    for row in history:
+        if row["action"] == "revert":
+            pending += 1
+        elif row["action"] == "activate":
+            if pending:
+                pending -= 1
+            else:
+                return row
+    return None
+
+
 def revert(settings, db, slot: str, *, station_id: Optional[str] = None, activated_by: str,
            persist: Callable[[dict], None]) -> dict:
-    """Put a slot back exactly as it was before the change now in effect."""
+    """Put a slot back exactly as it was before the most recent change still in effect."""
     history = db.model_activations(slot, station_id)
     if not history:
         raise DeployError("Nothing was switched on in this slot from the Train tab, so there is nothing to revert.",
                           409)
-    latest = history[0]
-    if latest["action"] != "activate":
-        raise DeployError("The last change in this slot was already a revert. Switch a model on to change it again.",
+    latest = undoable(history)
+    if latest is None:
+        raise DeployError("Every model switched on in this slot from the Train tab has already been put back.",
                           409)
     draft = copy.deepcopy(settings.raw)
     entry = slot_entry(draft, slot, station_id)
@@ -162,9 +185,8 @@ def slot_state(settings, db, slot: str, station_id: Optional[str] = None) -> dic
     """What a slot holds now, and whether a Train-tab change in it can be reverted."""
     entry = copy.deepcopy(slot_entry(copy.deepcopy(settings.raw), slot, station_id))
     history = db.model_activations(slot, station_id)
-    latest = history[0] if history else None
-    revertible = bool(latest and latest["action"] == "activate"
-                      and json.dumps(entry, sort_keys=True) == latest["new_json"])
+    latest = undoable(history)
+    revertible = bool(latest and json.dumps(entry, sort_keys=True) == latest["new_json"])
     return {"slot": slot, "station_id": station_id, "label": SLOTS[slot]["label"], "entry": entry,
             "model_id": latest["model_id"] if revertible else None,
             "revertible": revertible, "history": history}

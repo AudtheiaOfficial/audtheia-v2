@@ -231,6 +231,26 @@ def main() -> int:
         check("a slot changed elsewhere is not reverted blindly", res.status_code == 409 and "changed elsewhere" in res.json()["detail"])
         check("nothing switched on here means nothing to revert",
               client.post("/api/train/slots/revert", json={"slot": "desktop_screening", "station_id": sid}).status_code == 409)
+        original = json.loads(json.dumps(w.settings.station(sid)["models"]["visual_desktop"]))
+        screening = {"slot": "desktop_screening", "station_id": sid}
+        act(m1["id"], screening)
+        act(m2["id"], screening)
+        first = client.post("/api/train/slots/revert", json=screening)
+        check("one press undoes the latest change only",
+              first.status_code == 200 and w.settings.station(sid)["models"]["visual_desktop"]["version"] == "Audtheia-Reef-V1")
+        view = [s_ for s_ in client.get("/api/train/models").json()["slots"]
+                if s_["slot"] == "desktop_screening" and s_["station_id"] == sid][0]
+        check("after it, the earlier change is still offered to put back", view["revertible"] is True)
+        second = client.post("/api/train/slots/revert", json=screening)
+        check("a second press returns the slot to how it was before either change",
+              second.status_code == 200 and w.settings.station(sid)["models"]["visual_desktop"] == original
+              and load_settings(settings_file).station(sid)["models"]["visual_desktop"] == original)
+        check("with every change undone, a further press is refused",
+              client.post("/api/train/slots/revert", json=screening).status_code == 409)
+        check("the undo history pairs each revert with the change it undid",
+              deploy.undoable([{"action": "revert"}, {"action": "activate", "id": 2}, {"action": "activate", "id": 1}])["id"] == 1
+              and deploy.undoable([{"action": "activate", "id": 3}, {"action": "revert"}, {"action": "activate", "id": 1}])["id"] == 3
+              and deploy.undoable([{"action": "revert"}, {"action": "revert"}, {"action": "activate"}, {"action": "activate"}]) is None)
 
         print("\n[4] Packages")
         res = client.post(f"/api/train/models/{m1['id']}/package", json={})

@@ -193,8 +193,10 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   model. The change is saved through the guarded settings writer into this
   computer's local settings file, so the committed settings file stays byte for
   byte the same, and every switch is logged with the slot before and after so
-  Put back the previous model restores it exactly. A slot changed elsewhere in the
-  meantime is not reverted blindly. A model with a non-commercial licence, such as
+  Put back the previous model restores it exactly. Put back works as an undo, so
+  after two models were switched on in one slot, two presses return it to how it
+  was before either. A slot changed elsewhere in the meantime is not reverted
+  blindly. A model with a non-commercial licence, such as
   a sound model built on BirdNET, asks for a typed acknowledgement first. For a
   field station, the sound model and its labels can be sent with the configuration
   to a Pi that has been connected once.
