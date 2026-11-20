@@ -185,21 +185,42 @@ def _confidence_distribution(plt, model, out: Path) -> Optional[Path]:
 
 
 def _verification_summary(plt, model, out: Path) -> Optional[Path]:
-    """How many events cleared the desktop verification gate."""
-    a = model.analytics or {}
-    total = int(a.get("total_events") or 0)
-    verified = int(a.get("verified_count") or 0)
-    if total <= 0:
-        return None
-    unverified = max(0, total - verified)
+    """Verification per gate: the two-model check and the acoustic confidence gate.
 
-    fig, ax = plt.subplots(figsize=(_FIG_W, 1.7))
-    ax.barh(["events"], [verified], color=_GREEN, label="verified", height=0.5)
-    ax.barh(["events"], [unverified], left=[verified], color=_GRID, label="not verified", height=0.5)
-    ax.set_title("Verification gate", fontsize=10, loc="left", pad=8)
-    ax.set_xlim(0, total)
-    _style_axes(ax)
-    ax.text(verified / 2 if verified else 0, 0, f"{verified} verified" if verified else "",
-            va="center", ha="center", color="white", fontsize=8, fontweight="bold")
-    ax.legend(loc="lower right", frameon=False, fontsize=7, ncol=2)
+    One bar per gate, never pooled, because a sound event can only pass a
+    confidence floor while an event with frames is checked by a second model.
+    Events no model checked are shown as their own segment, not as failures.
+    """
+    split = (model.analytics or {}).get("verification_by_gate") or {}
+    vis = split.get("visual") or {}
+    aud = split.get("audio") or {}
+    rows = []
+    if vis.get("total"):
+        rows.append(("Visual: two-model check", [
+            ("verified", int(vis.get("verified", 0)), _GREEN),
+            ("not verified", int(vis.get("not_verified", 0)), _AMBER),
+            ("not checked by a second model", int(vis.get("not_run", 0)) + int(vis.get("pending", 0)), _GRID),
+        ], int(vis["total"])))
+    if aud.get("total"):
+        rows.append(("Audio: confidence gate", [
+            ("cleared", int(aud.get("cleared", 0)), _TEAL),
+            ("not cleared", int(aud.get("not_cleared", 0)), _AMBER),
+            ("not yet checked", int(aud.get("pending", 0)), _GRID),
+        ], int(aud["total"])))
+    if not rows:
+        return None
+
+    fig, axes = plt.subplots(len(rows), 1, figsize=(_FIG_W, 0.9 + 0.75 * len(rows)), squeeze=False)
+    for ax, (label, segments, total) in zip(axes[:, 0], rows):
+        left = 0
+        for name, value, color in segments:
+            if value <= 0:
+                continue
+            ax.barh([label], [value], left=[left], color=color, height=0.5, label=f"{name} ({value})")
+            left += value
+        ax.set_xlim(0, total)
+        _style_axes(ax)
+        ax.legend(loc="lower right", frameon=False, fontsize=7, ncol=3, bbox_to_anchor=(1.0, -0.75))
+    axes[0, 0].set_title("Verification by gate", fontsize=10, loc="left", pad=8)
+    fig.tight_layout()
     return _save(plt, fig, out, "verification_summary")

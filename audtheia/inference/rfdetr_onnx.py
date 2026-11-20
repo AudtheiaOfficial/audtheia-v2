@@ -42,6 +42,7 @@ logger = logging.getLogger("audtheia.inference.rfdetr_onnx")
 __all__ = [
     "RFDETRVerifier",
     "build_verifier",
+    "verifier_label_set",
     "VerifierError",
     "VerifierDependencyError",
     "DEFAULT_INPUT_SIZE",
@@ -233,7 +234,7 @@ def build_verifier(settings) -> RFDETRVerifier:
     ort = _import_onnxruntime()
     session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
 
-    class_names = _class_names_from_session(session)
+    class_names = _class_names_from_session(session) or _class_names_from_file(model_path)
     if not class_names:
         logger.warning(
             "the RF-DETR model has no class-name metadata; verified taxa will be "
@@ -248,9 +249,68 @@ def build_verifier(settings) -> RFDETRVerifier:
         if isinstance(shape[2], int):
             in_h = shape[2]
 
+    # Every verdict names the model that produced it: the configured version, or
+    # the model's file name when no version was set, never nothing.
     return RFDETRVerifier(
         session,
         class_names=class_names,
         input_size=(in_w, in_h),
-        version=entry.get("version"),
+        version=entry.get("version") or model_path.stem,
     )
+
+
+def _class_names_from_file(model_path: Path) -> dict:
+    """Class names from a labels file beside the model, when the model carries none.
+
+    Looks for <model>.labels.json, then labels.json in the model's folder, which is
+    how a model added in the Train tab keeps its labels. Either a list of names or a
+    mapping from class index to name is accepted.
+    """
+    import json
+
+    for candidate in (model_path.with_name(model_path.stem + ".labels.json"), model_path.parent / "labels.json"):
+        if not candidate.is_file():
+            continue
+        try:
+            raw = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(raw, dict) and isinstance(raw.get("names"), (list, dict)):
+            raw = raw["names"]
+        if isinstance(raw, list):
+            return {i: str(v) for i, v in enumerate(raw)}
+        if isinstance(raw, dict):
+            out = {}
+            for k, v in raw.items():
+                try:
+                    out[int(k)] = str(v)
+                except (TypeError, ValueError):
+                    continue
+            if out:
+                return out
+    return {}
+
+
+def verifier_label_set(settings) -> tuple:
+    """The configured verifier's version and class labels, read without loading the model when possible.
+
+    Returns (version, labels). labels is None when they cannot be read, so a caller
+    never claims a taxon is missing from a label set it could not see.
+    """
+    entry = (settings.raw.get("desktop_models", {}) or {}).get("visual_rfdetr", {}) or {}
+    path = entry.get("path")
+    if not path:
+        return None, None
+    model_path = Path(path)
+    if not model_path.is_absolute():
+        model_path = Path(settings.repo_root) / model_path
+    version = entry.get("version") or model_path.stem
+    names = _class_names_from_file(model_path)
+    if not names and model_path.is_file():
+        try:
+            ort = _import_onnxruntime()
+            session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+            names = _class_names_from_session(session)
+        except Exception:  # noqa: BLE001 - an unreadable model leaves the label set unknown
+            names = {}
+    return version, (sorted(set(names.values())) if names else None)

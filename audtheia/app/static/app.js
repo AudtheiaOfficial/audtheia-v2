@@ -194,6 +194,39 @@
     return det.common_name || det.scientific_name || det.gbif_usage_key || "unresolved taxon";
   }
 
+  // One identity per species. The server resolves every label through the same
+  // rules the Train tab uses and sends the result with the detection; the label as
+  // written stays on the record and is shown beside the identity as provenance.
+  function identityName(det) {
+    var id = det && det.identity;
+    return (id && id.display) || taxonName(det || {});
+  }
+
+  function identityNote(det) {
+    var id = det && det.identity;
+    var raw = taxonName(det || {});
+    if (!id) { return ""; }
+    if (id.unresolved) { return "label " + raw + " is not matched to the taxonomic backbone"; }
+    if (id.kept) { return "label " + raw + " is kept as its own taxon by your decision"; }
+    if (raw && raw !== id.display && raw.toLowerCase() !== String(id.scientific_name || "").toLowerCase()) {
+      return "model label: " + raw;
+    }
+    return "";
+  }
+
+  // The verification line for a card: one plain sentence naming the gate. A pure
+  // sound event can only pass an acoustic confidence gate; an event with frames is
+  // checked by a second model; an event no model checked is said to be unchecked.
+  function verificationBadge(view, v) {
+    var state = view ? view.state : (v ? (v.verified ? "verified" : "not_verified") : "pending");
+    if (state === "verified") { return badge("verified", "ok"); }
+    if (state === "cleared") { return badge("cleared by confidence gate", "ok"); }
+    if (state === "not_cleared") { return badge("below confidence gate", "muted"); }
+    if (state === "not_run") { return badge("not checked by a second model", "muted"); }
+    if (state === "pending") { return badge(view && view.gate === "acoustic_confidence_gate" ? "not yet checked" : "verification not run", "muted"); }
+    return badge("not verified", "muted");
+  }
+
   // ----------------------------------------------------------------------
   // 3. Reusable render pieces
   // ----------------------------------------------------------------------
@@ -1217,7 +1250,9 @@
     var fieldCall = dets.map(taxonName).join(", ") || "no resolved taxon";
     context.appendChild(ctxRow("Field call", fieldCall));
     var v = obs.verification;
-    if (v && (v.rfdetr_scientific_name || v.verified)) {
+    if (obs.verification_view && obs.verification_view.reading) {
+      context.appendChild(ctxRow("Desktop verification", obs.verification_view.reading));
+    } else if (v && (v.rfdetr_scientific_name || v.verified)) {
       context.appendChild(ctxRow("Desktop verification",
         v.rfdetr_scientific_name || (v.verified ? "verified, no species recorded" : "not verified")));
     } else {
@@ -1427,7 +1462,7 @@
     closeBtn.addEventListener("click", close);
     panel.appendChild(closeBtn);
 
-    var species = (obs.vision_detections || []).map(taxonName).join(", ") || "no resolved taxon";
+    var species = (obs.vision_detections || []).map(identityName).join(", ") || "no resolved taxon";
     var title = el("div", { class: "audit-title", text: displaySpecies(obs, species) });
     panel.appendChild(title);
     panel.appendChild(el("div", { class: "card-meta", text: obs.event_name || obs.id }));
@@ -2214,10 +2249,11 @@
       var grid = el("div", { class: "card-grid" + (ctx.selecting ? " selecting" : "") });
       rows.forEach(function (obs) {
         var v = obs.verification;
-        var species = (obs.vision_detections || []).map(taxonName).join(", ") || "no resolved taxon";
+        var view = obs.verification_view;
+        var species = (obs.vision_detections || []).map(identityName).join(", ") || "no resolved taxon";
+        var labelNotes = (obs.vision_detections || []).map(identityNote).filter(function (n) { return n; });
         var badges = provenanceBadges(obs.data_source, obs.qc_state);
-        if (v && v.verified) { badges.push(badge("verified", "ok")); }
-        else { badges.push(badge("not verified", "muted")); }
+        badges.push(verificationBadge(view, v));
         correctionBadges(obs).forEach(function (b) { badges.push(b); });
         var meta = [
           obs.event_name || obs.id,
@@ -2235,8 +2271,13 @@
         }
         card.appendChild(el("div", { class: "card-meta", text: meta }));
         card.appendChild(el("div", { class: "card-title", text: displaySpecies(obs, species) }));
-        card.appendChild(modelLine([["Screened by", obs.screening_model_version]].concat(obs.verification
-          ? [["Desktop verification by", obs.verification.rfdetr_version]] : [["Desktop verification", "not run"]])));
+        if (labelNotes.length) { card.appendChild(el("div", { class: "card-meta", text: labelNotes.join("; ") })); }
+        var ran = view && (view.state === "verified" || view.state === "not_verified") && v && v.rfdetr_version;
+        card.appendChild(modelLine([["Screened by", obs.screening_model_version]].concat(ran
+          ? [["Desktop verification by", v.rfdetr_version]] : [])));
+        if (view && view.reading) {
+          card.appendChild(el("div", { class: "card-meta", text: "Verification: " + view.reading }));
+        }
         card.appendChild(el("div", { class: "card-stats", text:
           "tracked across " + fmtNum(obs.frame_count) + " frames" +
           "  ·  " + fmtNum(obs.duration, 1) + "s" +
@@ -2344,11 +2385,11 @@
 
       var grid = el("div", { class: "card-grid" + (ctx.selecting ? " selecting" : "") });
       rows.forEach(function (a) {
-        var species = (a.audio_detections || []).map(taxonName).join(", ") || "unclassified sound";
+        var species = (a.audio_detections || []).map(identityName).join(", ") || "unclassified sound";
+        var aLabelNotes = (a.audio_detections || []).map(identityNote).filter(function (n) { return n; });
         var badges = provenanceBadges(a.data_source, a.qc_state);
         var av = a.verification;
-        if (av && av.verified) { badges.push(badge("verified", "ok")); }
-        else { badges.push(badge("not verified", "muted")); }
+        badges.push(verificationBadge(a.verification_view, av));
         correctionBadges(a).forEach(function (b) { badges.push(b); });
         var aConfs = (a.audio_detections || [])
           .map(function (d) { return Number(d.confidence); })
@@ -2364,7 +2405,11 @@
           "aria-label": "Open audit for this acoustic detection" });
         head.appendChild(el("div", { class: "card-meta", text: (a.event_name || a.id) + " · " + fmtTime(a.first_seen) }));
         head.appendChild(el("div", { class: "card-title", text: displaySpecies(a, species) }));
+        if (aLabelNotes.length) { head.appendChild(el("div", { class: "card-meta", text: aLabelNotes.join("; ") })); }
         head.appendChild(modelLine([["Heard by", a.acoustic_model_version]]));
+        if (a.verification_view && a.verification_view.reading) {
+          head.appendChild(el("div", { class: "card-meta", text: "Verification: " + a.verification_view.reading }));
+        }
         head.appendChild(el("div", { class: "card-stats", text:
           "true duration: " + fmtNum(a.audio_true_duration_seconds, 1) + "s" +
           (a.audio_capped ? " (stored clip capped)" : "") +
@@ -2414,7 +2459,7 @@
     panel.appendChild(closeBtn);
 
     var dets = obs.audio_detections || [];
-    var species = dets.map(taxonName).join(", ") || "unclassified sound";
+    var species = dets.map(identityName).join(", ") || "unclassified sound";
     var title = el("div", { class: "audit-title", text: displaySpecies(obs, species) });
     panel.appendChild(title);
     panel.appendChild(el("div", { class: "card-meta", text: obs.event_name || obs.id }));
@@ -2459,9 +2504,11 @@
     }
     wrap.appendChild(row("Model", obs.acoustic_model_version || "unstated"));
     var v = obs.verification;
-    wrap.appendChild(row("Verification", (v && v.verified)
-      ? "cleared for the dream pass by the acoustic-confidence gate (peak ≥ the acoustic floor)"
-      : "not cleared, peak below the acoustic floor, so it shapes baselines but not the generative phase"));
+    wrap.appendChild(row("Verification", (obs.verification_view && obs.verification_view.reading)
+      ? obs.verification_view.reading
+      : ((v && v.verified)
+        ? "cleared by the acoustic confidence gate; not cross-checked by a second model"
+        : "not cleared by the acoustic confidence gate")));
     wrap.appendChild(row("Salience", fmtNum(obs.salience_provisional, 2) +
       "  = D · (0.5·N + 0.5·R), Shannon-surprisal novelty & rarity (docs/salience.md)"));
     var etRow = eventTrustAuditRow(obs.event_trust);
@@ -2593,19 +2640,31 @@
     if (filters && !filters.hasChildNodes()) { filters.appendChild(filterBar(loaders.analytics)); }
     apiGet("/analytics" + query({ station_id: state.stationId })).then(function (a) {
       clear(host);
+      var gates = a.verification_by_gate || {};
+      var vis = gates.visual || {};
+      var aud = gates.audio || {};
       host.appendChild(metricRow([
         metricCard("Events", fmtNum(a.total_events)),
         metricCard("Species richness", fmtNum(a.species_richness)),
-        metricCard("Verified", fmtNum(a.verified_count)),
-        metricCard("Verified share", fmtPct(a.verified_fraction))
+        metricCard("Visual verified (two-model check)", vis.total ? fmtNum(vis.verified || 0) + " of " + fmtNum(vis.total) : "none"),
+        metricCard("Audio cleared (confidence gate)", aud.total ? fmtNum(aud.cleared || 0) + " of " + fmtNum(aud.total) : "none")
       ]));
+      var notChecked = (vis.not_run || 0) + (vis.pending || 0);
+      if (notChecked) {
+        host.appendChild(el("p", { class: "card-note", text: fmtNum(notChecked) + " visual " +
+          (notChecked === 1 ? "event was" : "events were") + " not checked by a second model. A sound event can only pass a confidence floor, a weaker check, so the two are counted apart." }));
+      }
 
+      var names = a.taxa || {};
       var taxa = Object.keys(a.taxon_event_counts || {}).map(function (k) {
-        return { label: k, value: a.taxon_event_counts[k] };
+        var d = names[k] || {};
+        return { label: (d.display || k) + (d.unresolved ? " (unresolved label)" : ""), value: a.taxon_event_counts[k] };
       }).sort(function (x, y) { return y.value - x.value; }).slice(0, 12);
       if (taxa.length) {
-        host.appendChild(el("h3", { text: "Detections per taxon" }));
-        host.appendChild(barChart(taxa, { title: "detections per taxon" }));
+        host.appendChild(el("h3", { text: "Events per taxon" }));
+        host.appendChild(el("p", { class: "card-note", text:
+          "One identity per species: labels from different models that name the same species are counted together. A label that could not be matched to the taxonomic backbone is its own entry, marked unresolved; map it in Brain, Species profiles." }));
+        host.appendChild(barChart(taxa, { title: "events per taxon" }));
       }
 
       var qc = Object.keys(a.events_by_qc_state || {}).map(function (k) {
@@ -3223,21 +3282,30 @@
   // was only ever heard appears beside the ones that were seen. Sightings and
   // calls are counted separately, because a photograph and a recorded call are
   // different kinds of evidence and should not be silently added together.
+  // Species profiles, one identity per species. Labels the server resolved to
+  // the same taxon are one profile, with every label as written listed as
+  // provenance. A label no rule could match stays its own profile, marked
+  // unresolved, with the same Map to a species and Keep as its own taxon choices
+  // the Train tab offers. The decision is one entry in one file, shared with the
+  // Train tab, so it applies there, here and in every report from then on,
+  // without changing the record or any model.
   function speciesProfiles(visionEvents, audioEvents) {
     var byTaxon = {};
     var stationNames = {};
     (state.stations || []).forEach(function (s) { stationNames[s.id] = s.station_name || s.id; });
 
     function add(obs, det, modality) {
-      var key = taxonName(det);
+      var id = det.identity || null;
+      var key = id ? id.key : taxonName(det);
       if (!key) { return; }
       if (!byTaxon[key]) {
         byTaxon[key] = {
-          name: key, scientific: det.scientific_name || "",
+          name: id ? id.display : taxonName(det), identity: id, labels: {},
           vision: 0, audio: 0, sum: 0, scored: 0, best: 0, last: null, sites: {}
         };
       }
       var t = byTaxon[key];
+      t.labels[taxonName(det)] = (det.identity && det.identity.method) || "unresolved";
       t[modality] += 1;
       if (det.confidence !== null && det.confidence !== undefined) {
         t.sum += Number(det.confidence);
@@ -3259,24 +3327,76 @@
       .sort(function (a, b) { return (b.vision + b.audio) - (a.vision + a.audio); });
     if (!taxa.length) { return el("p", { class: "card-note", text: "No resolved taxa in the record yet." }); }
 
+    var wrap = el("div");
+    wrap.appendChild(el("p", { class: "card-note", text:
+      "One profile per species. Labels from different models that name the same species are counted together, and every label as written is listed. A label marked unresolved could not be matched to the taxonomic backbone: map it to its species once, here or in the Train tab, and it is counted with that species everywhere, in datasets and reports alike. Your record and your models are not changed." }));
     var grid = el("div", { class: "card-grid" });
     taxa.forEach(function (t) {
       var sites = Object.keys(t.sites).map(function (id) { return stationNames[id] || id; });
       var modes = el("div", { class: "badge-row" });
       if (t.vision) { modes.appendChild(badge(fmtNum(t.vision) + (t.vision === 1 ? " sighting" : " sightings"), "source")); }
       if (t.audio) { modes.appendChild(badge(fmtNum(t.audio) + (t.audio === 1 ? " call" : " calls"), "source")); }
-      grid.appendChild(el("article", { class: "card" }, [
+      var id = t.identity || {};
+      var methods = Object.keys(t.labels).map(function (l) { return t.labels[l]; });
+      if (id.unresolved) { modes.appendChild(badge("unresolved label", "muted")); }
+      else if (id.kept) { modes.appendChild(badge("kept as its own taxon", "muted")); }
+      if (methods.indexOf("label_map") >= 0) { modes.appendChild(badge("named by your decision", "ok")); }
+      var labels = Object.keys(t.labels).sort();
+      var card = el("article", { class: "card" }, [
         el("div", { class: "card-title", text: t.name }),
-        (t.scientific && t.scientific !== t.name) ? el("div", { class: "card-meta", text: t.scientific }) : null,
         modes,
+        el("div", { class: "card-meta", text: (labels.length === 1 ? "label: " : "labels: ") + labels.join(", ") }),
         el("div", { class: "card-stats", text:
           "mean confidence: " + fmtConfidence(t.scored ? t.sum / t.scored : null) +
           "  best: " + fmtConfidence(t.best) }),
         sites.length ? el("div", { class: "card-meta", text: "recorded at: " + sites.join(", ") }) : null,
         el("div", { class: "card-meta", text: "last recorded: " + fmtTime(t.last) })
-      ]));
+      ]);
+      card.appendChild(speciesNaming(t));
+      grid.appendChild(card);
     });
-    return grid;
+    wrap.appendChild(grid);
+    return wrap;
+  }
+
+  // The naming controls on a species profile. An unresolved label can be mapped
+  // to a backbone taxon chosen from the search, or kept as its own taxon; a
+  // decision already made can be undone. Each label is one entry in the shared
+  // label map.
+  function speciesNaming(t) {
+    var box = el("div", { class: "species-naming" });
+    var status = el("p", { class: "form-hint", role: "status" });
+    var saved = "Saved. Updating the profiles.";
+    function reload() { loadBrainModels(); }
+    Object.keys(t.labels).sort().forEach(function (label) {
+      var method = t.labels[label];
+      var actions = el("div", { class: "correction-actions" });
+      if (method === "unresolved") {
+        var mapBtn = el("button", { type: "button", class: "btn btn-small", text: "Map " + label + " to a species" });
+        var keepBtn = el("button", { type: "button", class: "btn btn-small", text: "Keep as its own taxon" });
+        mapBtn.addEventListener("click", function () {
+          mapBtn.disabled = true;
+          box.insertBefore(trainIdentityPicker(label, status, reload, saved), status);
+        });
+        keepBtn.addEventListener("click", function () {
+          keepBtn.disabled = true;
+          trainIdentitySend({ label: label, action: "keep" }, status, reload, saved);
+        });
+        actions.appendChild(mapBtn);
+        actions.appendChild(keepBtn);
+      } else if (method === "label_map" || method === "kept_as_label") {
+        var undo = el("button", { type: "button", class: "btn btn-small",
+          text: "Undo the naming of " + label });
+        undo.addEventListener("click", function () {
+          undo.disabled = true;
+          trainIdentitySend({ label: label, action: "clear" }, status, reload, saved);
+        });
+        actions.appendChild(undo);
+      }
+      if (actions.hasChildNodes()) { box.appendChild(actions); }
+    });
+    box.appendChild(status);
+    return box;
   }
 
   // Brain, Learning: the live longitudinal status with pause and resume, the
@@ -3359,7 +3479,9 @@
       host.appendChild(trustHost);
       renderModelTrust(trustHost, audit.model_trust);
 
-      host.appendChild(el("h3", { text: "Retraining exports" }));
+      host.appendChild(el("h3", { text: "Export hard cases for outside labelling" }));
+      host.appendChild(el("p", { class: "card-note", text:
+        "To train a model inside Audtheia from the events experts have reviewed, use the Train tab. This export writes the weakest and most disputed cases to a folder for an outside labelling tool." }));
       var retrainHost = el("div");
       host.appendChild(retrainHost);
       renderRetraining(retrainHost);
@@ -3492,9 +3614,12 @@
     wrap.appendChild(metricRow([
       metricCard("Events", fmtNum(audit.events)),
       metricCard("Species", fmtNum(analytics && analytics.species_richness)),
-      metricCard("Auto-verified share", verdicts.with_verdict
-        ? fmtPct(audit.events ? (verdicts.verified || 0) / audit.events : 0)
+      metricCard("Visual verified (two-model check)", verdicts.with_verdict
+        ? fmtNum(verdicts.verified || 0) + " of " + fmtNum(verdicts.with_verdict)
         : "none run"),
+      metricCard("Audio cleared (confidence gate)", (audit.acoustic_gate || {}).events
+        ? fmtNum(audit.acoustic_gate.cleared || 0) + " of " + fmtNum(audit.acoustic_gate.events)
+        : "none"),
       metricCard("Expert IDs", fmtNum(expertSummary.targets || 0))
     ]));
 
@@ -3531,9 +3656,20 @@
     verBlock.appendChild(el("div", { class: "card-title", text: "Desktop verification" }));
     verBlock.appendChild(el("p", { class: "settings-desc", text:
       "How often the desktop verifier, re-scoring an event's saved frames, reached the same conclusion as the field station's screening model. This is the automated verifier only; a human reviewer's identifications are counted separately under Expert identifications above. A disagreement is not an error: it is the desktop correcting a fast field call, and it is recorded rather than hidden." }));
+    if (verdicts.not_run) {
+      verBlock.appendChild(el("p", { class: "card-note", text:
+        fmtNum(verdicts.not_run) + (verdicts.not_run === 1 ? " event was" : " events were") +
+        " processed while no desktop verification model was configured, so no second model checked them. They are left out of the figures below. Configure a verification model, then use Re-verify in Run now." }));
+    }
+    var acoustic = audit.acoustic_gate || {};
+    if (acoustic.events) {
+      verBlock.appendChild(el("p", { class: "card-note", text:
+        "Pure sound events are not part of these figures: they have no frame for a second model, so they pass only an acoustic confidence gate. " +
+        fmtNum(acoustic.cleared || 0) + " of " + fmtNum(acoustic.events) + " cleared it." }));
+    }
     if (!verdicts.with_verdict) {
       verBlock.appendChild(el("p", { class: "card-note", text:
-        "No desktop verification has run yet, so there is nothing to compare. These figures fill in once verification runs over the synced record." }));
+        "No desktop verification model has checked an event yet, so there is nothing to compare. These figures fill in once a verification model is configured and runs over the record." }));
     } else {
       var vkv = el("div", { class: "kv-list" });
       vkv.appendChild(modelKvRow("Events with a verdict", fmtNum(verdicts.with_verdict)));
@@ -3596,7 +3732,8 @@
       var tkv = el("div", { class: "kv-list" });
       trend.forEach(function (row) {
         tkv.appendChild(modelKvRow(row.period, fmtNum(row.events) + " events, mean confidence " +
-          fmtConfidence(row.mean_confidence) + ", " + fmtNum(row.verified) + " verified"));
+          fmtConfidence(row.mean_confidence) + ", " + fmtNum(row.verified) + " verified by the two-model check, " +
+          fmtNum(row.acoustic_cleared || 0) + " cleared by the acoustic gate"));
       });
       tBlock.appendChild(tkv);
       wrap.appendChild(tBlock);
@@ -3822,8 +3959,8 @@
         : "No record was awaiting quality control.";
     }));
     row.appendChild(runControl("Run verification", "/verify/run", function (r) {
-      return r.verified ? "Re-scored and gated " + fmtNum(r.verified) + " observation(s)."
-        : "No eligible observation, or none in the desktop verifier's target group.";
+      return r.verified ? "Checked " + fmtNum(r.verified) + " new observation(s)."
+        : "No observation was waiting for verification, or no desktop verification model is configured.";
     }));
     row.appendChild(runControl("Generate report (PDF)", "/reports/run", function (r) {
       var made = (r.formats || []).join(", ");
@@ -3833,7 +3970,52 @@
 
     block.appendChild(row);
     block.appendChild(result);
+    block.appendChild(renderReverify(onAfterRun));
     host.appendChild(block);
+  }
+
+  // Re-verify the visual events no second model checked. It replaces only the
+  // desktop's own verdict for each event; the observation the station wrote is
+  // never changed. It is offered only when a verification model is configured,
+  // because a second model is the whole point of verifying.
+  function renderReverify(onAfterRun) {
+    var box = el("div", { class: "species-step" });
+    var note = el("p", { class: "card-note", text: "Checking which events no second model has checked." });
+    var btn = el("button", { type: "button", class: "btn", text: "Re-verify events no model checked" });
+    var out = el("p", { class: "card-note", role: "status", text: "" });
+    btn.disabled = true;
+    box.appendChild(note);
+    box.appendChild(btn);
+    box.appendChild(out);
+
+    function paint() {
+      apiGet("/verify/status" + query({ station_id: state.stationId })).then(function (st) {
+        var c = st.visual || {};
+        var unchecked = (c.not_run || 0);
+        if (!st.verifier_configured) {
+          note.textContent = fmtNum(unchecked) + (unchecked === 1 ? " visual event has" : " visual events have") +
+            " not been checked by a second model. No desktop verification model is configured, so there is nothing to re-verify with yet. Set one in Brain, Models and Memory.";
+          btn.disabled = true;
+        } else {
+          note.textContent = fmtNum(unchecked) + (unchecked === 1 ? " visual event was" : " visual events were") +
+            " processed before a verification model was configured. Re-verifying checks them with " +
+            (st.verifier_version || "the configured model") + " and replaces only the desktop verdict; the station's own record is not changed.";
+          btn.disabled = !unchecked;
+        }
+      }).catch(function (e) { note.textContent = "Could not read the verification status: " + e.message; });
+    }
+
+    btn.addEventListener("click", function () {
+      btn.disabled = true;
+      out.textContent = "Re-verifying.";
+      apiSend("/verify/rerun", "POST", { scope: "not_run", station_id: state.stationId || null }).then(function (r) {
+        out.textContent = (r && r.note) || "Done.";
+        paint();
+        if (typeof onAfterRun === "function") { onAfterRun(); }
+      }).catch(function (e) { out.textContent = "Could not re-verify: " + e.message; paint(); });
+    });
+    paint();
+    return box;
   }
 
   // The two guided species-data setup steps: building the taxonomic index that
@@ -6614,15 +6796,15 @@
   // as a model's own class name, is mapped once by a person, choosing the taxon
   // from the backbone search so only a real key is stored, or kept as its own
   // class. The record is never changed; the decision lives beside the datasets.
-  function trainIdentitySend(body, status, done) {
+  function trainIdentitySend(body, status, done, savedText) {
     status.textContent = "Saving.";
     apiSend("/train/identity/labels", "POST", body).then(function () {
-      status.textContent = "Saved. Planning the dataset again.";
+      status.textContent = savedText || "Saved. Planning the dataset again.";
       done();
     }).catch(function (e) { status.textContent = "Could not save: " + e.message; });
   }
 
-  function trainIdentityPicker(label, status, done) {
+  function trainIdentityPicker(label, status, done, savedText) {
     var box = el("div", { class: "correction-search train-identity-picker" });
     var input = el("input", { type: "text", class: "correction-input", "aria-label": "Species for " + label,
       placeholder: "Type at least two letters of the scientific name" });
@@ -6653,7 +6835,7 @@
             opt.addEventListener("click", function () {
               clear(results);
               input.value = r.canonical_name;
-              trainIdentitySend({ label: label, action: "map", gbif_usage_key: r.usage_key }, status, done);
+              trainIdentitySend({ label: label, action: "map", gbif_usage_key: r.usage_key }, status, done, savedText);
             });
             results.appendChild(opt);
           });

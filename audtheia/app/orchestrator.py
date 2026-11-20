@@ -78,12 +78,15 @@ _SCHEDULE_SECONDS = {
 
 
 class NullVerifier:
-    """A verifier that finds nothing, used when the verification model is not
-    present yet. Verification still runs and records a no-detection verdict, so
-    the pipeline flows and the gate simply stays closed until a real model is in
-    place."""
+    """Stands in when no verification model is configured.
+
+    It is marked as not configured, so the verification engine writes no verdict
+    for an event with frames: the event reads as not checked by a second model,
+    which is the truth, rather than as a model that scored every frame and
+    recognised nothing. Once a model is configured, those events are verified."""
 
     version = None
+    configured = False
 
     def verify_frames(self, frame_paths) -> list:
         return [{"gbif_usage_key": None, "scientific_name": None, "confidence": None} for _ in frame_paths]
@@ -122,6 +125,7 @@ class DesktopStation:
         self._narrator = narrator
         self._clusterer = clusterer
         self._station_id = station["station_id"]
+        self._identify = None
 
     # -- construction ----------------------------------------------------
 
@@ -312,15 +316,34 @@ class DesktopStation:
             scanned += 1
         return {"scanned": scanned, "flags": flags}
 
-    def verify_pending(self) -> int:
-        """Re-score and gate every eligible observation not yet verified."""
-        engine = VerifyEngine(
+    def _identity(self):
+        """One-identity-per-species lookup, built once, for comparing and counting taxa."""
+        if self._identify is None:
+            from audtheia.analysis.taxa import identity_function
+
+            self._identify = identity_function(self._settings)
+        return self._identify
+
+    def _verify_engine(self) -> VerifyEngine:
+        return VerifyEngine(
             settings=self._settings,
             db=self._db,
             verifier=self._verifier,
             interpreter=self._interpreter,
+            identify=self._identity(),
         )
-        return engine.sweep(station_id=self._station_id)
+
+    @property
+    def verifier_configured(self) -> bool:
+        return bool(getattr(self._verifier, "configured", True))
+
+    def verify_pending(self) -> int:
+        """Re-score and gate every eligible observation not yet verified."""
+        return self._verify_engine().sweep(station_id=self._station_id)
+
+    def reverify(self, observation_ids) -> dict:
+        """Verify the given events again, replacing their earlier verdicts."""
+        return self._verify_engine().reverify(observation_ids)
 
     def dream_once(self):
         """Run one longitudinal dream pass over the verified record.
@@ -338,6 +361,7 @@ class DesktopStation:
             db=self._db,
             narrator=self._narrator,
             clusterer=self._clusterer,
+            identify=self._identity(),
         )
         return engine.run_pass()
 

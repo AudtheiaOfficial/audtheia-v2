@@ -52,6 +52,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from audtheia.analysis import verdicts as _verdicts
+
 
 # The single URL prefix every API route sits under, kept in one place so it is
 # never spelled out ad hoc.
@@ -330,59 +332,71 @@ def _has_gps(observation: dict) -> bool:
     return observation.get("gps_latitude") is not None or observation.get("gps_longitude") is not None
 
 
-def _taxon_key(detection: dict) -> Optional[str]:
+def _taxon_key(detection: dict, book=None) -> Optional[str]:
+    """The key a taxon is counted under: its identity when a book is given, else its label as written."""
+    if book is not None:
+        ident = book.identify(detection)
+        return ident["key"] if ident else None
     return detection.get("gbif_usage_key") or detection.get("common_name") or detection.get("scientific_name")
 
 
-def _compute_analytics(db, *, station_id, since, until) -> dict:
+def _compute_analytics(db, *, station_id, since, until, book=None) -> dict:
     """Derive biodiversity summaries from the records in a window.
 
     These are computations over stored detections, not new measurements, and are
     labeled as derived. Detection counts are raw; an effort-normalized rate is
     not asserted here, matching how the record leaves rigorous rarity to a
-    downstream measured statistic.
+    downstream measured statistic. With a taxon book, taxa are counted one
+    identity per species, and verification is counted per gate, never pooled.
     """
+    from audtheia.analysis import verdicts
+
     observations = db.list_observations(station_id=station_id, since=since, until=until)
     total = len(observations)
     by_trigger: dict = {}
     by_qc: dict = {}
     by_modality = {"vision": 0, "audio": 0}
     taxon_events: dict = {}
-    verified = 0
+    idents: dict = {}
+    pairs: list = []
 
     for obs in observations:
         by_trigger[obs.get("trigger_source") or "unknown"] = by_trigger.get(obs.get("trigger_source") or "unknown", 0) + 1
         by_qc[obs.get("qc_state") or "unknown"] = by_qc.get(obs.get("qc_state") or "unknown", 0) + 1
-        v = db.get_observation_verification(obs["id"])
-        if v and v.get("verified"):
-            verified += 1
+        pairs.append((obs, db.get_observation_verification(obs["id"])))
         seen: set = set()
         for det in db.list_child_detections(obs["id"]):
             by_modality[det.get("modality", "vision")] = by_modality.get(det.get("modality", "vision"), 0) + 1
-            key = _taxon_key(det)
+            key = _taxon_key(det, book)
+            if book is not None and key:
+                idents.setdefault(key, book.identify(det))
             if key and key not in seen:
                 seen.add(key)
                 taxon_events[key] = taxon_events.get(key, 0) + 1
 
+    names = {k: book.describe(i) for k, i in idents.items()} if book is not None else {}
     return {
         "provenance": "derived",
         "note": "computed from the records in this window; not a new measurement",
         "window": {"station_id": station_id, "since": since, "until": until},
         "total_events": total,
         "species_richness": len(taxon_events),
-        "verified_count": verified,
-        "verified_fraction": (verified / total) if total else 0.0,
+        "unresolved_taxa": sorted(k for k, d in names.items() if d.get("unresolved")),
+        # Verification per gate. The two-model check and the acoustic confidence
+        # gate are different claims, so no pooled verified count is reported.
+        "verification_by_gate": verdicts.split_counts(pairs),
         "events_by_trigger_source": by_trigger,
         "events_by_qc_state": by_qc,
         "detections_by_modality": by_modality,
         "taxon_event_counts": taxon_events,
+        "taxa": names,
     }
 
 
 _CONF_BANDS = ("0.0-0.2", "0.2-0.4", "0.4-0.6", "0.6-0.8", "0.8-1.0")
 
 
-def _compute_audit(db, *, station_id, since, until) -> dict:
+def _compute_audit(db, *, station_id, since, until, book=None) -> dict:
     """Derive an audit view of the record.
 
     Four questions a reviewer will ask, answered from stored rows only: how often
@@ -397,10 +411,16 @@ def _compute_audit(db, *, station_id, since, until) -> dict:
     observations = db.list_observations(station_id=station_id, since=since, until=until)
     total = len(observations)
 
+    # The two-model check and the acoustic confidence gate are counted apart, and
+    # a verdict recorded while no verification model was configured is counted as
+    # not run, so agreement and frame figures describe only real second-model checks.
     verification = {
+        "gate": "two_model_check",
         "with_verdict": 0, "verified": 0, "agree": 0, "disagree": 0,
         "not_comparable": 0, "frames_scored": 0, "frames_in_agreement": 0,
+        "not_run": 0,
     }
+    acoustic_gate = {"gate": "acoustic_confidence_gate", "events": 0, "cleared": 0, "not_cleared": 0}
     verifier_confidence: list = []
     by_state: dict = {}
     by_reason: dict = {}
@@ -438,10 +458,24 @@ def _compute_audit(db, *, station_id, since, until) -> dict:
         # Grouped by calendar month, which is coarse enough to be readable and
         # fine enough to show a drift in confidence over a deployment.
         period = (obs.get("first_seen") or "")[:7] or "unknown"
-        cell = periods.setdefault(period, {"period": period, "events": 0, "verified": 0, "sum": 0.0, "n": 0})
+        cell = periods.setdefault(period, {"period": period, "events": 0, "verified": 0, "acoustic_cleared": 0,
+                                           "sum": 0.0, "n": 0})
         cell["events"] += 1
 
         verdict = db.get_observation_verification(obs["id"])
+        state = _verdicts.classify(obs, verdict)
+        if state["gate"] == _verdicts.GATE_ACOUSTIC:
+            if verdict:
+                acoustic_gate["events"] += 1
+                if verdict.get("verified"):
+                    acoustic_gate["cleared"] += 1
+                    cell["acoustic_cleared"] += 1
+                else:
+                    acoustic_gate["not_cleared"] += 1
+            verdict = None
+        elif state["state"] == "not_run":
+            verification["not_run"] += 1
+            verdict = None
         if verdict:
             verification["with_verdict"] += 1
             if verdict.get("verified"):
@@ -453,7 +487,7 @@ def _compute_audit(db, *, station_id, since, until) -> dict:
             elif agrees == 0:
                 verification["disagree"] += 1
             else:
-                # No field label to compare against, for example a pure audio event.
+                # No field label to compare against.
                 verification["not_comparable"] += 1
             verification["frames_scored"] += int(verdict.get("frames_scored") or 0)
             verification["frames_in_agreement"] += int(verdict.get("frames_in_agreement") or 0)
@@ -517,6 +551,7 @@ def _compute_audit(db, *, station_id, since, until) -> dict:
         cell = periods[key]
         trend.append({
             "period": cell["period"], "events": cell["events"], "verified": cell["verified"],
+            "acoustic_cleared": cell["acoustic_cleared"],
             "mean_confidence": (cell["sum"] / cell["n"]) if cell["n"] else None,
         })
 
@@ -526,6 +561,7 @@ def _compute_audit(db, *, station_id, since, until) -> dict:
         "window": {"station_id": station_id, "since": since, "until": until},
         "events": total,
         "verification": verification,
+        "acoustic_gate": acoustic_gate,
         "expert": expert,
         "qc": {"by_state": by_state, "by_reason": by_reason},
         "confidence": {"by_modality": {k: _stats(v) for k, v in confidence.items()}, "buckets": buckets},
@@ -534,9 +570,16 @@ def _compute_audit(db, *, station_id, since, until) -> dict:
         # The inferred model-trust layer: per-species accuracy and per-model
         # rollups. Computed over the whole expert-reviewed record and clearly
         # labelled inferred and cumulative, so it stands apart from the windowed,
-        # measured counts above and is never mistaken for one of them.
-        "model_trust": db.model_trust_snapshot(),
+        # measured counts above and is never mistaken for one of them. Counted
+        # one identity per species when a taxon book is given.
+        "model_trust": (_trust_by_identity(db, book) if book is not None else db.model_trust_snapshot()),
     }
+
+
+def _trust_by_identity(db, book) -> dict:
+    from audtheia.analysis.taxa import trust_snapshot_by_identity
+
+    return trust_snapshot_by_identity(db, book)
 
 
 def _event_trust(obs: dict, children: list, index: dict) -> dict:
@@ -1947,6 +1990,75 @@ def create_app(settings, database):
         matching = [r for r in every if ((r.get(field) or "").strip() or None) == wanted]
         return len(matching), matching[offset: offset + limit]
 
+    # -- one identity per species, and verification read per gate ---------
+
+    def _taxon_book():
+        """A read-only taxon book over the backbone index, the label map and the species cache."""
+        from audtheia.analysis.taxa import TaxonBook
+
+        return TaxonBook.for_settings(settings, db)
+
+    def _attach_identity(book, children: list) -> None:
+        """Resolve each detection's label to its identity, in place, without changing the record."""
+        for c in children:
+            c["identity"] = book.identify(c)
+
+    def _describe_identities(book, items: list, field_name: str) -> None:
+        """Replace each attached identity with its display form, once every label is known.
+
+        Common names are gathered as labels are resolved, so the names are written
+        only after the whole page was identified.
+        """
+        for item in items:
+            for c in item.get(field_name) or []:
+                c["identity"] = book.describe(c.get("identity"))
+
+    _verifier_labels_cache: dict = {}
+
+    def _verification_context() -> dict:
+        """The clearing floors in force and the desktop verifier configured now.
+
+        The verifier's labels are read once per model file and kept until the file
+        changes, so a page of cards never loads a model.
+        """
+        entry = (settings.raw.get("desktop_models", {}) or {}).get("visual_rfdetr", {}) or {}
+        path = entry.get("path")
+        ctx = {"floors": _verdicts.floors(settings), "verifier_configured": bool(path),
+               "verifier_version": None, "verifier_labels": None}
+        if not path:
+            return ctx
+        model_path = Path(path) if Path(path).is_absolute() else Path(settings.repo_root) / path
+        try:
+            stamp = (str(model_path), model_path.stat().st_mtime)
+        except OSError:
+            ctx["verifier_configured"] = False
+            return ctx
+        if stamp not in _verifier_labels_cache:
+            try:
+                from audtheia.inference.rfdetr_onnx import verifier_label_set
+
+                _verifier_labels_cache.clear()
+                _verifier_labels_cache[stamp] = verifier_label_set(settings)
+            except Exception:  # noqa: BLE001 - the label set is a disclosure aid only
+                _verifier_labels_cache[stamp] = (entry.get("version") or model_path.stem, None)
+        ctx["verifier_version"], ctx["verifier_labels"] = _verifier_labels_cache[stamp]
+        return ctx
+
+    def _verification_view(obs: dict, verification, children: list, ctx: dict, book) -> dict:
+        """How a card reads an event's verification: its gate, its state and one sentence."""
+        identities = None
+        if ctx.get("verifier_labels") is not None:
+            identities = {(book.identify_label(label) or {}).get("key") for label in ctx["verifier_labels"]} - {None}
+        state = _verdicts.classify(obs, verification)
+        state["reading"] = _verdicts.describe(
+            obs, verification, children=children, floors_in_force=ctx.get("floors"),
+            verifier_configured=ctx.get("verifier_configured"), verifier_version=ctx.get("verifier_version"),
+            verifier_identities=identities, book=book)
+        state["reverifiable"] = bool(state["state"] in ("not_run", "pending", "not_verified")
+                                     and state["gate"] == _verdicts.GATE_TWO_MODEL
+                                     and ctx.get("verifier_configured"))
+        return state
+
     def _models_present(trigger: str, station_id) -> list:
         field = _model_field(trigger)
         counts: dict = {}
@@ -1971,19 +2083,24 @@ def create_app(settings, database):
         # every event in the page.
         trust_index = db.event_trust_index()
         out = []
-        for obs in rows:
-            item = dict(obs)
-            children = db.list_child_detections(obs["id"])
-            item["vision_detections"] = [c for c in children if c.get("modality") == "vision"]
-            item["verification"] = db.get_observation_verification(obs["id"])
-            # The expert's current position on this event, so a card can show a
-            # reviewed identification instead of a model percentage without a
-            # second request per card.
-            item["correction"] = db.latest_correction(obs["id"])
-            # Model trust for the card chip: shown only when computable, otherwise
-            # a clear "not yet rated" carrying its reason. Inference, model-tagged.
-            item["event_trust"] = _event_trust(obs, children, trust_index)
-            out.append(item)
+        with _taxon_book() as book:
+            ctx = _verification_context()
+            for obs in rows:
+                item = dict(obs)
+                children = db.list_child_detections(obs["id"])
+                _attach_identity(book, children)
+                item["vision_detections"] = [c for c in children if c.get("modality") == "vision"]
+                item["verification"] = db.get_observation_verification(obs["id"])
+                item["verification_view"] = _verification_view(obs, item["verification"], children, ctx, book)
+                # The expert's current position on this event, so a card can show a
+                # reviewed identification instead of a model percentage without a
+                # second request per card.
+                item["correction"] = db.latest_correction(obs["id"])
+                # Model trust for the card chip: shown only when computable, otherwise
+                # a clear "not yet rated" carrying its reason. Inference, model-tagged.
+                item["event_trust"] = _event_trust(obs, children, trust_index)
+                out.append(item)
+            _describe_identities(book, out, "vision_detections")
         return {"items": out, "total": total, "limit": limit, "offset": offset}
 
     # Registered before '/detections/{observation_id}' so the literal path is not
@@ -2002,16 +2119,54 @@ def create_app(settings, database):
         """Delete one or more observations and their stored media.
 
         Removing an observation cascades in the database to its child detections,
-        environmental readings, verification, interpretations, and pattern links.
-        The stored frame and audio clip are then removed from disk, guarded by the
-        same in-data-directory check the media route uses, so nothing outside the
-        data directory is ever touched. Unknown ids are ignored.
+        environmental readings, verification, interpretations, expert corrections,
+        frame reviews, box corrections, skill flags and pattern links. The stored
+        frame, the event's own frame folder and the audio clip are then removed
+        from disk, guarded by the same in-data-directory check the media route
+        uses, so nothing outside the data directory is ever touched. The site
+        baseline cells the deleted readings fed are recomputed from the readings
+        that remain. Unknown ids are ignored.
         """
+        import shutil
+
         ids = [str(i) for i in (request.ids or []) if i]
         if not ids:
             raise HTTPException(status_code=400, detail="no observation ids were given to delete")
+        doomed = [o for o in (db.get_observation(i) for i in ids) if o]
+        cells = [(o["station_id"], r.get("channel"), o.get("first_seen"))
+                 for o in doomed for r in db.list_environmental_readings(o["id"])]
         result = db.delete_observations(ids)
         data_dir = Path(settings.path("data_dir")).resolve()
+        folders_removed = 0
+        try:
+            visual_dir = Path(settings.path("detections_visual_dir"))
+            if not visual_dir.is_absolute():
+                visual_dir = Path(settings.repo_root) / visual_dir
+            visual_dir = visual_dir.resolve()
+        except Exception:  # noqa: BLE001 - no configured folder means no event folders to remove
+            visual_dir = None
+        deleted_ids = set(result.get("deleted", []))
+        for o in doomed:
+            name = str(o.get("event_name") or "")
+            if visual_dir is None or o["id"] not in deleted_ids or not name or "/" in name or "\\" in name:
+                continue
+            folder = visual_dir / name
+            if folder.is_symlink() or not folder.is_dir():
+                continue
+            if data_dir in folder.resolve().parents and folder.resolve().parent == visual_dir:
+                try:
+                    shutil.rmtree(folder)
+                    folders_removed += 1
+                except OSError:
+                    pass
+        baselines_refreshed = 0
+        if cells:
+            try:
+                from audtheia.analysis.dream import DreamEngine
+
+                baselines_refreshed = DreamEngine(settings=settings, db=db).refresh_cells(cells)
+            except Exception:  # noqa: BLE001 - the next pass refreshes them; deletion already succeeded
+                baselines_refreshed = 0
         media_removed = 0
         for rel in result.get("media", []):
             try:
@@ -2030,6 +2185,8 @@ def create_app(settings, database):
             "ids": result.get("deleted", []),
             "count": len(result.get("deleted", [])),
             "media_removed": media_removed,
+            "frame_folders_removed": folders_removed,
+            "baseline_cells_refreshed": baselines_refreshed,
         }
 
     @app.get(f"{API_PREFIX}/detections/{{observation_id}}")
@@ -2038,12 +2195,19 @@ def create_app(settings, database):
         if obs is None:
             raise HTTPException(status_code=404, detail=f"no observation with id {observation_id}")
         children = db.list_child_detections(observation_id)
+        verification = db.get_observation_verification(observation_id)
+        with _taxon_book() as book:
+            _attach_identity(book, children)
+            view = _verification_view(obs, verification, children, _verification_context(), book)
+            for c in children:
+                c["identity"] = book.describe(c.get("identity"))
         return {
             "observation": obs,
             "vision_detections": [c for c in children if c.get("modality") == "vision"],
             "audio_detections": [c for c in children if c.get("modality") == "audio"],
             "environment": db.list_environmental_readings(observation_id),
-            "verification": db.get_observation_verification(observation_id),
+            "verification": verification,
+            "verification_view": view,
             "interpretations": db.list_interpretations(observation_id),
             "skill_flags": db.list_skill_flags(observation_id),
             # Model trust for the modal's "how these numbers were derived" block,
@@ -2682,14 +2846,19 @@ def create_app(settings, database):
         total, rows = _events_page("audio", station_id, since, until, sp, (model or "").strip() or None, limit, offset)
         trust_index = db.event_trust_index()
         out = []
-        for obs in rows:
-            item = dict(obs)
-            children = db.list_child_detections(obs["id"])
-            item["audio_detections"] = [c for c in children if c.get("modality") == "audio"]
-            item["verification"] = db.get_observation_verification(obs["id"])
-            item["correction"] = db.latest_correction(obs["id"])
-            item["event_trust"] = _event_trust(obs, children, trust_index)
-            out.append(item)
+        with _taxon_book() as book:
+            ctx = _verification_context()
+            for obs in rows:
+                item = dict(obs)
+                children = db.list_child_detections(obs["id"])
+                _attach_identity(book, children)
+                item["audio_detections"] = [c for c in children if c.get("modality") == "audio"]
+                item["verification"] = db.get_observation_verification(obs["id"])
+                item["verification_view"] = _verification_view(obs, item["verification"], children, ctx, book)
+                item["correction"] = db.latest_correction(obs["id"])
+                item["event_trust"] = _event_trust(obs, children, trust_index)
+                out.append(item)
+            _describe_identities(book, out, "audio_detections")
         return {"items": out, "total": total, "limit": limit, "offset": offset}
 
     @app.get(f"{API_PREFIX}/audio/species")
@@ -2728,7 +2897,8 @@ def create_app(settings, database):
 
     @app.get(f"{API_PREFIX}/analytics")
     def analytics(station_id=Query(default=None), since=Query(default=None), until=Query(default=None)):
-        return _compute_analytics(db, station_id=station_id, since=since, until=until)
+        with _taxon_book() as book:
+            return _compute_analytics(db, station_id=station_id, since=since, until=until, book=book)
 
     # -- brain: models and memory, learning, skills ----------------------
 
@@ -3962,7 +4132,8 @@ def create_app(settings, database):
     @app.get(f"{API_PREFIX}/brain/audit")
     def brain_audit(station_id=Query(default=None), since=Query(default=None), until=Query(default=None)):
         """Evidence of how the system behaved, derived from the stored record."""
-        return _compute_audit(db, station_id=station_id, since=since, until=until)
+        with _taxon_book() as book:
+            return _compute_audit(db, station_id=station_id, since=since, until=until, book=book)
 
     @app.get(f"{API_PREFIX}/brain/model-trust")
     def brain_model_trust():
@@ -3973,9 +4144,11 @@ def create_app(settings, database):
         fine-tuning targets first, the micro and macro rollups per model, and the
         confusion counts, each keyed to a model version and tagged inference. With
         no expert reviews it returns an explicit empty-with-reason shape, not a
-        table of zeros. Nothing here is written or alters a measurement.
+        table of zeros. Nothing here is written or alters a measurement. Species
+        are counted one identity per species, with the raw labels kept on each row.
         """
-        return db.model_trust_snapshot()
+        with _taxon_book() as book:
+            return _trust_by_identity(db, book)
 
     @app.get(f"{API_PREFIX}/brain/skills")
     def brain_skills(tier=Query(default=None)):
@@ -4320,6 +4493,85 @@ def create_app(settings, database):
         note = (f"re-scored and gated {verified} eligible observation(s)" if verified
                 else "no eligible observation was awaiting verification, or none fell in the desktop verifier's target group")
         return {"ran": True, "verified": verified, "stations": len(stations), "note": note}
+
+    @app.get(f"{API_PREFIX}/verify/status")
+    def verify_status(station_id: Optional[str] = Query(default=None)):
+        """Whether a desktop verification model is configured, and how many events no model checked.
+
+        not_run counts events with frames whose stored verdict was recorded while no
+        verification model was configured; pending counts events with frames that
+        have no verdict yet. Both can be verified with Re-verify once a model is set.
+        """
+        ctx = _verification_context()
+        counts = {"not_run": 0, "pending": 0, "not_verified": 0, "verified": 0}
+        for obs in db.list_observations(station_id=station_id):
+            if str(obs.get("trigger_source")) == "audio":
+                continue
+            state = _verdicts.classify(obs, db.get_observation_verification(obs["id"]))["state"]
+            if state in counts:
+                counts[state] += 1
+        return {"verifier_configured": bool(ctx.get("verifier_configured")),
+                "verifier_version": ctx.get("verifier_version"), "visual": counts,
+                "floors": ctx.get("floors")}
+
+    @app.post(f"{API_PREFIX}/verify/rerun")
+    def verify_rerun(request: dict = Body(default={})):
+        """Re-verify events with frames, replacing their earlier verdicts.
+
+        scope "not_run" (the default) re-verifies the events no verification model
+        checked; scope "ids" re-verifies the observation_ids given. It uses the
+        verification engine's force path: the new verdict replaces the old one in
+        the desktop-owned verification table, and the station-owned observation row
+        is never touched. Refused when no verification model is configured, because
+        a second model is what re-verifying adds.
+        """
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="processing runs on the desktop; this node is not the desktop.")
+        from audtheia.app.orchestrator import DesktopStation
+
+        scope = str(request.get("scope") or "not_run")
+        station_id = request.get("station_id") or None
+        if scope == "ids":
+            wanted = [str(i) for i in (request.get("observation_ids") or []) if i]
+            if not wanted:
+                raise HTTPException(status_code=422, detail="give the observation_ids to re-verify")
+        elif scope == "not_run":
+            wanted = []
+        else:
+            raise HTTPException(status_code=422, detail="scope must be 'not_run' or 'ids'")
+
+        groups: dict = {}
+        for obs in db.list_observations(station_id=station_id):
+            if str(obs.get("trigger_source")) == "audio":
+                continue
+            if scope == "ids":
+                if obs["id"] not in wanted:
+                    continue
+            elif _verdicts.classify(obs, db.get_observation_verification(obs["id"]))["state"] != "not_run":
+                continue
+            groups.setdefault(obs["station_id"], []).append(obs["id"])
+
+        no_model = (
+            "no desktop verification model is configured, so there is no second model to check the "
+            "frames with. Set one in Brain, Models and Memory, then re-verify.")
+        if groups and not _verification_context().get("verifier_configured"):
+            raise HTTPException(status_code=409, detail=no_model)
+        totals = {"verified": 0, "unverified": 0, "skipped": 0}
+        for sid, ids in groups.items():
+            try:
+                station = DesktopStation.build(settings, station_id=sid)
+            except Exception as exc:  # noqa: BLE001 - reported as a clear client error
+                raise HTTPException(status_code=422, detail=f"could not prepare verification: {exc}") from exc
+            if not station.verifier_configured:
+                raise HTTPException(status_code=409, detail=no_model)
+            result = station.reverify(ids)
+            for key in totals:
+                totals[key] += int(result.get(key, 0))
+        events = sum(len(v) for v in groups.values())
+        return {"ran": True, "events": events, **totals,
+                "note": (f"re-verified {events} event(s): {totals['verified']} verified, "
+                         f"{totals['unverified']} not verified, {totals['skipped']} skipped"
+                         if events else "no event matched, so nothing was re-verified")}
 
     @app.post(f"{API_PREFIX}/dream/run")
     def dream_run(station_id: Optional[str] = Query(default=None)):

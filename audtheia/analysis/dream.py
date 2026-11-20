@@ -490,11 +490,17 @@ class DreamEngine:
         min_events_for_co_occurrence: Optional[int] = None,
         min_abs_effect: Optional[float] = None,
         max_p_value: Optional[float] = None,
+        identify=None,
     ) -> None:
         self._settings = settings
         self._db = db
         self._narrator = narrator
         self._clusterer = clusterer
+        # Optional: a callable (gbif_usage_key, name) -> identity key, so a species
+        # written two ways, such as a camera model's class name and a BirdNET label,
+        # is one taxon for local rarity and co-occurrence. Without it, taxa are
+        # keyed as written, as before.
+        self._identify = identify
 
         # The generative-phase floors come from configuration, with an explicit
         # constructor argument taking precedence when one is passed. The
@@ -723,6 +729,23 @@ class DreamEngine:
                 self._score_salience(obs, membership_cache, station_taxon_cache)
                 self.salience_scored += 1
 
+    def refresh_cells(self, cells) -> int:
+        """Rebuild the baseline cells some readings belonged to, from what remains.
+
+        cells is an iterable of (station_id, channel, first_seen). Used after events
+        are deleted, so each site-baseline cell their readings fed is recomputed
+        exactly from the readings still stored. Returns how many cells were
+        recomputed. A cell left with no qualifying reading is not rewritten here.
+        """
+        touched: set[tuple[str, str, str]] = set()
+        for station_id, channel, first_seen in cells:
+            period = _period_key(first_seen, self._granularity)
+            if period is not None and station_id and channel:
+                touched.add((station_id, channel, period))
+        for station_id, channel, period in touched:
+            self._recompute_cell(station_id, channel, period)
+        return len(touched)
+
     def _cell_membership(
         self,
         station_id: str,
@@ -915,16 +938,14 @@ class DreamEngine:
         station_id = obs["station_id"]
         stats = station_taxon_cache.get(station_id)
         if stats is None:
-            stats = self._db.taxon_event_counts(station_id)
+            stats = (self._station_identity_counts(station_id) if self._identify is not None
+                     else self._db.taxon_event_counts(station_id))
             station_taxon_cache[station_id] = stats
         total = stats["total_events"]
         counts = stats["taxon_events"]
         if total <= 0:
             return None
-        taxa = [
-            (c.get("gbif_usage_key") or c.get("common_name"))
-            for c in self._db.list_child_detections(obs["id"])
-        ]
+        taxa = [self._taxon_of(c) for c in self._db.list_child_detections(obs["id"])]
         taxa = [t for t in taxa if t]
         if not taxa:
             return None
@@ -935,6 +956,37 @@ class DreamEngine:
             if rarest is None or rarity > rarest:
                 rarest = rarity
         return rarest
+
+    def _taxon_of(self, detection: dict) -> Optional[str]:
+        """The key a detection's taxon is counted under: its identity when known."""
+        if self._identify is not None:
+            label = (str(detection.get("scientific_name") or "").strip()
+                     or str(detection.get("common_name") or "").strip() or None)
+            try:
+                key = self._identify(detection.get("gbif_usage_key"), label)
+            except Exception:  # noqa: BLE001 - identity is an aid; fall back to the label as written
+                key = None
+            if key:
+                return key
+        return detection.get("gbif_usage_key") or detection.get("common_name")
+
+    def _station_identity_counts(self, station_id: str) -> dict:
+        """Per-taxon distinct-event counts at a station, one identity per species.
+
+        The same quantity as Database.taxon_event_counts, counted after resolving
+        each label to its identity, so one species named two ways is counted once
+        per event rather than twice as two rarer taxa.
+        """
+        observations = self._db.list_observations(station_id=station_id)
+        counts: dict[str, int] = {}
+        for obs in observations:
+            seen: set[str] = set()
+            for det in self._db.list_child_detections(obs["id"]):
+                key = self._taxon_of(det)
+                if key and key not in seen:
+                    seen.add(key)
+                    counts[key] = counts.get(key, 0) + 1
+        return {"total_events": len(observations), "taxon_events": counts}
 
     @staticmethod
     def _reading_qualifies(reading: dict) -> bool:
@@ -1230,7 +1282,7 @@ class DreamEngine:
         claim rests on the events in which either taxon appeared.
         """
         events: list[tuple[_Exemplar, set[str]]] = [
-            (ex, set(ex.species)) for ex in exemplars if ex.species
+            (ex, set(self._species_identity(ex.species))) for ex in exemplars if ex.species
         ]
         if len(events) < self._min_events_for_co_occurrence:
             return []
@@ -1291,6 +1343,24 @@ class DreamEngine:
                         p_value=min(1.0, p),
                     )
                 )
+        return out
+
+    def _species_identity(self, keys: list[str]) -> list[str]:
+        """Backbone keys mapped to their accepted identity, so synonyms are one taxon."""
+        if self._identify is None:
+            return list(keys)
+        out = []
+        for key in keys:
+            try:
+                ident = self._identify(key, None)
+            except Exception:  # noqa: BLE001 - identity is an aid; keep the key as written
+                ident = None
+            # Keys stay in the backbone-key form the record uses, so a pattern's
+            # wording and its de-duplication key are unchanged for a key that was
+            # already accepted.
+            if ident and ident.startswith("gbif:"):
+                ident = ident[len("gbif:"):]
+            out.append(ident or key)
         return out
 
     def _detect_novel_cluster(self, exemplars: list[_Exemplar]) -> list[PatternFragment]:

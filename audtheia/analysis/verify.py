@@ -326,11 +326,16 @@ class VerifyEngine:
         clear_confidence: Optional[float] = None,
         max_frames_scored: Optional[int] = None,
         acoustic_clear_confidence: Optional[float] = None,
+        identify=None,
     ) -> None:
         self._settings = settings
         self._db = db
         self._verifier = verifier
         self._interpreter = interpreter
+        # Optional: a callable (gbif_usage_key, name) -> identity key, so the
+        # verifier and the field call are compared as one species however each
+        # model spells it. Without it, labels are compared as written.
+        self._identify = identify
         # These thresholds come from configuration, with an explicit constructor
         # argument taking precedence when one is passed. The configured defaults
         # reproduce the values these held before they became configurable, so an
@@ -394,6 +399,16 @@ class VerifyEngine:
         # cross-check. Handled and returned here before any frame work.
         if str(obs.get("trigger_source")) == "audio":
             return self._process_acoustic(observation_id, children)
+
+        # With no verification model configured there is nothing to check the
+        # frames with. No verdict is written, so the event reads as not checked
+        # rather than as a model that looked and recognised nothing, and it is
+        # verified as soon as a model is configured.
+        if not getattr(self._verifier, "configured", True):
+            return self._skip(
+                observation_id,
+                "no desktop verification model is configured, so no frame was checked by a second model",
+            )
 
         readings = self._db.list_environmental_readings(observation_id)
 
@@ -490,6 +505,23 @@ class VerifyEngine:
             verified_at=now if cleared else None,
         )
         self._db.upsert_observation_verification(verification)
+
+    def reverify(self, observation_ids: Iterable[str]) -> dict:
+        """Verify events again, replacing each earlier verdict.
+
+        Uses the force path of process: the new verdict replaces the old one in
+        the desktop-owned verification table and the station-owned observation row
+        is never touched. With no verification model configured nothing is run,
+        because a second model is what a re-verification adds. Returns counts by
+        outcome.
+        """
+        counts = {"verified": 0, "unverified": 0, "skipped": 0}
+        if not getattr(self._verifier, "configured", True):
+            return dict(counts, not_configured=True)
+        for observation_id in observation_ids:
+            result = self.process(observation_id, force=True)
+            counts[result.outcome] = counts.get(result.outcome, 0) + 1
+        return dict(counts, not_configured=False)
 
     def sweep(
         self, *, station_id: Optional[str] = None, limit: Optional[int] = None
@@ -617,8 +649,10 @@ class VerifyEngine:
         """The field screening call's taxon: the strongest visual detection.
 
         The event-level resolved taxon is the highest-confidence visual child
-        detection. Returns the taxon key and scientific name, or a pair of None
-        when the event carries no visual detection to compare against.
+        detection. Returns the taxon key and its label, the scientific name when
+        the record carries one and otherwise the model's own class label, which a
+        screening model writes as the common name. Returns a pair of None when the
+        event carries no visual detection to compare against.
         """
         best = None
         best_conf = None
@@ -633,7 +667,9 @@ class VerifyEngine:
                 best = c
         if best is None:
             return None, None
-        return best.get("gbif_usage_key"), best.get("scientific_name")
+        label = (str(best.get("scientific_name") or "").strip()
+                 or str(best.get("common_name") or "").strip() or None)
+        return best.get("gbif_usage_key"), label
 
     def _aggregate(
         self,
@@ -684,6 +720,18 @@ class VerifyEngine:
         )
 
         agrees = self._agrees(res_key, res_name, field_key, field_name)
+        if agrees is False and self._identify is not None:
+            # The two models may spell one species differently, such as a class
+            # name and a scientific name. Compared by identity, they agree when
+            # both resolve to the same taxon; an unresolved label never matches
+            # by guesswork.
+            try:
+                a = self._identify(res_key, res_name)
+                b = self._identify(field_key, field_name)
+            except Exception:  # noqa: BLE001 - identity is an aid; the written comparison stands
+                a = b = None
+            if a is not None and a == b:
+                agrees = True
 
         return VerificationVerdict(
             resolved_gbif_usage_key=res_key,
@@ -784,10 +832,24 @@ class VerifyEngine:
         return self._desktop_model_version("llm")
 
     def _verifier_version(self) -> Optional[str]:
+        """The version stamped on a verdict, never left empty for a real model.
+
+        The verifier's own version first, then the configured version, then the
+        configured model's file name, so every verdict a model produced names it.
+        """
         version = getattr(self._verifier, "version", None)
         if version:
             return version
-        return self._desktop_model_version("visual_rfdetr")
+        version = self._desktop_model_version("visual_rfdetr")
+        if version:
+            return version
+        try:
+            path = self._settings.raw.get("desktop_models", {}).get("visual_rfdetr", {}).get("path")
+        except Exception:  # noqa: BLE001
+            path = None
+        if path:
+            return Path(str(path).replace("\\", "/")).stem
+        return None
 
     def _desktop_model_version(self, key: str) -> Optional[str]:
         try:

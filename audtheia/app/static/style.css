@@ -2459,6 +2459,14 @@ textarea:hover {
   gap: var(--space-2);
 }
 
+/* The naming controls on a species profile: one row per label that still needs
+   an expert decision, set below the profile's figures. */
+.species-naming {
+  margin-top: var(--space-2);
+  display: grid;
+  gap: var(--space-2);
+}
+
 /* The chosen verdict is held visibly selected until it is saved, so the
    reviewer can see what they are about to commit before committing it. */
 .correction-btn.selected {

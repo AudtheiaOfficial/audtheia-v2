@@ -150,8 +150,13 @@ def run() -> None:
         check(a["provenance"] == "derived", "analytics did not mark itself derived")
         # Three distinct taxa by detection: the yellow tube sponge, the
         # unresolved sponge in the disagreeing event, and the bananaquit.
-        check(a["total_events"] == 4 and a["species_richness"] == 3 and a["verified_count"] == 1,
-              f"analytics summary was wrong: {a['total_events']}, {a['species_richness']}, {a['verified_count']}")
+        gates = a.get("verification_by_gate") or {}
+        check(a["total_events"] == 4 and a["species_richness"] == 3
+              and (gates.get("visual") or {}).get("verified", 0) + (gates.get("audio") or {}).get("cleared", 0) == 1
+              and "verified_count" not in a,
+              f"analytics summary was wrong: {a['total_events']}, {a['species_richness']}, {gates}")
+        check(set(gates) == {"visual", "audio"},
+              "analytics did not count verification separately for the two-model check and the acoustic gate")
 
         # -- brain ------------------------------------------------------
         models = client.get("/api/brain/models").json()

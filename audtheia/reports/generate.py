@@ -26,6 +26,14 @@ Three commitments shape everything below:
     carries its effect size, the kind of effect size it is, the test behind it,
     and the exact span of data it rests on.
 
+  - One identity per species, and every verification gate named. A taxon is
+    counted once however each model spells it, through the same identity rules
+    the Train tab uses, with the raw labels kept as provenance and an
+    unresolvable label shown as its own entry, flagged. Verification is reported
+    per gate: the two-model check for events with frames and the acoustic
+    confidence gate for pure sound events are never pooled into one number, and
+    an event no verification model checked is said to be unchecked, not failed.
+
   - Data age is disclosed. The taxonomic backbone snapshot date and the
     conservation-status fetch date behind any taxonomic or conservation field
     are shown, as are the versions of the models and data snapshots that stand
@@ -201,6 +209,13 @@ class ReportModel:
     # review, keyed to a model version, and never a measurement, so the report
     # renders it apart from the measured record and always labelled as inference.
     model_trust: dict = field(default_factory=dict)
+    # How verification is read: the clearing floors in force from the settings,
+    # and the desktop verifier configured now with the identities its labels
+    # resolve to, when they can be read.
+    verification_context: dict = field(default_factory=dict)
+    # The one-identity-per-species book every taxon in this report was resolved
+    # through. Not written to any output; it only names taxa.
+    taxa: Any = field(default=None, repr=False)
 
 
 @dataclass
@@ -338,8 +353,8 @@ def _is_inferred(data_source: Optional[str]) -> bool:
     return data_source in INFERRED_SOURCES
 
 
-def _taxon_name(detection: dict) -> str:
-    """The best available display name for a detected taxon."""
+def _raw_name(detection: dict) -> str:
+    """The label a detection carries, exactly as the model or person wrote it."""
     return (
         detection.get("scientific_name")
         or detection.get("common_name")
@@ -348,8 +363,32 @@ def _taxon_name(detection: dict) -> str:
     )
 
 
+def _taxon_name(detection: dict, book=None) -> str:
+    """A detection's taxon by its accepted identity, with the raw label as provenance.
+
+    "Cardinalis cardinalis (Northern Cardinal), model label northern-cardinal" when
+    the label resolves and differs from the accepted name; the raw label flagged as
+    unresolved when no rule settles it; the raw label alone without a book.
+    """
+    raw = _raw_name(detection)
+    ident = detection.get("identity")
+    if book is None or not ident:
+        return raw
+    shown = book.display(ident)
+    if ident.get("unresolved"):
+        return f"{raw} (unresolved label: not matched to the taxonomic backbone)"
+    if ident.get("kept"):
+        return f"{raw} (kept as its own label by an expert)"
+    if raw and raw.lower() != str(ident.get("scientific_name") or "").lower() and raw != shown:
+        return f"{shown}, model label {raw}"
+    return shown
+
+
 def _taxon_key(detection: dict) -> Optional[str]:
-    """A stable identity for a taxon, matching how local rarity is counted."""
+    """The key a detection's taxon is counted under: its identity, else its label as written."""
+    ident = detection.get("identity")
+    if ident:
+        return ident.get("key")
     return detection.get("gbif_usage_key") or detection.get("common_name") or detection.get("scientific_name")
 
 
@@ -466,12 +505,17 @@ class ReportGenerator:
         # Present events oldest first, so a report reads as a timeline.
         observations = sorted(observations, key=lambda o: (o.get("first_seen") or "", o.get("id") or ""))
 
+        from audtheia.analysis.taxa import TaxonBook, trust_snapshot_by_identity
+
+        book = TaxonBook.for_settings(self._settings, db)
         records: list[ObservationRecord] = []
         in_scope_ids: set[str] = set()
         for obs in observations:
             oid = obs["id"]
             in_scope_ids.add(oid)
-            children = db.list_child_detections(oid)
+            children = [dict(c) for c in db.list_child_detections(oid)]
+            for c in children:
+                c["identity"] = book.identify(c)
             vision = [c for c in children if c.get("modality") == "vision"]
             audio = [c for c in children if c.get("modality") == "audio"]
             records.append(
@@ -491,12 +535,14 @@ class ReportGenerator:
         telemetry = self._gather_telemetry(stations, start=start)
         species_reference = self._gather_species(records)
 
-        analytics = _compute_analytics(records, telemetry)
+        analytics = _compute_analytics(records, telemetry, book)
         provenance = _collect_provenance(records, patterns, species_reference)
         # Per-species model accuracy is a property of a model over the whole
         # reviewed record, not of this report's window, so it is read as its own
-        # cumulative snapshot and labelled as such where it is shown.
-        model_trust = db.model_trust_snapshot()
+        # cumulative snapshot and labelled as such where it is shown, with one
+        # identity per species.
+        model_trust = trust_snapshot_by_identity(db, book)
+        verification_context = self._verification_context(book)
 
         return ReportModel(
             generated_at_utc=generated_at,
@@ -513,7 +559,28 @@ class ReportGenerator:
             analytics=analytics,
             provenance=provenance,
             model_trust=model_trust,
+            verification_context=verification_context,
+            taxa=book,
         )
+
+    def _verification_context(self, book) -> dict:
+        """The floors in force and the desktop verifier configured now."""
+        from audtheia.analysis import verdicts
+
+        context = {"floors": verdicts.floors(self._settings), "verifier_configured": False,
+                   "verifier_version": None, "verifier_identities": None}
+        try:
+            from audtheia.inference.rfdetr_onnx import verifier_label_set
+
+            version, labels = verifier_label_set(self._settings)
+        except Exception:  # noqa: BLE001 - the verifier's labels are a disclosure aid only
+            version, labels = None, None
+        context["verifier_configured"] = version is not None
+        context["verifier_version"] = version
+        if labels is not None:
+            context["verifier_identities"] = {
+                (book.identify_label(label) or {}).get("key") for label in labels} - {None}
+        return context
 
     def _gather_patterns(self, *, station_id, start, end, in_scope_ids) -> list[PatternRecord]:
         db = self._db
@@ -558,9 +625,9 @@ class ReportGenerator:
         keys: set[str] = set()
         for rec in records:
             for det in list(rec.vision_detections) + list(rec.audio_detections):
-                key = det.get("gbif_usage_key")
+                key = det.get("gbif_usage_key") or (det.get("identity") or {}).get("gbif_usage_key")
                 if key:
-                    keys.add(key)
+                    keys.add(str(key))
         all_species = db.list_species_reference()
         if not keys:
             return all_species
@@ -579,14 +646,16 @@ class ReportGenerator:
 # ===========================================================================
 
 
-def _compute_analytics(records: list[ObservationRecord], telemetry: list[TelemetryRecord]) -> dict:
+def _compute_analytics(records: list[ObservationRecord], telemetry: list[TelemetryRecord], book=None) -> dict:
+    from audtheia.analysis import verdicts
+
     total_events = len(records)
     by_trigger: dict[str, int] = {}
     by_qc: dict[str, int] = {}
-    verified_count = 0
     detections_by_modality = {"vision": 0, "audio": 0}
     taxon_events: dict[str, int] = {}
     taxon_display: dict[str, str] = {}
+    taxon_idents: dict[str, dict] = {}
     channel_status: dict[str, dict[str, int]] = {}
     first_times = []
     last_times = []
@@ -597,8 +666,6 @@ def _compute_analytics(records: list[ObservationRecord], telemetry: list[Telemet
         by_trigger[trig] = by_trigger.get(trig, 0) + 1
         qc = obs.get("qc_state") or "unknown"
         by_qc[qc] = by_qc.get(qc, 0) + 1
-        if rec.verification and rec.verification.get("verified"):
-            verified_count += 1
         ft = _parse_utc(obs.get("first_seen"))
         lt = _parse_utc(obs.get("last_seen"))
         if ft:
@@ -614,7 +681,9 @@ def _compute_analytics(records: list[ObservationRecord], telemetry: list[Telemet
             key = _taxon_key(det)
             if not key:
                 continue
-            taxon_display.setdefault(key, _taxon_name(det))
+            if det.get("identity"):
+                taxon_idents.setdefault(key, det["identity"])
+            taxon_display.setdefault(key, _raw_name(det))
             if key not in seen_here:
                 seen_here.add(key)
                 taxon_events[key] = taxon_events.get(key, 0) + 1
@@ -627,16 +696,36 @@ def _compute_analytics(records: list[ObservationRecord], telemetry: list[Telemet
 
     effort = _summarize_effort(telemetry)
 
+    # Names are taken after every detection was identified, so a common name seen
+    # on any label of a species names it everywhere.
+    taxon_labels: dict[str, list] = {}
+    unresolved: list = []
+    kept: list = []
+    if book is not None:
+        for key, ident in taxon_idents.items():
+            taxon_display[key] = book.display(ident)
+            taxon_labels[key] = book.labels(ident)
+            if ident.get("unresolved"):
+                unresolved.append(key)
+            elif ident.get("kept"):
+                kept.append(key)
+
+    split = verdicts.split_counts((rec.observation, rec.verification) for rec in records)
+
     return {
         "total_events": total_events,
         "events_by_trigger_source": by_trigger,
         "events_by_qc_state": by_qc,
-        "verified_count": verified_count,
-        "verified_fraction": (verified_count / total_events) if total_events else 0.0,
+        # Verification per gate. The two-model check and the acoustic confidence
+        # gate are different claims, so no pooled verified count is kept.
+        "verification_by_gate": split,
         "species_richness": len(taxon_events),
+        "unresolved_taxa": sorted(unresolved),
+        "kept_taxa": sorted(kept),
         "detections_by_modality": detections_by_modality,
         "taxon_event_counts": taxon_events,
         "taxon_display_names": taxon_display,
+        "taxon_labels": taxon_labels,
         "channel_status_counts": channel_status,
         "earliest_event_utc": (min(first_times).strftime("%Y-%m-%dT%H:%M:%SZ") if first_times else None),
         "latest_event_utc": (max(last_times).strftime("%Y-%m-%dT%H:%M:%SZ") if last_times else None),
@@ -812,7 +901,20 @@ _DETECTION_HEADER = [
     "observation_id", "detection_id", "modality",
     "gbif_usage_key", "scientific_name", "common_name", "confidence",
     "data_source", "status", "bbox_x", "bbox_y", "bbox_w", "bbox_h",
+    "identity_key", "identity_scientific_name", "identity_display", "identity_method",
 ]
+
+# The identity columns are derived at report time from the raw label in the
+# columns before them; the raw label is never altered.
+_IDENTITY_COLUMNS = 4
+
+
+def _identity_cells(model: ReportModel, det: dict) -> list:
+    ident = det.get("identity")
+    if not ident:
+        return [None] * _IDENTITY_COLUMNS
+    shown = model.taxa.display(ident) if model.taxa is not None else (ident.get("scientific_name") or ident.get("label"))
+    return [ident.get("key"), ident.get("scientific_name"), shown, ident.get("method")]
 
 
 def _rows_vision_detections(model: ReportModel):
@@ -823,7 +925,7 @@ def _rows_vision_detections(model: ReportModel):
                 det.get("gbif_usage_key"), det.get("scientific_name"), det.get("common_name"), det.get("confidence"),
                 det.get("data_source"), det.get("status"),
                 det.get("bbox_x"), det.get("bbox_y"), det.get("bbox_w"), det.get("bbox_h"),
-            ]
+            ] + _identity_cells(model, det)
 
 
 _VERIFICATION_HEADER = [
@@ -832,23 +934,48 @@ _VERIFICATION_HEADER = [
     "rfdetr_agrees_with_field", "frames_scored", "frames_in_agreement",
     "salience_authoritative_derived", "rarity_score_derived",
     "baseline_deviation_derived", "anomaly_magnitude_authoritative_derived",
-    "verified_at_utc",
+    "verified_at_utc", "gate", "state", "reading",
 ]
 
 
 def _rows_verification(model: ReportModel):
+    """One row per event, so an event no verification model checked is still listed.
+
+    gate names which check applies (the two-model check or the acoustic confidence
+    gate); state is verified, not_verified, not_run or pending for an event with
+    frames and cleared, not_cleared or pending for a sound event; reading is the
+    same sentence the PDF prints.
+    """
+    from audtheia.analysis import verdicts
+
     for rec in model.records:
-        v = rec.verification
-        if not v:
-            continue
+        v = rec.verification or {}
+        c = verdicts.classify(rec.observation, rec.verification)
+        reading = _verification_text(model, rec)
         yield [
-            v.get("observation_id"), v.get("verified"), "model", v.get("rfdetr_version"),
+            rec.observation.get("id"), v.get("verified"), "model" if v else None, v.get("rfdetr_version"),
             v.get("rfdetr_gbif_usage_key"), v.get("rfdetr_scientific_name"), v.get("rfdetr_confidence"),
             v.get("rfdetr_agrees_with_field"), v.get("frames_scored"), v.get("frames_in_agreement"),
             v.get("salience_authoritative"), v.get("rarity_score"),
             v.get("baseline_deviation"), v.get("anomaly_magnitude_authoritative"),
-            v.get("verified_at"),
+            v.get("verified_at"), c["gate"], c["state"], reading,
         ]
+
+
+def _verification_text(model: ReportModel, rec: ObservationRecord) -> str:
+    """The plain sentence for one event's verification, naming its gate."""
+    from audtheia.analysis import verdicts
+
+    ctx = model.verification_context or {}
+    return verdicts.describe(
+        rec.observation, rec.verification,
+        children=list(rec.vision_detections) + list(rec.audio_detections),
+        floors_in_force=ctx.get("floors"),
+        verifier_configured=ctx.get("verifier_configured"),
+        verifier_version=ctx.get("verifier_version"),
+        verifier_identities=ctx.get("verifier_identities"),
+        book=model.taxa,
+    )
 
 
 _AUDIO_HEADER = [
@@ -856,6 +983,7 @@ _AUDIO_HEADER = [
     "audio_capped", "acoustic_model_version",
     "detection_id", "gbif_usage_key", "scientific_name", "common_name",
     "confidence", "data_source", "status",
+    "identity_key", "identity_scientific_name", "identity_display", "identity_method",
 ]
 
 
@@ -874,11 +1002,11 @@ def _rows_audio(model: ReportModel):
                 yield base + [
                     det.get("id"), det.get("gbif_usage_key"), det.get("scientific_name"), det.get("common_name"),
                     det.get("confidence"), det.get("data_source"), det.get("status"),
-                ]
+                ] + _identity_cells(model, det)
         else:
             # An audio event with a clip but no classified taxon still gets a row,
             # so a captured but unresolved sound is never dropped from the record.
-            yield base + [None, None, None, None, None, None, None]
+            yield base + [None, None, None, None, None, None, None] + [None] * _IDENTITY_COLUMNS
 
 
 _ENVIRONMENT_HEADER = [
@@ -952,9 +1080,16 @@ def _rows_analytics(model: ReportModel):
     a = model.analytics
     note = "derived from the records in this report"
     yield ["total_events", "", a.get("total_events"), note]
-    yield ["species_richness", "", a.get("species_richness"), note]
-    yield ["verified_count", "", a.get("verified_count"), note]
-    yield ["verified_fraction", "", _num(a.get("verified_fraction")), note]
+    yield ["species_richness", "", a.get("species_richness"),
+           note + "; one identity per species, unresolved labels counted as their own taxa"]
+    yield ["unresolved_taxa", "", len(a.get("unresolved_taxa") or []), note]
+    # Verification per gate. The two gates are different claims and are never
+    # added into one number.
+    split = a.get("verification_by_gate") or {}
+    for gate, bucket in (("two_model_check", split.get("visual") or {}),
+                         ("acoustic_confidence_gate", split.get("audio") or {})):
+        for state, value in sorted(bucket.items()):
+            yield [f"verification_{gate}", state, value, note]
     yield ["earliest_event_utc", "", a.get("earliest_event_utc"), note]
     yield ["latest_event_utc", "", a.get("latest_event_utc"), note]
     for key, value in sorted(a.get("events_by_trigger_source", {}).items()):
@@ -964,9 +1099,14 @@ def _rows_analytics(model: ReportModel):
     for key, value in sorted(a.get("detections_by_modality", {}).items()):
         yield ["detections_by_modality", key, value, note]
     names = a.get("taxon_display_names", {})
+    labels = a.get("taxon_labels", {})
+    unresolved = set(a.get("unresolved_taxa") or [])
     for key, value in sorted(a.get("taxon_event_counts", {}).items(), key=lambda kv: (-kv[1], kv[0])):
         label = names.get(key, key)
-        yield ["taxon_event_counts", label, value, note]
+        prov = note + "; raw labels: " + ", ".join(labels.get(key) or [label])
+        if key in unresolved:
+            prov += "; unresolved label, not matched to the taxonomic backbone"
+        yield ["taxon_event_counts", label, value, prov]
     for channel, statuses in sorted(a.get("channel_status_counts", {}).items()):
         for status, count in sorted(statuses.items()):
             yield ["channel_status_counts", f"{channel}:{status}", count, note]
@@ -981,7 +1121,7 @@ def _rows_analytics(model: ReportModel):
 _MODEL_ACCURACY_HEADER = [
     "model_version", "species_key", "species_label", "reviews_n",
     "confirmed", "relabelled", "rejected", "accuracy", "wilson_lower",
-    "confused_with", "provenance",
+    "confused_with", "provenance", "raw_labels",
 ]
 
 
@@ -995,7 +1135,7 @@ def _rows_model_accuracy(model: ReportModel):
             row.get("model_version"), row.get("species_key"), row.get("species_label"),
             row.get("reviewed"), row.get("confirms"), row.get("relabels"), row.get("rejects"),
             row.get("accuracy"), row.get("wilson_lower"), confused,
-            row.get("provenance") or "inferred",
+            row.get("provenance") or "inferred", "; ".join(row.get("labels") or []),
         ]
 
 
@@ -1343,8 +1483,10 @@ class _ReportPdf:
         self._figure("confidence_distribution",
                      "How confident the detection models were, across every detection in scope.")
         self._figure("verification_summary",
-                     "How many events cleared the desktop verification gate. A field call and the "
-                     "desktop verdict are kept as separate records; verification never rewrites a measurement.")
+                     "Verification by gate. Events with frames are checked by a second model; pure sound "
+                     "events can only pass an acoustic confidence gate, a weaker check, so the two are shown "
+                     "separately. A field call and the desktop verdict are kept as separate records; "
+                     "verification never rewrites a measurement.")
 
     def _reading_guide(self) -> None:
         m = self.model
@@ -1370,15 +1512,15 @@ class _ReportPdf:
         self._subhead("At a glance")
         self._kv("Stations in scope", str(len(m.stations)), derived=True)
         self._kv("Events", str(a.get("total_events", 0)), derived=True)
-        self._kv("Distinct taxa", str(a.get("species_richness", 0)), derived=True)
-        self._kv("Verified events",
-                 f"{a.get('verified_count', 0)} of {a.get('total_events', 0)}"
-                 f" ({_num(a.get('verified_fraction'))})", derived=True)
+        self._kv("Distinct taxa", _richness_text(a), derived=True)
+        self._kv("Verified events", _verified_text(a), derived=True)
         self._kv("Candidate hypotheses", str(len(m.patterns)), inferred=True)
 
     def _detections_section(self) -> None:
         self._section("Detections and verification")
-        vision_records = [r for r in self.model.records if r.vision_detections or r.verification]
+        vision_records = [r for r in self.model.records
+                          if r.vision_detections
+                          or (r.verification and r.observation.get("trigger_source") != "audio")]
         if not vision_records:
             self._para("No visual detections fall in this report's scope.", color=_COLOR_MUTED)
             return
@@ -1386,7 +1528,7 @@ class _ReportPdf:
         for rec in vision_records:
             self._observation_header(rec, tz)
             for det in rec.vision_detections:
-                name = _taxon_name(det)
+                name = _taxon_name(det, self.model.taxa)
                 tag = _provenance_tag(det.get("data_source"), det.get("status"))
                 self._kv(
                     "Taxon",
@@ -1423,9 +1565,11 @@ class _ReportPdf:
             for det in rec.audio_detections:
                 tag = _provenance_tag(det.get("data_source"), det.get("status"))
                 self._kv("Sound identified as",
-                         f"{_taxon_name(det)} (confidence {_num(det.get('confidence'))})", tag=tag)
+                         f"{_taxon_name(det, self.model.taxa)} (confidence {_num(det.get('confidence'))})", tag=tag)
             if not rec.audio_detections:
                 self._para("Captured sound was not resolved to a taxon.", color=_COLOR_MUTED, style="I")
+            if o.get("trigger_source") == "audio":
+                self._verification_block(rec)
             self._rule()
 
     def _environment_section(self) -> None:
@@ -1456,7 +1600,8 @@ class _ReportPdf:
             "rate is not asserted here.", color=_COLOR_MUTED)
         self._gap(1)
         self._kv("Total events", str(a.get("total_events", 0)), derived=True)
-        self._kv("Distinct taxa (richness)", str(a.get("species_richness", 0)), derived=True)
+        self._kv("Distinct taxa (richness)", _richness_text(a), derived=True)
+        self._kv("Verified events", _verified_text(a), derived=True)
         span = f"{_format_local(a.get('earliest_event_utc'), _display_tz(self.model))}" \
                f"  to  {_format_local(a.get('latest_event_utc'), _display_tz(self.model))}"
         self._kv("Event time span", span, derived=True)
@@ -1472,10 +1617,26 @@ class _ReportPdf:
 
         names = a.get("taxon_display_names", {})
         counts = a.get("taxon_event_counts", {})
+        labels = a.get("taxon_labels", {})
+        unresolved = set(a.get("unresolved_taxa") or [])
+        kept = set(a.get("kept_taxa") or [])
         if counts:
             self._subhead("Events per taxon")
+            self._para(
+                "One identity per species: labels from different models that name the same species "
+                "are counted together, with the labels as written shown after each. A label that "
+                "could not be matched to the taxonomic backbone is counted as its own entry and "
+                "flagged, never merged by guesswork.", color=_COLOR_MUTED, size=8.5)
             for key, value in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
-                self._bullet(f"{names.get(key, key)}: {value}", color=_COLOR_DERIVED, style="I")
+                line = f"{names.get(key, key)}: {value}"
+                raw = [x for x in (labels.get(key) or []) if x != names.get(key, key)]
+                if key in unresolved:
+                    line += " (unresolved label, not matched to the taxonomic backbone)"
+                elif key in kept:
+                    line += " (kept as its own label by an expert)"
+                elif raw:
+                    line += " (labels: " + ", ".join(raw) + ")"
+                self._bullet(line, color=_COLOR_DERIVED, style="I")
 
         channels = a.get("channel_status_counts", {})
         if channels:
@@ -1524,6 +1685,8 @@ class _ReportPdf:
 
         if mt.get("scope"):
             self._para("Scope: " + str(mt["scope"]) + ".", color=_COLOR_MUTED, style="I")
+        if mt.get("identity"):
+            self._para("Counted with " + str(mt["identity"]) + ".", color=_COLOR_MUTED, style="I")
         self._gap(1)
 
         # Group the already-sorted species rows by model, preserving the
@@ -1551,7 +1714,13 @@ class _ReportPdf:
                 confused = ", ".join(
                     f"{name} ({count})" for name, count in (row.get("confused_with") or {}).items()
                 )
-                line = (f"{row.get('species_label') or row.get('species_key')} "
+                raw = [x for x in (row.get("labels") or []) if x != row.get("species_label")]
+                name = row.get("species_label") or row.get("species_key")
+                if row.get("unresolved"):
+                    name = f"{name} (unresolved label)"
+                elif raw:
+                    name = f"{name} [labels: {', '.join(raw)}]"
+                line = (f"{name} "
                         f"(n={_num(row.get('reviewed'))}): accuracy {_pct(row.get('accuracy'))}, "
                         f"confirmed {_num(row.get('confirms'))}, "
                         f"relabelled {_num(row.get('relabels'))}, "
@@ -1626,7 +1795,16 @@ class _ReportPdf:
         self._gap(1)
         self._provenance_line("Screening model versions", p.get("screening_model_versions"))
         self._provenance_line("Acoustic model versions", p.get("acoustic_model_versions"))
-        self._provenance_line("Verification (RF-DETR) versions", p.get("rfdetr_versions"))
+        self._provenance_line("Desktop verifier versions (two-model check)", p.get("rfdetr_versions"))
+        ctx = self.model.verification_context or {}
+        floors_now = ctx.get("floors") or {}
+        if floors_now:
+            self._provenance_line("Verification floors in force", [
+                f"two-model check {_num(floors_now.get('clear_confidence'))}",
+                f"acoustic confidence gate {_num(floors_now.get('acoustic_clear_confidence'))}"])
+        self._provenance_line("Desktop verifier configured now",
+                              [ctx.get("verifier_version")] if ctx.get("verifier_version") else
+                              ["none: events with frames are not checked by a second model"])
         self._provenance_line("Interpretation model versions", p.get("interpretation_model_versions"))
         self._provenance_line("Longitudinal pass model versions", p.get("pattern_model_versions"))
         self._provenance_line("Taxonomic backbone snapshot dates", p.get("gbif_snapshot_dates"))
@@ -1678,21 +1856,16 @@ class _ReportPdf:
             self._para(f"Screening model: {screening}", color=_COLOR_MUTED, size=8.5)
 
     def _verification_block(self, rec: ObservationRecord) -> None:
+        """The event's verification, named by its gate, in one plain sentence."""
+        from audtheia.analysis import verdicts
+
         v = rec.verification
+        c = verdicts.classify(rec.observation, v)
+        text = _verification_text(self.model, rec)
+        tag = _provenance_tag("model") if c["state"] not in ("pending", "not_run") else "[derived]"
+        self._kv("Verification", text, tag=tag)
         if not v:
-            self._para("Not yet verified on the desktop.", color=_COLOR_MUTED, style="I", size=9)
             return
-        verified = "verified" if v.get("verified") else "not verified"
-        agrees = v.get("rfdetr_agrees_with_field")
-        agree_text = "" if agrees is None else (", agrees with field" if agrees else ", disagrees with field")
-        resolved = v.get("rfdetr_scientific_name") or v.get("rfdetr_gbif_usage_key") or "no taxon resolved"
-        self._kv(
-            "Verification",
-            f"{verified}{agree_text}: {resolved} (confidence {_num(v.get('rfdetr_confidence'))}, "
-            f"{_num(v.get('frames_in_agreement'))} of {_num(v.get('frames_scored'))} frames)",
-            tag=_provenance_tag("model"))
-        if v.get("rfdetr_version"):
-            self._para(f"Verifier model: {v.get('rfdetr_version')}", color=_COLOR_MUTED, size=8.5)
         if v.get("salience_authoritative") is not None:
             self._kv("Salience (authoritative)", _num(v.get("salience_authoritative")), derived=True)
 
@@ -1757,6 +1930,25 @@ def _describe_window(model: ReportModel) -> str:
     return f"Window: {left}  to  {right}"
 
 
+def _richness_text(a: dict) -> str:
+    """Distinct taxa, one identity per species, saying how many entries are unresolved labels."""
+    richness = int(a.get("species_richness") or 0)
+    unresolved = len(a.get("unresolved_taxa") or [])
+    if not unresolved:
+        return str(richness)
+    word = "label" if unresolved == 1 else "labels"
+    return (f"{richness}, one identity per species; {unresolved} unresolved {word} not matched to the "
+            f"taxonomic backbone {'is' if unresolved == 1 else 'are'} counted as {'its' if unresolved == 1 else 'their'} own "
+            f"{'entry' if unresolved == 1 else 'entries'}")
+
+
+def _verified_text(a: dict) -> str:
+    """Verified events per gate, never pooled into one number."""
+    from audtheia.analysis import verdicts
+
+    return verdicts.summary_sentence(a.get("verification_by_gate") or {})
+
+
 def _yes_no(value) -> str:
     if value is None:
         return "not recorded"
@@ -1781,8 +1973,9 @@ def _summary_narrative(model: ReportModel) -> str:
     vision = int(modality.get("vision") or 0)
     audio = int(modality.get("audio") or 0)
     richness = int(a.get("species_richness") or 0)
-    verified = int(a.get("verified_count") or 0)
-    pct = int(round(100 * (a.get("verified_fraction") or 0)))
+    split = a.get("verification_by_gate") or {}
+    vis = split.get("visual") or {}
+    aud = split.get("audio") or {}
 
     names = a.get("taxon_display_names") or {}
     counts = a.get("taxon_event_counts") or {}
@@ -1791,13 +1984,34 @@ def _summary_narrative(model: ReportModel) -> str:
 
     event_word = "event" if total == 1 else "events"
     taxa_word = "taxon" if richness == 1 else "taxa"
+    unresolved = len(a.get("unresolved_taxa") or [])
+    taxa_text = f"{richness} {taxa_word}, counted one identity per species"
+    if unresolved:
+        taxa_text += (f", {unresolved} of them {'an unresolved label' if unresolved == 1 else 'unresolved labels'}"
+                      f" not matched to the taxonomic backbone")
     parts = [
         f"Across this window, Audtheia recorded {total} {event_word} at {model.scope_label}, "
-        f"comprising {vision} visual and {audio} acoustic detections spanning {richness} {taxa_word}."
+        f"comprising {vision} visual and {audio} acoustic detections spanning {taxa_text}."
     ]
-    if verified:
-        parts.append(f"{verified} of {total} {event_word} ({pct}%) cleared desktop verification.")
-    else:
+    if vis.get("total"):
+        configured = bool((model.verification_context or {}).get("verifier_configured"))
+        not_run = int(vis.get("not_run", 0)) + (0 if configured else int(vis.get("pending", 0)))
+        awaiting = int(vis.get("pending", 0)) if configured else 0
+        sentence = (f"Of the {vis['total']} visual {'event' if vis['total'] == 1 else 'events'}, "
+                    f"{vis.get('verified', 0)} {'was' if vis.get('verified', 0) == 1 else 'were'} verified by the "
+                    f"two-model check")
+        if not_run:
+            sentence += (f"; {not_run} {'was' if not_run == 1 else 'were'} not checked by a second model "
+                         f"because no desktop verification model was configured")
+        if awaiting:
+            sentence += f"; {awaiting} {'is' if awaiting == 1 else 'are'} awaiting desktop verification"
+        parts.append(sentence + ".")
+    if aud.get("total"):
+        parts.append(
+            f"Of the {aud['total']} audio {'event' if aud['total'] == 1 else 'events'}, {aud.get('cleared', 0)} "
+            f"cleared the acoustic confidence gate, which compares the strongest call with a confidence floor "
+            f"and is not a cross-check by a second model.")
+    if not vis.get("verified") and not aud.get("cleared"):
         parts.append("No event has cleared desktop verification yet, so the record so far rests on "
                      "the field station's own calls.")
     if top_names:

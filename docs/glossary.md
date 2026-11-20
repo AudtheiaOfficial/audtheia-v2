@@ -4,6 +4,8 @@ A plain-language dictionary of the terms used across the Audtheia V2 master conc
 
 ## A
 
+**Acoustic confidence gate.** How a pure sound event is cleared on the desktop. It has no frame for a second model to check, so it is cleared when its strongest call meets the configured floor, `acoustic_clear_confidence`. It is a weaker check than the two-model check and is always counted and worded separately from it.
+
 **Acoustic detection.** One of the two co-equal triggers for an observation. An onset in the audio stream (a bird call, a cetacean vocalization) starts a complete multimodal record, capturing the visual frames and sensor readings for the same window. Recorded with `trigger_source = audio`.
 
 **AI HAT+ 2.** The Raspberry Pi accelerator board built around the Hailo-10H (40 TOPS, 8 GB onboard). In Audtheia it runs continuous vision only; its on-accelerator language-model capability is intentionally left unused on the field hot path.
@@ -26,7 +28,7 @@ A plain-language dictionary of the terms used across the Audtheia V2 master conc
 
 **BirdNET-Analyzer.** The default terrestrial and coastal-avian acoustic model, run in full (not Lite) on the Pi CPU. It is swappable and supports custom training for local species; it is unsuitable underwater, where a marine model is used instead.
 
-**Brain panel.** The interface section covering three areas: Models and Memory, Learning and Fine-tuning and Auditing, and Skills.
+**Brain panel.** The interface section covering three areas: Models and Memory, Learning and Auditing, and Skills. Training a model inside Audtheia is in the Train tab.
 
 **ByteTrack.** The multi-object tracker that associates a detected animal across consecutive frames into a single event with a persistent track ID. It runs on the Pi CPU downstream of YOLO11 and prevents one lingering animal from being counted as hundreds of separate detections.
 
@@ -146,11 +148,15 @@ A plain-language dictionary of the terms used across the Audtheia V2 master conc
 
 ## T
 
+**Taxon identity.** The one accepted species a label resolves to, through the record's backbone key, an exact backbone name, the scientific part of a BirdNET label, or an expert's entry in the label map. Every count uses it; the label as written is kept beside it, and a label that resolves to nothing is flagged as unresolved rather than merged by guessing.
+
 **Test split.** The events held out of training and validation and used only to score a finished model. Whole events go to one split, so frames of one event are never on both sides.
 
 **Trained model.** A model trained in the Train tab from reviewed events, named Audtheia-Name-Vn, with its licence, test figures and model card. It is a model output, not a measurement.
 
 **trigger_source.** The field on every observation recording what started it: `vision`, `audio`, or `sensor`. It makes the origin of each event explicit and queryable.
+
+**Two-model check.** How an event with frames is verified on the desktop: a second model scores its saved frames, and the event is verified when that model recognises the field call's species at or above `clear_confidence`. With no verification model configured the check does not run, and the event is shown as not checked by a second model.
 
 **Time base (UTC and GPS).** The rule that all timestamps are stored in UTC, sourced authoritatively from GPS when a fix is available, held by the Pi's battery-backed clock between fixes, and cross-checked against the desktop on connect. Local time is a display setting only.
 
