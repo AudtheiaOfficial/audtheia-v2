@@ -281,6 +281,12 @@
       "path": null,
       "version": null,
       "citation": null
+    },
+    "acoustic_perch": {
+      "path": null,
+      "labels_path": null,
+      "version": null,
+      "citation": null
     }
   },
   "stations": [

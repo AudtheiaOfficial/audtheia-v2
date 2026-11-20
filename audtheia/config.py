@@ -774,7 +774,8 @@ _MACHINE_VALUE_CONTAINERS = ("capture.source",)
 # member of these slots is addressable by an override, and the save path keeps any
 # member that differs from the committed value in the local file, so the
 # committed configuration never changes because a model was switched.
-LOCAL_ONLY_MODEL_SLOTS = ("desktop_models.visual_rfdetr", "models.visual_desktop", "models.acoustic")
+LOCAL_ONLY_MODEL_SLOTS = ("desktop_models.visual_rfdetr", "desktop_models.acoustic_perch",
+                          "models.visual_desktop", "models.acoustic")
 
 
 def _is_path_key(key: str) -> bool:
@@ -1298,6 +1299,16 @@ def _validate(raw: dict) -> None:
         entry = _require(desktop_models, key, "desktop_models")
         _require_type(entry, (dict,), f"desktop_models.{key}")
         _require(entry, "path", f"desktop_models.{key}")
+    # The second sound model is optional, so a settings file written before it
+    # existed still loads. When present it names its model and its labels file.
+    if "acoustic_perch" in desktop_models:
+        entry = desktop_models["acoustic_perch"]
+        _require_type(entry, (dict,), "desktop_models.acoustic_perch")
+        _require(entry, "path", "desktop_models.acoustic_perch")
+        for member in ("path", "labels_path", "version", "citation"):
+            value = entry.get(member)
+            if value is not None and not isinstance(value, str):
+                raise ConfigError(f"desktop_models.acoustic_perch.{member} must be a string or null")
 
     # -- stations --------------------------------------------------------
     stations = _require(raw, "stations", "settings")

@@ -37,6 +37,12 @@ exports/**
 models/acoustic/birdnet/*
 !models/acoustic/birdnet/.gitkeep
 
+# The desktop's second sound model is downloaded into its own folder, where a
+# person may also keep files fetched by hand from its publisher. The label list
+# Audtheia reads ships separately under audtheia/resources/perch, so nothing in
+# this folder is committed.
+models/acoustic/perch2.0/*
+
 # The GBIF taxonomic backbone (large, CC BY 4.0) is downloaded by setup into
 # audtheia/resources/gbif_backbone rather than committed, so it is ignored.
 audtheia/resources/gbif_backbone/

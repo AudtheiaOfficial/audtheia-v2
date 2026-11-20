@@ -132,7 +132,8 @@ def test_gates(root: Path) -> None:
     split = verdicts.split_counts([pair(w, x["id"]) for x in (a, b, c, d)])
     check("the two gates are counted apart and never pooled",
           split["visual"] == {"total": 2, "verified": 0, "not_verified": 0, "not_run": 1, "pending": 1}
-          and split["audio"] == {"total": 2, "cleared": 1, "not_cleared": 1, "pending": 0})
+          and split["audio"] == {"total": 2, "verified": 0, "not_verified": 0, "cleared": 1, "not_cleared": 1,
+                                 "pending": 0})
     sentence = verdicts.summary_sentence(split)
     check("the summary sentence states both gates separately",
           "0 of 2 visual events by the two-model check" in sentence

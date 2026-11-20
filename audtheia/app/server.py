@@ -1321,6 +1321,10 @@ def _editable_field_specs() -> dict:
             "visual_rfdetr_path": {"path": ["desktop_models", "visual_rfdetr", "path"], "validate": _v_path_or_null, "is_path": True},
             "visual_rfdetr_version": {"path": ["desktop_models", "visual_rfdetr", "version"], "validate": _v_str_or_null},
             "visual_rfdetr_citation": {"path": ["desktop_models", "visual_rfdetr", "citation"], "validate": _v_str_or_null},
+            "acoustic_perch_path": {"path": ["desktop_models", "acoustic_perch", "path"], "validate": _v_path_or_null, "is_path": True},
+            "acoustic_perch_labels_path": {"path": ["desktop_models", "acoustic_perch", "labels_path"], "validate": _v_path_or_null, "is_path": True},
+            "acoustic_perch_version": {"path": ["desktop_models", "acoustic_perch", "version"], "validate": _v_str_or_null},
+            "acoustic_perch_citation": {"path": ["desktop_models", "acoustic_perch", "citation"], "validate": _v_str_or_null},
             "analysis_location": {"path": ["analysis", "per_observation_analysis_location"], "validate": _v_choice(ANALYSIS_LOCATIONS)},
             "baseline_period_granularity": {"path": ["analysis", "baseline", "period_granularity"], "validate": _v_choice(BASELINE_PERIOD_GRANULARITIES)},
             "salience_weight_confidence": {"path": ["analysis", "salience", "weights", "confidence"], "validate": _v_nonnegative_number},
@@ -1552,6 +1556,7 @@ _EXPECTED_MODEL_SUFFIXES = {
     "visual_pi_path": {".hef"},
     "visual_desktop_path": {".onnx"},
     "visual_rfdetr_path": {".onnx"},
+    "acoustic_perch_path": {".onnx"},
 }
 
 # Said alongside a mismatch so the message names what the slot is for, rather
@@ -1560,6 +1565,7 @@ _SLOT_PURPOSE = {
     "visual_pi_path": "This slot is the station's own screening model, compiled for its accelerator.",
     "visual_desktop_path": "This slot screens video frames during desktop capture. A model that listens to audio belongs in the acoustic slot.",
     "visual_rfdetr_path": "This slot re-scores saved video frames on this computer.",
+    "acoustic_perch_path": "This slot checks pure sound events on this computer with a second sound model.",
 }
 
 def _station_deployment(station: dict) -> dict:
@@ -2025,6 +2031,11 @@ def create_app(settings, database):
         path = entry.get("path")
         ctx = {"floors": _verdicts.floors(settings), "verifier_configured": bool(path),
                "verifier_version": None, "verifier_labels": None}
+        from audtheia.inference.perch_onnx import acoustic_verifier_configured
+
+        sound = (settings.raw.get("desktop_models", {}) or {}).get("acoustic_perch") or {}
+        ctx["acoustic_verifier_configured"] = acoustic_verifier_configured(settings)
+        ctx["acoustic_verifier_version"] = (sound.get("version") or None) if ctx["acoustic_verifier_configured"] else None
         if not path:
             return ctx
         model_path = Path(path) if Path(path).is_absolute() else Path(settings.repo_root) / path
@@ -3028,6 +3039,39 @@ def create_app(settings, database):
                     ),
                 }
         return result
+
+    from audtheia.app import model_downloads as _downloads
+
+    _download_jobs = _downloads.DownloadJobs(settings, _persist_settings)
+
+    @app.get(f"{API_PREFIX}/models/downloads")
+    def model_downloads():
+        """The desktop models offered for download, with progress for any running.
+
+        Each entry says where the model comes from, its licence and citation, its
+        recorded size and checksum, whether the file is on this computer, and
+        whether its slot is set up.
+        """
+        items = []
+        for key, entry in _downloads.downloadable(Path(settings.repo_root)).items():
+            item = _downloads.status_of(settings, key, entry)
+            item["job"] = _download_jobs.job(key)
+            items.append(item)
+        return {"items": items}
+
+    @app.post(f"{API_PREFIX}/models/downloads/{{key}}", status_code=202)
+    def model_download_start(key: str):
+        """Download one model from its recorded address, check it, and set up its slot.
+
+        A file already in place whose checksum matches is used without
+        downloading. The slot is written to this computer's local settings only.
+        """
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="desktop models are managed on the desktop; this node is not the desktop.")
+        try:
+            return _download_jobs.start(key)
+        except _downloads.DownloadError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get(f"{API_PREFIX}/brain/llm")
     def brain_llm():
@@ -4514,22 +4558,32 @@ def create_app(settings, database):
         """
         ctx = _verification_context()
         counts = {"not_run": 0, "pending": 0, "not_verified": 0, "verified": 0}
+        sound = {"gate_only": 0, "pending": 0, "not_verified": 0, "verified": 0}
         for obs in db.list_observations(station_id=station_id):
+            c = _verdicts.classify(obs, db.get_observation_verification(obs["id"]))
             if str(obs.get("trigger_source")) == "audio":
+                # A sound event that took the gate, or has no verdict yet, has not
+                # been checked by a second sound model.
+                key = ("gate_only" if c["state"] in ("cleared", "not_cleared") else c["state"])
+                if key in sound:
+                    sound[key] += 1
                 continue
-            state = _verdicts.classify(obs, db.get_observation_verification(obs["id"]))["state"]
-            if state in counts:
-                counts[state] += 1
+            if c["state"] in counts:
+                counts[c["state"]] += 1
         return {"verifier_configured": bool(ctx.get("verifier_configured")),
                 "verifier_version": ctx.get("verifier_version"), "visual": counts,
+                "acoustic_verifier_configured": bool(ctx.get("acoustic_verifier_configured")),
+                "acoustic_verifier_version": ctx.get("acoustic_verifier_version"), "audio": sound,
                 "floors": ctx.get("floors")}
 
     @app.post(f"{API_PREFIX}/verify/rerun")
     def verify_rerun(request: dict = Body(default={})):
-        """Re-verify events with frames, replacing their earlier verdicts.
+        """Re-verify events, replacing their earlier verdicts.
 
-        scope "not_run" (the default) re-verifies the events no verification model
-        checked; scope "ids" re-verifies the observation_ids given. It uses the
+        scope "not_run" (the default) re-verifies the events no second model
+        checked: visual events with no real verdict, and, when a sound verification
+        model is configured, sound events that took only the confidence gate.
+        scope "ids" re-verifies the observation_ids given. It uses the
         verification engine's force path: the new verdict replaces the old one in
         the desktop-owned verification table, and the station-owned observation row
         is never touched. Refused when no verification model is configured, because
@@ -4550,21 +4604,32 @@ def create_app(settings, database):
         else:
             raise HTTPException(status_code=422, detail="scope must be 'not_run' or 'ids'")
 
+        ctx = _verification_context()
+        visual_ready = bool(ctx.get("verifier_configured"))
+        sound_ready = bool(ctx.get("acoustic_verifier_configured"))
         groups: dict = {}
         for obs in db.list_observations(station_id=station_id):
-            if str(obs.get("trigger_source")) == "audio":
+            audio = str(obs.get("trigger_source")) == "audio"
+            # A sound event is a candidate only once a sound model is configured. A
+            # visual event is left alone while only a sound model is configured;
+            # with no model at all it is still counted, so the refusal is honest.
+            if (audio and not sound_ready) or (not audio and not visual_ready and sound_ready):
                 continue
             if scope == "ids":
                 if obs["id"] not in wanted:
                     continue
-            elif _verdicts.classify(obs, db.get_observation_verification(obs["id"]))["state"] != "not_run":
-                continue
+            else:
+                state = _verdicts.classify(obs, db.get_observation_verification(obs["id"]))["state"]
+                # Events no second model checked: a visual stand-in verdict, or a
+                # sound event that only took the confidence gate.
+                if state not in (("cleared", "not_cleared") if audio else ("not_run",)):
+                    continue
             groups.setdefault(obs["station_id"], []).append(obs["id"])
 
         no_model = (
             "no desktop verification model is configured, so there is no second model to check the "
-            "frames with. Set one in Brain, Models and Memory, then re-verify.")
-        if groups and not _verification_context().get("verifier_configured"):
+            "events with. Set one in Brain, Models and Memory, then re-verify.")
+        if groups and not (visual_ready or sound_ready):
             raise HTTPException(status_code=409, detail=no_model)
         totals = {"verified": 0, "unverified": 0, "skipped": 0}
         for sid, ids in groups.items():
@@ -4572,7 +4637,7 @@ def create_app(settings, database):
                 station = DesktopStation.build(settings, station_id=sid)
             except Exception as exc:  # noqa: BLE001 - reported as a clear client error
                 raise HTTPException(status_code=422, detail=f"could not prepare verification: {exc}") from exc
-            if not station.verifier_configured:
+            if not (station.verifier_configured or station.acoustic_verifier_configured):
                 raise HTTPException(status_code=409, detail=no_model)
             result = station.reverify(ids)
             for key in totals:

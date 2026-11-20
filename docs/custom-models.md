@@ -12,6 +12,7 @@ Audtheia uses a small set of models, and it matters which processor each one run
 | Desktop verifier | Your computer | An RF-DETR model in ONNX | Re-scores each event at high accuracy and opens the analysis gate |
 | Desktop-mode screening detector | Your computer (hardware-free mode) | An ONNX detector | Watches frames when you run with no field hardware |
 | Acoustic model | The Pi's processor | BirdNET, or a marine model | Listens for sound events, and can open an observation on its own |
+| Desktop sound verifier | Your computer | Perch 2.0 in ONNX | Checks each pure sound event with a second, independent sound model |
 
 Every one of these is named in the settings file with a path, a version, and a citation, so a report can always disclose exactly which model produced a result. You never edit code to change a model; you change the path.
 
@@ -113,6 +114,14 @@ The audio component is model agnostic and chosen in the settings file.
 
 - **Terrestrial and coastal-avian sites** use BirdNET, running on the Pi's processor. You can train a custom classifier for local species, which is well supported: collect local recordings, organize them into one folder per species, run BirdNET's training, and drop the resulting classifier into the custom acoustic models folder, then select it in the settings. BirdNET is licensed CC BY-NC-SA, which permits non-commercial use with attribution and share-alike, so keep that in mind if your work is commercial.
 - **Underwater sites** need a marine passive-acoustic model, because BirdNET is trained on in-air bird sound and is not useful on a submerged hydrophone. A marine model goes in the marine acoustic models folder and is selected in the settings. Choosing the best current open marine model for your target sounds, whether cetaceans, fish choruses, or a snapping-shrimp soundscape, is an active area, so pick and validate one for your site.
+
+### The desktop sound verifier
+
+A pure sound event has no frame for the visual verifier, so on its own it can only pass a confidence floor set on the field model's strongest call. The desktop sound verifier adds a second, independent check. It is Google DeepMind's Perch 2.0 (van Merrienboer et al., 2025), a supervised bioacoustics model trained on 14,795 classes: 14,597 species of birds, mammals, amphibians and insects, and 198 general sound classes. It is released under the Apache License 2.0.
+
+Download it from Brain, Models and Memory, under Sound verification. The model, about 390 MB, comes from the ONNX conversion that Google's Kaggle model card links to, and is checked against the size and SHA-256 recorded in `config/model_sources.json` before it is used. A file you already placed at `models/acoustic/perch2.0/perch_v2.onnx` is used as it is when its checksum matches. The class labels ship with Audtheia, copied unchanged from Google's official release. The slot is set in this computer's local settings only.
+
+How an event is checked: its clip is resampled to 32 kHz and scored in five-second windows. The verifier is asked whether it hears the species the field model reported. When that species is the top class in at least one window, it is the verdict, its strongest such window is the confidence, and the event is verified when that confidence reaches the same clearing floor the visual check uses. Otherwise the event is recorded as not verified, naming what the second model heard instead. A window's confidence is the softmax probability over all 14,795 classes. Events checked before the model was set up can be checked with Re-verify, in Brain, Learning and Auditing, Run now; only the desktop verdict is replaced.
 
 ## Pointing Audtheia at your models
 

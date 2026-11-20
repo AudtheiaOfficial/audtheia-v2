@@ -327,6 +327,7 @@ class VerifyEngine:
         max_frames_scored: Optional[int] = None,
         acoustic_clear_confidence: Optional[float] = None,
         identify=None,
+        acoustic_verifier=None,
     ) -> None:
         self._settings = settings
         self._db = db
@@ -336,6 +337,11 @@ class VerifyEngine:
         # verifier and the field call are compared as one species however each
         # model spells it. Without it, labels are compared as written.
         self._identify = identify
+        # Optional: a second sound model with verify_clip(path) returning one
+        # {scientific_name, confidence} per window. When it is configured a pure
+        # sound event is checked by it; without it the event can only take the
+        # acoustic confidence gate.
+        self._acoustic = acoustic_verifier
         # These thresholds come from configuration, with an explicit constructor
         # argument taking precedence when one is passed. The configured defaults
         # reproduce the values these held before they became configurable, so an
@@ -398,6 +404,10 @@ class VerifyEngine:
         # so it takes the acoustic-confidence gate instead of a second-model
         # cross-check. Handled and returned here before any frame work.
         if str(obs.get("trigger_source")) == "audio":
+            if getattr(self._acoustic, "configured", False):
+                checked = self._process_acoustic_second_model(observation_id, obs, children)
+                if checked is not None:
+                    return checked
             return self._process_acoustic(observation_id, children)
 
         # With no verification model configured there is nothing to check the
@@ -477,6 +487,95 @@ class VerifyEngine:
         )
         return self._finalize(observation_id, cleared=cleared, verdict=verdict, written=0)
 
+    def _process_acoustic_second_model(self, observation_id: str, obs: dict, children: list[dict]):
+        """Check a pure sound event with the second sound model.
+
+        The second model is asked whether it hears the field call's species. The
+        clip is scored window by window; when the field species is the top class
+        in any window, it is the verdict, its strongest such window is the
+        confidence, and the windows where it is top are the windows in agreement.
+        Otherwise the verdict is the second model's strongest window and it
+        disagrees. Checking the claim this way avoids recording a disagreement
+        only because a second, louder species shares the clip. The event clears
+        when the field species was heard at or above the clearing floor.
+
+        Returns None when there is no clip to score, so the caller falls back to
+        the acoustic confidence gate rather than recording a check that never ran.
+        """
+        clip = obs.get("audio_clip_path")
+        if not clip:
+            return None
+        try:
+            clip_path = self._settings.resolve_path(clip)
+        except Exception:  # noqa: BLE001 - an unresolvable path is a clip that cannot be scored
+            return None
+        try:
+            scored = list(self._acoustic.verify_clip(clip_path) or [])
+        except Exception as exc:  # noqa: BLE001 - a failed check falls back to the gate, and says so
+            logger.warning("the sound verification model could not score %s: %s", observation_id, exc)
+            return None
+        if not scored:
+            return None
+
+        field_key, field_name = self._acoustic_field_label(children)
+        windows = [(w.get("scientific_name"), w.get("confidence")) for w in scored]
+        matching = [conf for name, conf in windows
+                    if field_name and name and self._same_taxon(name, field_name)]
+        if matching:
+            res_name, confidence, agrees = field_name, max(c for c in matching if c is not None), True
+            in_agreement = len(matching)
+        else:
+            best = max(windows, key=lambda nc: nc[1] if nc[1] is not None else -1.0)
+            res_name, confidence = best
+            agrees = None if not field_name else False
+            in_agreement = sum(1 for name, _ in windows if name == res_name)
+        verdict = VerificationVerdict(
+            resolved_gbif_usage_key=None,
+            resolved_scientific_name=res_name,
+            aggregate_confidence=confidence,
+            agrees_with_field=agrees,
+            frames_scored=len(windows),
+            frames_in_agreement=in_agreement,
+        )
+        cleared = self._gate(verdict)
+        self._write_verification(observation_id, verdict=verdict, cleared=cleared, rarity_score=None,
+                                 version=getattr(self._acoustic, "version", None) or "sound verification model",
+                                 salience=False)
+        return self._finalize(observation_id, cleared=cleared, verdict=verdict, written=0)
+
+    @staticmethod
+    def _acoustic_field_label(children: list[dict]) -> tuple:
+        """The field call of a sound event: its strongest acoustic detection, by scientific name.
+
+        A BirdNET label is written "Genus species_Common Name"; its scientific part
+        is the name compared with the second model.
+        """
+        best = None
+        for c in children:
+            if c.get("modality") != "audio" or c.get("confidence") is None:
+                continue
+            if best is None or c["confidence"] > best["confidence"]:
+                best = c
+        if best is None:
+            return None, None
+        label = (str(best.get("scientific_name") or "").strip()
+                 or str(best.get("common_name") or "").strip())
+        if "_" in label:
+            label = label.split("_", 1)[0].strip()
+        return best.get("gbif_usage_key"), (label or None)
+
+    def _same_taxon(self, a: str, b: str) -> bool:
+        """Whether two names are one taxon: as written, or by identity when they differ."""
+        if a.strip().lower() == b.strip().lower():
+            return True
+        if self._identify is None:
+            return False
+        try:
+            x, y = self._identify(None, a), self._identify(None, b)
+        except Exception:  # noqa: BLE001 - identity is an aid; the written comparison stands
+            return False
+        return x is not None and x == y
+
     def _write_acoustic_clearance(self, observation_id: str, *, cleared: bool) -> None:
         """Record an acoustic clearance in the desktop-owned verification table.
 
@@ -511,12 +610,13 @@ class VerifyEngine:
 
         Uses the force path of process: the new verdict replaces the old one in
         the desktop-owned verification table and the station-owned observation row
-        is never touched. With no verification model configured nothing is run,
-        because a second model is what a re-verification adds. Returns counts by
-        outcome.
+        is never touched. With no verification model configured at all nothing is
+        run, because a second model is what a re-verification adds; an event whose
+        kind has no model configured is skipped. Returns counts by outcome.
         """
         counts = {"verified": 0, "unverified": 0, "skipped": 0}
-        if not getattr(self._verifier, "configured", True):
+        if (not getattr(self._verifier, "configured", True)
+                and not getattr(self._acoustic, "configured", False)):
             return dict(counts, not_configured=True)
         for observation_id in observation_ids:
             result = self.process(observation_id, force=True)
@@ -868,6 +968,8 @@ class VerifyEngine:
         verdict: VerificationVerdict,
         cleared: bool,
         rarity_score: Optional[float],
+        version: Optional[str] = None,
+        salience: bool = True,
     ) -> None:
         """Record the verdict, the gate, and the authoritative salience.
 
@@ -885,14 +987,17 @@ class VerifyEngine:
             observation_id=observation_id,
             created_at=now,
             verified=1 if cleared else 0,
-            rfdetr_version=self._verifier_version(),
+            rfdetr_version=version or self._verifier_version(),
             rfdetr_gbif_usage_key=verdict.resolved_gbif_usage_key,
             rfdetr_scientific_name=verdict.resolved_scientific_name,
             rfdetr_confidence=verdict.aggregate_confidence,
             rfdetr_agrees_with_field=(None if agrees is None else (1 if agrees else 0)),
             frames_scored=verdict.frames_scored,
             frames_in_agreement=verdict.frames_in_agreement,
-            salience_authoritative=verdict.aggregate_confidence,
+            # A sound event's salience is left to the longitudinal pass, as the
+            # acoustic gate leaves it, so the second model changes the check and
+            # not the salience arithmetic.
+            salience_authoritative=verdict.aggregate_confidence if salience else None,
             rarity_score=rarity_score,
             baseline_deviation=None,
             anomaly_magnitude_authoritative=None,

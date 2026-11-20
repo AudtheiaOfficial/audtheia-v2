@@ -9,10 +9,13 @@ equivalent:
   the saved frames and the event clears only when it recognises the same taxon as
   the field call, confidently enough.
 
-  The acoustic confidence gate, for a pure sound event. There is no frame for a
-  second model to re-score, so the event clears when its strongest call meets a
-  configured floor. It is honest and documented, but weaker: no second model ever
-  checked it.
+  The same two-model check, for a pure sound event, when a second sound model is
+  configured: it scores the event's clip in five-second windows and the event
+  clears only when it hears the field call's species, confidently enough.
+
+  The acoustic confidence gate, for a pure sound event with no second sound
+  model. The event clears when its strongest call meets a configured floor. It is
+  honest and documented, but weaker: no second model ever checked it.
 
 A third case is not a verdict at all. When no desktop verification model was
 configured, earlier versions recorded a stand-in result in which every frame was
@@ -44,8 +47,9 @@ GATE_TWO_MODEL = "two_model_check"
 GATE_ACOUSTIC = "acoustic_confidence_gate"
 
 # States. A visual event is verified, not verified, not run (no model checked it)
-# or pending (no verdict yet). A sound event is cleared or not cleared by its gate,
-# or pending.
+# or pending (no verdict yet). A sound event checked by a second sound model is
+# verified or not verified; one that took the gate is cleared or not cleared; or
+# it is pending.
 VERIFIED = "verified"
 NOT_VERIFIED = "not_verified"
 NOT_RUN = "not_run"
@@ -99,8 +103,11 @@ def classify(observation: dict, verification: Optional[dict]) -> dict:
     gate = GATE_ACOUSTIC if audio else GATE_TWO_MODEL
     if not verification:
         return {"gate": gate, "state": PENDING, "reason": None}
-    if audio:
+    if audio and not verification.get("rfdetr_version"):
         return {"gate": gate, "state": CLEARED if verification.get("verified") else NOT_CLEARED, "reason": None}
+    # A sound event a second sound model checked is read exactly as a visual
+    # verdict is: the version names the model that checked it.
+    gate = GATE_TWO_MODEL
     if is_stand_in(observation, verification):
         return {"gate": gate, "state": NOT_RUN, "reason": "no_model"}
     if verification.get("verified"):
@@ -125,11 +132,12 @@ def split_counts(pairs: Iterable[tuple]) -> dict:
     """
     out = {
         "visual": {"total": 0, VERIFIED: 0, NOT_VERIFIED: 0, NOT_RUN: 0, PENDING: 0},
-        "audio": {"total": 0, CLEARED: 0, NOT_CLEARED: 0, PENDING: 0},
+        "audio": {"total": 0, VERIFIED: 0, NOT_VERIFIED: 0, CLEARED: 0, NOT_CLEARED: 0, PENDING: 0},
     }
     for observation, verification in pairs:
         c = classify(observation, verification)
-        bucket = out["audio"] if c["gate"] == GATE_ACOUSTIC else out["visual"]
+        audio = str(observation.get("trigger_source")) == "audio"
+        bucket = out["audio"] if audio else out["visual"]
         bucket["total"] += 1
         bucket[c["state"]] += 1
     return out
@@ -148,8 +156,14 @@ def summary_sentence(split: dict) -> str:
             text += f" ({unchecked} not checked by a second model)"
         parts.append(text)
     if a.get("total"):
-        parts.append(f"{a.get(CLEARED, 0)} of {a['total']} audio "
-                     f"{'event' if a['total'] == 1 else 'events'} by the acoustic confidence gate")
+        checked = a.get(VERIFIED, 0) + a.get(NOT_VERIFIED, 0)
+        if checked:
+            parts.append(f"{a.get(VERIFIED, 0)} of {checked} audio "
+                         f"{'event' if checked == 1 else 'events'} by the two-model check")
+        gated = a["total"] - checked
+        if gated:
+            parts.append(f"{a.get(CLEARED, 0)} of {gated} audio "
+                         f"{'event' if gated == 1 else 'events'} by the acoustic confidence gate")
     return "; ".join(parts) if parts else "no events in scope"
 
 
@@ -177,6 +191,7 @@ def describe(observation: dict, verification: Optional[dict], *, children: Itera
     children = list(children or ())
     c = classify(observation, verification)
 
+    audio = str(observation.get("trigger_source")) == "audio"
     if c["gate"] == GATE_ACOUSTIC:
         calls = [float(ch["confidence"]) for ch in children
                  if ch.get("modality") == "audio" and ch.get("confidence") is not None]
@@ -207,7 +222,11 @@ def describe(observation: dict, verification: Optional[dict], *, children: Itera
     taxon = resolved
     if book is not None and resolved:
         taxon = book.display(book.identify_label(v.get("rfdetr_scientific_name"), v.get("rfdetr_gbif_usage_key")))
-    frames = f"{agreeing} of {scored} {'frame' if scored == 1 else 'frames'}"
+    unit = ("window", "windows") if audio else ("frame", "frames")
+    # A sound verdict's confidence is its strongest window, as the gate reads the
+    # strongest call; a visual verdict's is the mean over its supporting frames.
+    measure = "strongest window" if audio else "mean confidence"
+    frames = f"{agreeing} of {scored} {unit[0] if scored == 1 else unit[1]}"
     # A verifier that is the screening model itself is not an independent check,
     # and the wording says so rather than calling it a second model.
     same = ""
@@ -215,22 +234,22 @@ def describe(observation: dict, verification: Optional[dict], *, children: Itera
         same = "; the verifier is the same model that screened the event, so this is not an independent check"
 
     if c["state"] == VERIFIED:
-        return (f"verified by the two-model check: {who} recognized {taxon} in {frames}, mean confidence "
+        return (f"verified by the two-model check: {who} recognized {taxon} in {frames}, {measure} "
                 f"{_num(v.get('rfdetr_confidence'))}, at or above the floor of {floor}, agreeing with the field call"
                 f"{same}")
 
     reason = c["reason"]
     if reason == "recognized_none":
-        text = (f"not verified: {who} scored {scored} {'frame' if scored == 1 else 'frames'} "
+        text = (f"not verified: {who} scored {scored} {unit[0] if scored == 1 else unit[1]} "
                 f"and recognized none of them")
-        field_ident = _field_identity(children, book)
+        field_ident = _field_identity(children, book, audio)
         if (field_ident is not None and verifier_identities is not None and verifier_version
                 and v.get("rfdetr_version") == verifier_version and field_ident["key"] not in verifier_identities):
             field_name = book.display(field_ident) if book is not None else field_ident.get("label")
             text += f"; its label set does not include the field call's taxon, {field_name}"
         return text + same
     if reason == "disagrees":
-        field_ident = _field_identity(children, book)
+        field_ident = _field_identity(children, book, audio)
         field_name = (book.display(field_ident) if (book is not None and field_ident) else
                       (field_ident or {}).get("label") or "the field call")
         return (f"not verified: {who} recognized {taxon} in {frames}, which differs from the field call, "
@@ -239,7 +258,7 @@ def describe(observation: dict, verification: Optional[dict], *, children: Itera
         # No agreement was stored with this verdict. When the record does hold a
         # field call, the two are compared here by identity and the comparison is
         # stated as made at reading time; the stored verdict is not changed.
-        field_ident = _field_identity(children, book)
+        field_ident = _field_identity(children, book, audio)
         if field_ident is not None:
             verifier_ident = (book.identify_label(v.get("rfdetr_scientific_name"), v.get("rfdetr_gbif_usage_key"))
                               if book is not None else
@@ -247,21 +266,22 @@ def describe(observation: dict, verification: Optional[dict], *, children: Itera
             field_name = (book.display(field_ident) if book is not None else field_ident.get("label"))
             if verifier_ident is not None and str(verifier_ident.get("key")).lower() == str(field_ident["key"]).lower():
                 return (f"not verified: {who} recognized {taxon} in {frames}, the same taxon as the field call "
-                        f"(compared when read; no agreement was stored with the verdict), but its mean confidence "
+                        f"(compared when read; no agreement was stored with the verdict), but its {measure} "
                         f"{_num(v.get('rfdetr_confidence'))} is below the floor of {floor}{same}")
             return (f"not verified: {who} recognized {taxon} in {frames}, which differs from the field call, "
                     f"{field_name} (compared when read; no agreement was stored with the verdict){same}")
-        return (f"not verified: {who} recognized {taxon} in {frames}, mean confidence "
+        return (f"not verified: {who} recognized {taxon} in {frames}, {measure} "
                 f"{_num(v.get('rfdetr_confidence'))}, but there is no field call to compare it with{same}")
-    return (f"not verified: {who} recognized {taxon} in {frames}, agreeing with the field call, but its mean "
-            f"confidence {_num(v.get('rfdetr_confidence'))} is below the floor of {floor}{same}")
+    return (f"not verified: {who} recognized {taxon} in {frames}, agreeing with the field call, but its {measure} "
+            f"{_num(v.get('rfdetr_confidence'))} is below the floor of {floor}{same}")
 
 
-def _field_identity(children: list, book) -> Optional[dict]:
-    """The identity of the field call: the strongest visual detection."""
+def _field_identity(children: list, book, audio: bool = False) -> Optional[dict]:
+    """The identity of the field call: the strongest detection of the event's kind."""
+    modality = "audio" if audio else "vision"
     best = None
     for ch in children:
-        if ch.get("modality") != "vision" or ch.get("confidence") is None:
+        if ch.get("modality") != modality or ch.get("confidence") is None:
             continue
         if best is None or ch["confidence"] > best["confidence"]:
             best = ch

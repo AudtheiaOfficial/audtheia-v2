@@ -1096,10 +1096,14 @@ def _rows_analytics(model: ReportModel):
     # Verification per gate. The two gates are different claims and are never
     # added into one number.
     split = a.get("verification_by_gate") or {}
-    for gate, bucket in (("two_model_check", split.get("visual") or {}),
-                         ("acoustic_confidence_gate", split.get("audio") or {})):
-        for state, value in sorted(bucket.items()):
-            yield [f"verification_{gate}", state, value, note]
+    for state, value in sorted((split.get("visual") or {}).items()):
+        yield ["verification_two_model_check", state, value, note]
+    # A sound event is either checked by a second sound model or takes the gate;
+    # each state is reported under the gate that produced it.
+    for state, value in sorted((split.get("audio") or {}).items()):
+        gate = ("audio_two_model_check" if state in ("verified", "not_verified") else
+                "acoustic_confidence_gate")
+        yield [f"verification_{gate}", state, value, note]
     yield ["earliest_event_utc", "", a.get("earliest_event_utc"), note]
     yield ["latest_event_utc", "", a.get("latest_event_utc"), note]
     for key, value in sorted(a.get("events_by_trigger_source", {}).items()):
@@ -2023,11 +2027,19 @@ def _summary_narrative(model: ReportModel) -> str:
             sentence += f"; {awaiting} {'is' if awaiting == 1 else 'are'} awaiting desktop verification"
         parts.append(sentence + ".")
     if aud.get("total"):
-        parts.append(
-            f"Of the {aud['total']} audio {'event' if aud['total'] == 1 else 'events'}, {aud.get('cleared', 0)} "
-            f"cleared the acoustic confidence gate, which compares the strongest call with a confidence floor "
-            f"and is not a cross-check by a second model.")
-    if not vis.get("verified") and not aud.get("cleared"):
+        checked = int(aud.get("verified", 0)) + int(aud.get("not_verified", 0))
+        gated = int(aud["total"]) - checked
+        sentence = f"Of the {aud['total']} audio {'event' if aud['total'] == 1 else 'events'}, "
+        pieces = []
+        if checked:
+            pieces.append(f"{aud.get('verified', 0)} of {checked} checked by a second sound model "
+                          f"{'was' if aud.get('verified', 0) == 1 else 'were'} verified by the two-model check")
+        if gated:
+            pieces.append(f"{aud.get('cleared', 0)} of {gated} cleared the acoustic confidence gate, which "
+                          f"compares the strongest call with a confidence floor and is not a cross-check by a "
+                          f"second model")
+        parts.append(sentence + "; ".join(pieces) + ".")
+    if not vis.get("verified") and not aud.get("cleared") and not aud.get("verified"):
         parts.append("No event has cleared desktop verification yet, so the record so far rests on "
                      "the field station's own calls.")
     if top_names:

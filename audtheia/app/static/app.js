@@ -2656,7 +2656,9 @@
         metricCard("Events", fmtNum(a.total_events)),
         metricCard("Species richness", fmtNum(a.species_richness)),
         metricCard("Visual verified (two-model check)", vis.total ? fmtNum(vis.verified || 0) + " of " + fmtNum(vis.total) : "none"),
-        metricCard("Audio cleared (confidence gate)", aud.total ? fmtNum(aud.cleared || 0) + " of " + fmtNum(aud.total) : "none")
+        ((aud.verified || 0) + (aud.not_verified || 0))
+          ? metricCard("Audio verified (two-model check)", fmtNum(aud.verified || 0) + " of " + fmtNum((aud.verified || 0) + (aud.not_verified || 0)))
+          : metricCard("Audio cleared (confidence gate)", aud.total ? fmtNum(aud.cleared || 0) + " of " + fmtNum(aud.total) : "none")
       ]));
       var notChecked = (vis.not_run || 0) + (vis.pending || 0);
       if (notChecked) {
@@ -3064,6 +3066,19 @@
         "Re-scores the saved frames of an event for publication-grade accuracy. It can overrule a station's call, and it adds the interpretive points such as ecological role and rarity, which are always labelled as inference and never stored as measurement.",
         deskModels.visual_rfdetr, models.files)]));
 
+      host.appendChild(el("h4", { text: "Sound verification" }));
+      host.appendChild(el("p", { class: "settings-desc", text:
+        "Runs on the desktop after capture. A pure sound event has no frame to re-score, so without a second sound model it can only pass a confidence floor. With one, its clip is checked independently, five seconds at a time." }));
+      var soundBlock = el("div", { class: "info-block" }, [modelEntry(
+        "Sound verification model",
+        "on this computer",
+        "Checks whether a second, independent sound model hears the species the field model reported. It never changes the field call; its verdict is recorded beside it.",
+        deskModels.acoustic_perch, models.files)]);
+      var downloadHost = el("div");
+      soundBlock.appendChild(downloadHost);
+      host.appendChild(soundBlock);
+      renderModelDownloads(downloadHost, "acoustic_perch");
+
       // The heading and its description sit above the panel, exactly as the
       // "Vision verification" section does, so this block carries the same
       // comfortable spacing rather than crowding its title against the top edge.
@@ -3291,6 +3306,57 @@
   // was only ever heard appears beside the ones that were seen. Sightings and
   // calls are counted separately, because a photograph and a recorded call are
   // different kinds of evidence and should not be silently added together.
+  // The download control for a model the manifest offers. It shows where the
+  // model comes from, its licence and size, and, while downloading, how far it
+  // has got. A file already in place whose checksum matches is used without
+  // downloading. The model is set up on this computer only.
+  function renderModelDownloads(host, slotKey) {
+    clear(host);
+    var status = el("p", { class: "form-hint", role: "status" });
+    function fmtMb(n) { return n ? (n / 1048576).toFixed(0) + " MB" : "unknown size"; }
+    function paint() {
+      apiGet("/models/downloads").then(function (r) {
+        clear(host);
+        (r.items || []).filter(function (it) { return it.slot === slotKey; }).forEach(function (it) {
+          var job = it.job || null;
+          var box = el("div", { class: "species-step" });
+          box.appendChild(el("div", { class: "kv-list" }, [
+            modelKvRow("Model", it.version || it.key),
+            modelKvRow("Licence", it.license || "not stated"),
+            modelKvRow("Size", fmtMb(it.size_bytes)),
+            modelKvRow("Source", it.url || "not stated", "model-file"),
+            modelKvRow("Citation", it.citation || "not stated")
+          ]));
+          var running = job && job.state === "running";
+          var label = it.configured ? "Check the file again" : (it.file_present ? "Use the file already here" : "Download");
+          var btn = el("button", { type: "button", class: "btn", text: label });
+          btn.disabled = !!running;
+          btn.addEventListener("click", function () {
+            btn.disabled = true;
+            status.textContent = "Starting.";
+            apiSend("/models/downloads/" + encodeURIComponent(it.key), "POST", {}).then(function () { paint(); })
+              .catch(function (e) { status.textContent = "Could not start: " + e.message; btn.disabled = false; });
+          });
+          box.appendChild(btn);
+          if (running) {
+            status.textContent = "Downloading " + fmtMb(job.received_bytes) + " of " + fmtMb(job.total_bytes) + ".";
+            setTimeout(function () { if (document.body.contains(host)) { paint(); } }, 1500);
+          } else if (job) {
+            status.textContent = job.message || "";
+            if (job.state === "done") { setTimeout(function () { loadBrainModels(); }, 800); }
+          } else if (it.configured) {
+            status.textContent = "Set up on this computer. Sound events are checked by this model.";
+          } else {
+            status.textContent = "Not set up. Sound events can only pass the confidence floor until it is.";
+          }
+          box.appendChild(status);
+          host.appendChild(box);
+        });
+      }).catch(function (e) { clear(host); host.appendChild(el("p", { class: "form-hint", text: "Could not read the downloads: " + e.message })); });
+    }
+    paint();
+  }
+
   // Species profiles, one identity per species. Labels the server resolved to
   // the same taxon are one profile, with every label as written listed as
   // provenance. A label no rule could match stays its own profile, marked
@@ -3691,7 +3757,7 @@
     var acoustic = audit.acoustic_gate || {};
     if (acoustic.events) {
       verBlock.appendChild(el("p", { class: "card-note", text:
-        "Pure sound events are not part of these figures: they have no frame for a second model, so they pass only an acoustic confidence gate. " +
+        "Sound events that took only the confidence floor are not part of these figures, because no second model checked them; sound events checked by a second sound model are. " +
         fmtNum(acoustic.cleared || 0) + " of " + fmtNum(acoustic.events) + " cleared it." }));
     }
     if (!verdicts.with_verdict) {
@@ -4018,17 +4084,33 @@
     function paint() {
       apiGet("/verify/status" + query({ station_id: state.stationId })).then(function (st) {
         var c = st.visual || {};
+        var a = st.audio || {};
         var unchecked = (c.not_run || 0);
-        if (!st.verifier_configured) {
-          note.textContent = fmtNum(unchecked) + (unchecked === 1 ? " visual event has" : " visual events have") +
-            " not been checked by a second model. No desktop verification model is configured, so there is nothing to re-verify with yet. Set one in Brain, Models and Memory.";
-          btn.disabled = true;
-        } else {
-          note.textContent = fmtNum(unchecked) + (unchecked === 1 ? " visual event was" : " visual events were") +
-            " processed before a verification model was configured. Re-verifying checks them with " +
-            (st.verifier_version || "the configured model") + " and replaces only the desktop verdict; the station's own record is not changed.";
-          btn.disabled = !unchecked;
+        var sounds = (a.gate_only || 0);
+        var lines = [];
+        var ready = 0;
+        if (st.verifier_configured) {
+          lines.push(fmtNum(unchecked) + (unchecked === 1 ? " visual event was" : " visual events were") +
+            " processed before a verification model was configured; re-verifying checks them with " +
+            (st.verifier_version || "the configured model") + ".");
+          ready += unchecked;
+        } else if (unchecked) {
+          lines.push(fmtNum(unchecked) + (unchecked === 1 ? " visual event has" : " visual events have") +
+            " not been checked by a second model, and no visual verification model is configured yet.");
         }
+        if (st.acoustic_verifier_configured) {
+          lines.push(fmtNum(sounds) + (sounds === 1 ? " sound event" : " sound events") +
+            " passed only the confidence floor; re-verifying checks them with " +
+            (st.acoustic_verifier_version || "the sound verification model") + ".");
+          ready += sounds;
+        }
+        if (!st.verifier_configured && !st.acoustic_verifier_configured) {
+          lines.push("No desktop verification model is configured, so there is nothing to re-verify with yet. Set one in Brain, Models and Memory.");
+        } else {
+          lines.push("Re-verifying replaces only the desktop verdict; the station's own record is not changed.");
+        }
+        note.textContent = lines.join(" ");
+        btn.disabled = !ready;
       }).catch(function (e) { note.textContent = "Could not read the verification status: " + e.message; });
     }
 
@@ -5602,6 +5684,11 @@
             "on this computer",
             "Re-scores the saved frames of an event to a publication standard. It can overrule a station's call.",
             desktop.visual_rfdetr, files));
+          box.appendChild(modelEntry(
+            "Sound verification",
+            "on this computer",
+            "Checks pure sound events with a second, independent sound model.",
+            desktop.acoustic_perch, files));
           box.appendChild(el("p", { class: "card-note", text:
             "The language model is chosen in Brain, under Models and Memory." }));
         },
@@ -5611,6 +5698,11 @@
             "visual_rfdetr_path", "visual_rfdetr_version", "visual_rfdetr_citation", rf,
             "The high-accuracy model that re-scores saved frames on this computer, for every station. This is not the model that runs during capture: each station's screening model is set on that station's card below. Leave empty to set no model.",
             "models/visual/my_verification_model.onnx");
+          var sp = desktop.acoustic_perch || {};
+          modelPathFields(editors, box, "global", null, "Sound verification model (ONNX)",
+            "acoustic_perch_path", "acoustic_perch_version", "acoustic_perch_citation", sp,
+            "The second sound model that checks pure sound events on this computer. Brain, Models and Memory can download it and fill this in. Leave empty to keep the confidence floor only.",
+            "models/acoustic/perch2.0/perch_v2.onnx");
         }
       }));
 

@@ -61,6 +61,22 @@
       "license": "Apache-2.0",
       "citation": "Williams et al., SurfPerch, a reef-adapted bioacoustic model, Google Research, 2024",
       "note": "The default marine passive-acoustic model, a TensorFlow SavedModel directory read through its reef head at five-second windows and thirty-two kilohertz. Staged on the desktop only for the Pi to receive; the desktop does not run it. Fetched only in full mode. Because it ships as a SavedModel directory rather than one file, record its exact packaging and url before enabling automatic fetch; until then setup reports it as pending, and its settings.json marine path stays unset so a marine station wires it deliberately once the file is in place."
+    },
+    "acoustic_perch": {
+      "role": "desktop",
+      "tier": "full",
+      "kind": "file",
+      "destination": "models/acoustic/perch2.0/perch_v2.onnx",
+      "url": "https://huggingface.co/justinchuby/Perch-onnx/resolve/main/perch_v2.onnx",
+      "sha256": "bf0c8467a924cb074663970ca4a0ab1e143602121930209657d0dff5d5cefa1f",
+      "size_bytes": 409148616,
+      "license": "Apache-2.0",
+      "citation": "van Merrienboer et al., Perch 2.0: The Bittern Lesson for Bioacoustics, arXiv:2508.04665, 2025; ONNX conversion by justinchuby, linked from Google's Kaggle model card",
+      "slot": "acoustic_perch",
+      "labels_path": "audtheia/resources/perch/labels.csv",
+      "version": "Perch 2.0",
+      "in_app_download": true,
+      "note": "The desktop's second sound model, Google DeepMind's Perch 2.0, which checks a pure sound event independently of the field model by scoring its clip in five-second windows at 32 kHz. It is the ONNX conversion that Google's Kaggle model card links to, pinned by checksum, and the class labels ship in the repository from Google's official release. Download it from Brain, Models and Memory, which checks the checksum and sets the slot on this computer only; setup fetches it in full mode."
     }
   },
   "acoustic_shape_proposals": {

@@ -34,3 +34,8 @@
 *.png       binary
 *.jpg       binary
 *.ico       binary
+
+# A label list shipped exactly as its publisher released it. Its checksum is
+# recorded in config/model_sources.json, so its bytes, line endings included,
+# must never be translated by a checkout.
+audtheia/resources/perch/labels.csv  -text

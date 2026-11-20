@@ -116,8 +116,10 @@ class DesktopStation:
         interpreter,
         narrator=None,
         clusterer=None,
+        acoustic_verifier=None,
     ) -> None:
         self._settings = settings
+        self._acoustic_verifier = acoustic_verifier
         self._station = station
         self._db = db
         self._verifier = verifier
@@ -148,6 +150,7 @@ class DesktopStation:
             verifier=verifier,
             interpreter=interpreter,
             narrator=narrator,
+            acoustic_verifier=cls._build_acoustic_verifier(settings),
         )
 
     @classmethod
@@ -181,6 +184,18 @@ class DesktopStation:
             "station (for example 'webcam:0', 'url:rtsp://...', 'stream:https://...', "
             "or 'file:/path/to/clip.mp4')."
         )
+
+    @staticmethod
+    def _build_acoustic_verifier(settings):
+        """The second sound model, or None, so sound events keep the confidence gate."""
+        from audtheia.inference.perch_onnx import build_acoustic_verifier
+
+        try:
+            return build_acoustic_verifier(settings)
+        except Exception as exc:  # noqa: BLE001 - a missing model must not stop the desktop
+            logger.warning("the sound verification model is not available (%s); sound events "
+                           "keep the acoustic confidence gate.", exc)
+            return None
 
     @staticmethod
     def _build_verifier(settings):
@@ -331,11 +346,16 @@ class DesktopStation:
             verifier=self._verifier,
             interpreter=self._interpreter,
             identify=self._identity(),
+            acoustic_verifier=self._acoustic_verifier,
         )
 
     @property
     def verifier_configured(self) -> bool:
         return bool(getattr(self._verifier, "configured", True))
+
+    @property
+    def acoustic_verifier_configured(self) -> bool:
+        return bool(getattr(self._acoustic_verifier, "configured", False))
 
     def verify_pending(self) -> int:
         """Re-score and gate every eligible observation not yet verified."""

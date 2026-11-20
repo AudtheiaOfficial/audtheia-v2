@@ -39,6 +39,22 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **A second sound model for verification.** Google DeepMind's Perch 2.0
+  (Apache-2.0) can now check every pure sound event on the desktop, so a sound
+  event no longer has only the confidence floor. Its clip is scored in
+  five-second windows at 32 kHz, and the event is verified when Perch hears the
+  species the field model reported at or above the clearing floor. The verdict
+  is worded as a two-model check, names the model, and counts windows. Without
+  the model, sound events keep the confidence gate exactly as before.
+- **In-app model download.** Brain, Models and Memory offers Perch 2.0 under
+  Sound verification, with its source, licence, size and citation. The download
+  is checked against the size and SHA-256 recorded in `config/model_sources.json`
+  before it is used, a file already in place with a matching checksum is used
+  as it is, and the slot is set in this computer's local settings only. Google's
+  class labels ship in `audtheia/resources/perch`.
+- Re-verify also checks sound events that took only the confidence gate, once
+  the sound model is set up.
+- `tests/test_sound_verification.py`, confined to temporary folders.
 - **One identity per species in every count.** Reports, Analytics, Species
   profiles, model accuracy and the species reference resolve each label through
   the same rules the Train tab uses, and show the accepted name with the common

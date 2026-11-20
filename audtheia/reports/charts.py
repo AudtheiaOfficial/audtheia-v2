@@ -202,8 +202,11 @@ def _verification_summary(plt, model, out: Path) -> Optional[Path]:
             ("not checked by a second model", int(vis.get("not_run", 0)) + int(vis.get("pending", 0)), _GRID),
         ], int(vis["total"])))
     if aud.get("total"):
-        rows.append(("Audio: confidence gate", [
-            ("cleared", int(aud.get("cleared", 0)), _TEAL),
+        checked = int(aud.get("verified", 0)) + int(aud.get("not_verified", 0))
+        rows.append(("Audio: two-model check" if checked else "Audio: confidence gate", [
+            ("verified", int(aud.get("verified", 0)), _GREEN),
+            ("not verified", int(aud.get("not_verified", 0)), _AMBER),
+            ("cleared by the confidence gate only", int(aud.get("cleared", 0)), _TEAL),
             ("not cleared", int(aud.get("not_cleared", 0)), _AMBER),
             ("not yet checked", int(aud.get("pending", 0)), _GRID),
         ], int(aud["total"])))
