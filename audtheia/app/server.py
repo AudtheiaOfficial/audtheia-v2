@@ -1203,6 +1203,15 @@ def _v_path_or_null(value: Any, where: str) -> Optional[str]:
     return trimmed or None
 
 
+def _v_desktop_verifier(value: Any, where: str):
+    """Which desktop model verifies a station's frames, or null for the default."""
+    if value in (None, ""):
+        return None
+    if value not in ("visual_rfdetr", "visual_bioclip"):
+        raise SettingsUpdateError(f"{where} must be visual_rfdetr, visual_bioclip, or empty")
+    return value
+
+
 def _v_choice(choices):
     def _inner(value: Any, where: str):
         if value not in choices:
@@ -1325,6 +1334,8 @@ def _editable_field_specs() -> dict:
             "acoustic_perch_labels_path": {"path": ["desktop_models", "acoustic_perch", "labels_path"], "validate": _v_path_or_null, "is_path": True},
             "acoustic_perch_version": {"path": ["desktop_models", "acoustic_perch", "version"], "validate": _v_str_or_null},
             "acoustic_perch_citation": {"path": ["desktop_models", "acoustic_perch", "citation"], "validate": _v_str_or_null},
+            "visual_bioclip_version": {"path": ["desktop_models", "visual_bioclip", "version"], "validate": _v_str_or_null},
+            "visual_bioclip_citation": {"path": ["desktop_models", "visual_bioclip", "citation"], "validate": _v_str_or_null},
             "analysis_location": {"path": ["analysis", "per_observation_analysis_location"], "validate": _v_choice(ANALYSIS_LOCATIONS)},
             "baseline_period_granularity": {"path": ["analysis", "baseline", "period_granularity"], "validate": _v_choice(BASELINE_PERIOD_GRANULARITIES)},
             "salience_weight_confidence": {"path": ["analysis", "salience", "weights", "confidence"], "validate": _v_nonnegative_number},
@@ -1362,6 +1373,7 @@ def _editable_field_specs() -> dict:
             "visual_pi_version": {"path": ["models", "visual_pi", "version"], "validate": _v_str_or_null},
             "visual_pi_citation": {"path": ["models", "visual_pi", "citation"], "validate": _v_str_or_null},
             "visual_desktop_path": {"path": ["models", "visual_desktop", "path"], "validate": _v_path_or_null, "is_path": True},
+            "desktop_verifier": {"path": ["models", "desktop_verifier"], "validate": _v_desktop_verifier},
             "visual_desktop_version": {"path": ["models", "visual_desktop", "version"], "validate": _v_str_or_null},
             "visual_desktop_citation": {"path": ["models", "visual_desktop", "citation"], "validate": _v_str_or_null},
             # The acoustic model is one flat block: a station listens with one
@@ -2022,48 +2034,56 @@ def create_app(settings, database):
     _verifier_labels_cache: dict = {}
 
     def _verification_context() -> dict:
-        """The clearing floors in force and the desktop verifier configured now.
+        """The clearing floors in force and the desktop verifiers configured now.
 
-        The verifier's labels are read once per model file and kept until the file
-        changes, so a page of cards never loads a model.
+        Each visual verifier's labels are read once per model file and kept until
+        the file changes, so a page of cards never loads a model. label_sets maps
+        each configured verifier's version to its labels, so a verdict is read
+        against the labels of the model that wrote it.
         """
-        entry = (settings.raw.get("desktop_models", {}) or {}).get("visual_rfdetr", {}) or {}
-        path = entry.get("path")
-        ctx = {"floors": _verdicts.floors(settings), "verifier_configured": bool(path),
-               "verifier_version": None, "verifier_labels": None}
+        from audtheia.inference import visual_verifiers
         from audtheia.inference.perch_onnx import acoustic_verifier_configured
 
+        slot = visual_verifiers.choice(settings, None)
+        ctx = {"floors": _verdicts.floors(settings), "verifier_configured": slot is not None,
+               "verifier_version": visual_verifiers.version(settings, slot), "label_sets": {}}
         sound = (settings.raw.get("desktop_models", {}) or {}).get("acoustic_perch") or {}
         ctx["acoustic_verifier_configured"] = acoustic_verifier_configured(settings)
         ctx["acoustic_verifier_version"] = (sound.get("version") or None) if ctx["acoustic_verifier_configured"] else None
-        if not path:
-            return ctx
-        model_path = Path(path) if Path(path).is_absolute() else Path(settings.repo_root) / path
-        try:
-            stamp = (str(model_path), model_path.stat().st_mtime)
-        except OSError:
-            ctx["verifier_configured"] = False
-            return ctx
-        if stamp not in _verifier_labels_cache:
+        for each in visual_verifiers.SLOTS:
+            entry = (settings.raw.get("desktop_models", {}) or {}).get(each) or {}
+            path = entry.get("path")
+            if not path:
+                continue
+            model_path = Path(path) if Path(path).is_absolute() else Path(settings.repo_root) / path
             try:
-                from audtheia.inference.rfdetr_onnx import verifier_label_set
-
-                _verifier_labels_cache.clear()
-                _verifier_labels_cache[stamp] = verifier_label_set(settings)
-            except Exception:  # noqa: BLE001 - the label set is a disclosure aid only
-                _verifier_labels_cache[stamp] = (entry.get("version") or model_path.stem, None)
-        ctx["verifier_version"], ctx["verifier_labels"] = _verifier_labels_cache[stamp]
+                stamp = (each, str(model_path), model_path.stat().st_mtime)
+            except OSError:
+                continue
+            if stamp not in _verifier_labels_cache:
+                for old in [k for k in _verifier_labels_cache if k[0] == each]:
+                    _verifier_labels_cache.pop(old, None)
+                try:
+                    _verifier_labels_cache[stamp] = visual_verifiers.label_set(settings, each)
+                except Exception:  # noqa: BLE001 - the label set is a disclosure aid only
+                    _verifier_labels_cache[stamp] = (visual_verifiers.version(settings, each), None)
+            found_version, labels = _verifier_labels_cache[stamp]
+            if found_version:
+                ctx["label_sets"][found_version] = labels
         return ctx
 
     def _verification_view(obs: dict, verification, children: list, ctx: dict, book) -> dict:
         """How a card reads an event's verification: its gate, its state and one sentence."""
-        identities = None
-        if ctx.get("verifier_labels") is not None:
-            identities = {(book.identify_label(label) or {}).get("key") for label in ctx["verifier_labels"]} - {None}
+        from audtheia.analysis.taxa import LabelIdentities
+
+        written_by = (verification or {}).get("rfdetr_version")
+        labels = (ctx.get("label_sets") or {}).get(written_by)
+        identities = LabelIdentities(labels, book) if labels is not None else None
         state = _verdicts.classify(obs, verification)
         state["reading"] = _verdicts.describe(
             obs, verification, children=children, floors_in_force=ctx.get("floors"),
-            verifier_configured=ctx.get("verifier_configured"), verifier_version=ctx.get("verifier_version"),
+            verifier_configured=ctx.get("verifier_configured"),
+            verifier_version=written_by if labels is not None else ctx.get("verifier_version"),
             verifier_identities=identities, book=book)
         state["reverifiable"] = bool(state["state"] in ("not_run", "pending", "not_verified")
                                      and state["gate"] == _verdicts.GATE_TWO_MODEL
@@ -3071,6 +3091,29 @@ def create_app(settings, database):
         try:
             return _download_jobs.start(key)
         except _downloads.DownloadError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    from audtheia.app.bioclip_prepare import PrepareJob as _BioclipPrepare
+
+    _bioclip = _BioclipPrepare(settings, db, _persist_settings)
+
+    @app.get(f"{API_PREFIX}/models/bioclip")
+    def bioclip_status():
+        """Whether BioCLIP 2 is prepared, whether the image environment it needs is installed, and progress."""
+        return _bioclip.status()
+
+    @app.post(f"{API_PREFIX}/models/bioclip/prepare", status_code=202)
+    def bioclip_prepare():
+        """Prepare BioCLIP 2 in the Train tab's image environment and set it up on this computer.
+
+        Runs in the background; progress is read from GET /models/bioclip, and
+        every step is written to prepare.log beside the output.
+        """
+        if settings.node_role != "desktop":
+            raise HTTPException(status_code=403, detail="desktop models are managed on the desktop; this node is not the desktop.")
+        try:
+            return _bioclip.start()
+        except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get(f"{API_PREFIX}/brain/llm")

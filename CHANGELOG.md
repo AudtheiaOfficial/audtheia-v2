@@ -39,6 +39,17 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Added
 
+- **BioCLIP 2 as a desktop species verifier.** Stations that watch many
+  species can have their saved frames checked by BioCLIP 2 (MIT), which names
+  the organism in the box the screening model saved, among every station's
+  target species, every species in the record and the 14,595 species in
+  Perch 2.0's list. Brain, Models and Memory offers Prepare, which runs once in
+  the Train tab's image environment: it installs open_clip if needed, exports
+  the image encoder to ONNX, checks it against PyTorch, embeds the names, logs
+  every step and sets the verifier up on this computer only. Each station
+  chooses its visual verifier, RF-DETR or BioCLIP 2, in Settings, Models; unset,
+  RF-DETR is used when it is configured. Verdicts are read against the labels
+  of the model that wrote them.
 - **A second sound model for verification.** Google DeepMind's Perch 2.0
   (Apache-2.0) can now check every pure sound event on the desktop, so a sound
   event no longer has only the confidence floor. Its clip is scored in
@@ -54,7 +65,6 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   class labels ship in `audtheia/resources/perch`.
 - Re-verify also checks sound events that took only the confidence gate, once
   the sound model is set up.
-- `tests/test_sound_verification.py`, confined to temporary folders.
 - **One identity per species in every count.** Reports, Analytics, Species
   profiles, model accuracy and the species reference resolve each label through
   the same rules the Train tab uses, and show the accepted name with the common
@@ -76,9 +86,9 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 - **Re-verify.** Brain, Run now, offers "Re-verify events no model checked" once a
   verification model is configured. It replaces only the desktop verdict; the
   observation the station wrote is never changed.
-- `tests/test_identity_and_verification.py`, `tests/test_deletion_consistency.py`
-  and `tests/test_migration_pattern_withdrawn.py`, all confined to temporary
-  folders.
+- `tests/test_identity_and_verification.py`, `tests/test_deletion_consistency.py`,
+  `tests/test_migration_pattern_withdrawn.py`, `tests/test_sound_verification.py`
+  and `tests/test_bioclip_verification.py`, all confined to temporary folders.
 
 ### Changed
 

@@ -574,19 +574,21 @@ class ReportGenerator:
         """The floors in force and the desktop verifier configured now."""
         from audtheia.analysis import verdicts
 
-        context = {"floors": verdicts.floors(self._settings), "verifier_configured": False,
-                   "verifier_version": None, "verifier_identities": None}
-        try:
-            from audtheia.inference.rfdetr_onnx import verifier_label_set
+        from audtheia.analysis.taxa import LabelIdentities
+        from audtheia.inference import visual_verifiers
 
-            version, labels = verifier_label_set(self._settings)
-        except Exception:  # noqa: BLE001 - the verifier's labels are a disclosure aid only
-            version, labels = None, None
-        context["verifier_configured"] = version is not None
-        context["verifier_version"] = version
-        if labels is not None:
-            context["verifier_identities"] = {
-                (book.identify_label(label) or {}).get("key") for label in labels} - {None}
+        slot = visual_verifiers.choice(self._settings, None)
+        context = {"floors": verdicts.floors(self._settings), "verifier_configured": slot is not None,
+                   "verifier_version": visual_verifiers.version(self._settings, slot), "verifier_identities": None,
+                   "identities_by_version": {}}
+        try:
+            sets = visual_verifiers.label_sets(self._settings)
+        except Exception:  # noqa: BLE001 - the verifiers' labels are a disclosure aid only
+            sets = {}
+        for found_version, labels in sets.items():
+            if labels is not None:
+                context["identities_by_version"][found_version] = LabelIdentities(labels, book)
+        context["verifier_identities"] = context["identities_by_version"].get(context["verifier_version"])
         return context
 
     def _gather_patterns(self, *, station_id, start, end, in_scope_ids) -> list[PatternRecord]:
@@ -974,13 +976,20 @@ def _verification_text(model: ReportModel, rec: ObservationRecord) -> str:
     from audtheia.analysis import verdicts
 
     ctx = model.verification_context or {}
+    # Read against the labels of the model that wrote the verdict.
+    written_by = (rec.verification or {}).get("rfdetr_version")
+    by_version = ctx.get("identities_by_version") or {}
+    if written_by in by_version:
+        version, identities = written_by, by_version[written_by]
+    else:
+        version, identities = ctx.get("verifier_version"), ctx.get("verifier_identities")
     return verdicts.describe(
         rec.observation, rec.verification,
         children=list(rec.vision_detections) + list(rec.audio_detections),
         floors_in_force=ctx.get("floors"),
         verifier_configured=ctx.get("verifier_configured"),
-        verifier_version=ctx.get("verifier_version"),
-        verifier_identities=ctx.get("verifier_identities"),
+        verifier_version=version,
+        verifier_identities=identities,
         book=model.taxa,
     )
 

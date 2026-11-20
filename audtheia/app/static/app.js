@@ -3065,6 +3065,15 @@
         "on this computer",
         "Re-scores the saved frames of an event for publication-grade accuracy. It can overrule a station's call, and it adds the interpretive points such as ecological role and rarity, which are always labelled as inference and never stored as measurement.",
         deskModels.visual_rfdetr, models.files)]));
+      var bioclipBlock = el("div", { class: "info-block" }, [modelEntry(
+        "BioCLIP 2",
+        "on this computer",
+        "Names the organism in each saved frame by comparing it with thousands of species names, so it can check stations that watch many species. Each station chooses which visual verifier checks its frames, in Settings, Models.",
+        deskModels.visual_bioclip, models.files)]);
+      var bioclipHost = el("div");
+      bioclipBlock.appendChild(bioclipHost);
+      host.appendChild(bioclipBlock);
+      renderBioclipPrepare(bioclipHost);
 
       host.appendChild(el("h4", { text: "Sound verification" }));
       host.appendChild(el("p", { class: "settings-desc", text:
@@ -3362,6 +3371,66 @@
           host.appendChild(box);
         });
       }).catch(function (e) { clear(host); host.appendChild(el("p", { class: "form-hint", text: "Could not read the downloads: " + e.message })); });
+    }
+    paint();
+  }
+
+  // The Prepare control for BioCLIP 2. Prepare runs once in the Train tab's
+  // image environment and sets the verifier up on this computer; while it runs
+  // the current step is shown, and the page refreshes once when it finishes.
+  var bioclipJobsRefreshed = {};
+
+  function renderBioclipPrepare(host) {
+    clear(host);
+    var status = el("p", { class: "form-hint", role: "status" });
+    function paint() {
+      apiGet("/models/bioclip").then(function (st) {
+        clear(host);
+        var box = el("div", { class: "species-step" });
+        var kv = el("div", { class: "kv-list" }, [
+          modelKvRow("Licence", st.licence || "not stated"),
+          modelKvRow("Citation", st.citation || "not stated")
+        ]);
+        if (st.sidecar) {
+          kv.appendChild(modelKvRow("Prepared", fmtTime(st.sidecar.created_at) + ", choosing among " +
+            fmtNum(st.sidecar.names) + " species"));
+          kv.appendChild(modelKvRow("Export check", "matches PyTorch to within " +
+            Number(st.sidecar.parity_max_abs_diff).toExponential(1)));
+        }
+        box.appendChild(kv);
+        var job = st.job;
+        var running = job && job.state === "running";
+        var envReady = st.vision_environment === "ready";
+        var btn = el("button", { type: "button", class: "btn", text: st.prepared ? "Prepare again" : "Prepare" });
+        btn.disabled = !!running || !envReady;
+        btn.addEventListener("click", function () {
+          btn.disabled = true;
+          status.textContent = "Starting.";
+          apiSend("/models/bioclip/prepare", "POST", {}).then(function () { paint(); })
+            .catch(function (e) { status.textContent = "Could not start: " + e.message; btn.disabled = false; });
+        });
+        box.appendChild(btn);
+        if (running) {
+          status.textContent = job.step || "Working.";
+          setTimeout(function () { if (document.body.contains(host)) { paint(); } }, 2000);
+        } else if (job) {
+          status.textContent = (job.state === "done" ? "" : "Prepare stopped: ") + (job.message || "") +
+            (job.state === "error" ? " The full log is at " + st.log_path + "." : "");
+          var jobId = "bioclip:" + job.started_at;
+          if (job.state === "done" && !bioclipJobsRefreshed[jobId]) {
+            bioclipJobsRefreshed[jobId] = true;
+            setTimeout(function () { loadBrainModels(); }, 800);
+          }
+        } else if (!envReady) {
+          status.textContent = "Prepare needs the Train tab's image environment. Install the image training components in the Train tab first.";
+        } else if (st.prepared) {
+          status.textContent = "Set up on this computer. Prepare again after adding target species or new species to the record.";
+        } else {
+          status.textContent = "Not set up. Prepare downloads BioCLIP 2 once (about 1.7 GB) and takes several minutes on the processor.";
+        }
+        box.appendChild(status);
+        host.appendChild(box);
+      }).catch(function (e) { clear(host); host.appendChild(el("p", { class: "form-hint", text: "Could not read BioCLIP 2's status: " + e.message })); });
     }
     paint();
   }
@@ -5876,6 +5945,24 @@
 
         box.appendChild(el("h5", { class: "form-group-title", text: "What this station listens with" }));
         acousticModelFields(editors, box, sid, acoustic);
+
+        // Which desktop model checks this station's frames. Left at the default,
+        // the desktop uses the RF-DETR verifier when one is set and BioCLIP 2
+        // otherwise, so a station that relied on RF-DETR keeps it.
+        box.appendChild(el("h5", { class: "form-group-title", text: "Which desktop model verifies this station's frames" }));
+        var verifierSelect = el("select", { class: "form-input" });
+        [["", "Default: RF-DETR when set, otherwise BioCLIP 2"],
+         ["visual_rfdetr", "RF-DETR verification model"],
+         ["visual_bioclip", "BioCLIP 2"]].forEach(function (o) {
+          var opt = el("option", { value: o[0], text: o[1] });
+          if ((m.desktop_verifier || "") === o[0]) { opt.selected = true; }
+          verifierSelect.appendChild(opt);
+        });
+        box.appendChild(el("label", { class: "form-field" }, [el("span", { class: "form-label", text: "Desktop verifier" }), verifierSelect]));
+        box.appendChild(el("p", { class: "form-hint", text:
+          "RF-DETR suits a model trained for this station's organisms, such as a sponge classifier. BioCLIP 2 names organisms across the tree of life, so it suits a station watching many species, such as birds." }));
+        editors.push({ scope: "station", field: "desktop_verifier", station_id: sid, original: m.desktop_verifier || "",
+          get: function () { return verifierSelect.value; }, kind: "textOrNull" });
       }
     });
   }

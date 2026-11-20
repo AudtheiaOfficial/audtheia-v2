@@ -287,6 +287,13 @@
       "labels_path": null,
       "version": null,
       "citation": null
+    },
+    "visual_bioclip": {
+      "path": null,
+      "embeddings_path": null,
+      "labels_path": null,
+      "version": null,
+      "citation": null
     }
   },
   "stations": [

@@ -141,7 +141,7 @@ class DesktopStation:
         """
         station = cls._resolve_station(settings, station_id)
         db = Database(settings.db_path(), **settings.database_kwargs())
-        verifier = cls._build_verifier(settings)
+        verifier = cls._build_verifier(settings, station)
         interpreter, narrator = cls._build_llm_backends(settings)
         return cls(
             settings=settings,
@@ -198,14 +198,17 @@ class DesktopStation:
             return None
 
     @staticmethod
-    def _build_verifier(settings):
-        from audtheia.inference.rfdetr_onnx import build_verifier
+    def _build_verifier(settings, station: Optional[dict] = None):
+        """The visual verifier this station uses: RF-DETR or BioCLIP 2, as configured."""
+        from audtheia.inference import visual_verifiers
 
+        if not visual_verifiers.configured(settings, station):
+            return NullVerifier()
         try:
-            return build_verifier(settings)
+            return visual_verifiers.build(settings, station)
         except Exception as exc:  # noqa: BLE001 - a missing model must not stop the desktop
             logger.warning(
-                "the RF-DETR verification model is not available (%s); using a verifier "
+                "the desktop verification model is not available (%s); using a verifier "
                 "that finds nothing, so the pipeline runs and the gate stays closed until "
                 "a model is placed.",
                 exc,

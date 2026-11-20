@@ -775,7 +775,10 @@ _MACHINE_VALUE_CONTAINERS = ("capture.source",)
 # member that differs from the committed value in the local file, so the
 # committed configuration never changes because a model was switched.
 LOCAL_ONLY_MODEL_SLOTS = ("desktop_models.visual_rfdetr", "desktop_models.acoustic_perch",
-                          "models.visual_desktop", "models.acoustic")
+                          "desktop_models.visual_bioclip", "models.visual_desktop", "models.acoustic")
+
+# The desktop models a station may name to verify its frames.
+DESKTOP_VERIFIER_SLOTS = ("visual_rfdetr", "visual_bioclip")
 
 
 def _is_path_key(key: str) -> bool:
@@ -1301,14 +1304,19 @@ def _validate(raw: dict) -> None:
         _require(entry, "path", f"desktop_models.{key}")
     # The second sound model is optional, so a settings file written before it
     # existed still loads. When present it names its model and its labels file.
-    if "acoustic_perch" in desktop_models:
-        entry = desktop_models["acoustic_perch"]
-        _require_type(entry, (dict,), "desktop_models.acoustic_perch")
-        _require(entry, "path", "desktop_models.acoustic_perch")
-        for member in ("path", "labels_path", "version", "citation"):
+    # The second visual verifier is optional for the same reason; it names its
+    # image encoder, its name embeddings and the names.
+    for key, members in (("acoustic_perch", ("path", "labels_path", "version", "citation")),
+                         ("visual_bioclip", ("path", "embeddings_path", "labels_path", "version", "citation"))):
+        if key not in desktop_models:
+            continue
+        entry = desktop_models[key]
+        _require_type(entry, (dict,), f"desktop_models.{key}")
+        _require(entry, "path", f"desktop_models.{key}")
+        for member in members:
             value = entry.get(member)
             if value is not None and not isinstance(value, str):
-                raise ConfigError(f"desktop_models.acoustic_perch.{member} must be a string or null")
+                raise ConfigError(f"desktop_models.{key}.{member} must be a string or null")
 
     # -- stations --------------------------------------------------------
     stations = _require(raw, "stations", "settings")
@@ -1684,6 +1692,11 @@ def _validate_station(station: Any, index: int, seen_ids: set, seen_names: set) 
     _require_type(models, (dict,), f"{where}.models")
     visual_pi = _require(models, "visual_pi", f"{where}.models")
     _require(visual_pi, "path", f"{where}.models.visual_pi")
+    # Optional: which desktop model verifies this station's frames. Unset, the
+    # desktop uses RF-DETR when it is configured and BioCLIP 2 otherwise.
+    chosen = models.get("desktop_verifier")
+    if chosen is not None and chosen not in DESKTOP_VERIFIER_SLOTS:
+        raise ConfigError(f"{where}.models.desktop_verifier must be one of {', '.join(DESKTOP_VERIFIER_SLOTS)}, or null")
 
     # The acoustic model is one flat block. Every key is optional, so a station
     # with no acoustic model set still loads and honestly reads as having none;

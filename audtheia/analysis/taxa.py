@@ -32,7 +32,8 @@ from typing import Callable, Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["TaxonBook", "raw_label", "label_common_name", "identity_function", "trust_snapshot_by_identity"]
+__all__ = ["LabelIdentities", "TaxonBook", "raw_label", "label_common_name", "identity_function",
+           "trust_snapshot_by_identity"]
 
 # Methods that settle a label onto a backbone taxon.
 _RESOLVED = {"record_key", "record_key_synonym", "backbone_name", "backbone_name_synonym",
@@ -254,6 +255,25 @@ class TaxonBook:
         out["common_name"] = self.common_name(ident)
         out["labels"] = self.labels(ident)
         return out
+
+
+class LabelIdentities:
+    """The identity keys a verifier's labels resolve to, worked out only when asked.
+
+    A verifier may carry thousands of names. Resolving them is needed only to say
+    that a field call's taxon lies outside the labels, so it is done on the first
+    membership test and kept.
+    """
+
+    def __init__(self, labels, book: "TaxonBook"):
+        self._labels = list(labels or ())
+        self._book = book
+        self._keys: Optional[set] = None
+
+    def __contains__(self, key) -> bool:
+        if self._keys is None:
+            self._keys = {(self._book.identify_label(label) or {}).get("key") for label in self._labels} - {None}
+        return key in self._keys
 
 
 def identity_function(settings) -> Callable:

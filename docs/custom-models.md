@@ -13,6 +13,7 @@ Audtheia uses a small set of models, and it matters which processor each one run
 | Desktop-mode screening detector | Your computer (hardware-free mode) | An ONNX detector | Watches frames when you run with no field hardware |
 | Acoustic model | The Pi's processor | BirdNET, or a marine model | Listens for sound events, and can open an observation on its own |
 | Desktop sound verifier | Your computer | Perch 2.0 in ONNX | Checks each pure sound event with a second, independent sound model |
+| Desktop species verifier | Your computer | BioCLIP 2, exported to ONNX | Names the organism in each saved frame among thousands of species, for stations that watch many species |
 
 Every one of these is named in the settings file with a path, a version, and a citation, so a report can always disclose exactly which model produced a result. You never edit code to change a model; you change the path.
 
@@ -114,6 +115,16 @@ The audio component is model agnostic and chosen in the settings file.
 
 - **Terrestrial and coastal-avian sites** use BirdNET, running on the Pi's processor. You can train a custom classifier for local species, which is well supported: collect local recordings, organize them into one folder per species, run BirdNET's training, and drop the resulting classifier into the custom acoustic models folder, then select it in the settings. BirdNET is licensed CC BY-NC-SA, which permits non-commercial use with attribution and share-alike, so keep that in mind if your work is commercial.
 - **Underwater sites** need a marine passive-acoustic model, because BirdNET is trained on in-air bird sound and is not useful on a submerged hydrophone. A marine model goes in the marine acoustic models folder and is selected in the settings. Choosing the best current open marine model for your target sounds, whether cetaceans, fish choruses, or a snapping-shrimp soundscape, is an active area, so pick and validate one for your site.
+
+### BioCLIP 2, the desktop species verifier
+
+An RF-DETR verifier is trained for one group of organisms, which suits a station such as a reef watching sponges. A station watching many species, such as a forest watching birds, is better checked by BioCLIP 2 (Gu et al., NeurIPS 2025; MIT licence), a CLIP model trained on 214 million images of organisms. It names the organism in a picture by comparing the picture with the names of candidate species.
+
+BioCLIP 2 is published for PyTorch only, so it is prepared once. In Brain, Models and Memory, under Vision verification, press Prepare. Prepare needs the Train tab's image training components installed. It installs open_clip into that environment if it is missing, downloads the weights once from the authors (about 1.7 GB), exports the image encoder to ONNX on the processor and checks it against PyTorch, and embeds the candidate names. Everything it does is written to `models/visual/bioclip2/prepare.log`. The candidates are every station's target species, every species resolved in the record, and the 14,595 species in Perch 2.0's list, each embedded as "a photo of" its scientific name, so the model chooses among real alternatives rather than a short list. Prepare again after adding target species. Day to day, BioCLIP 2 runs on ONNX Runtime alone.
+
+Each frame is cropped to the box the screening model saved with it, with a ten per cent margin, and resized and normalised as the model's own configuration says. A frame's confidence is the softmax, at the model's own logit scale, over every candidate name. The engine then combines the frames exactly as it does for RF-DETR, and the event is verified when BioCLIP 2 names the field species at or above the clearing floor.
+
+Each station chooses its visual verifier in Settings, Models, under "Which desktop model verifies this station's frames". Left at the default, a station uses RF-DETR when one is set and BioCLIP 2 otherwise.
 
 ### The desktop sound verifier
 
