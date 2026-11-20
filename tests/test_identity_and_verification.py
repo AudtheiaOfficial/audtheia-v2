@@ -242,6 +242,13 @@ def test_identity(root: Path) -> None:
         check("a label no rule matches is flagged unresolved and is not merged by guessing",
               slug["unresolved"] is True and slug["key"] != "gbif:100")
 
+    with taxa.TaxonBook.for_settings(w.settings, w.db) as book:
+        plain = book.identify_label("Poecile carolinensis")
+        check("a species is shown with the common name its sound label carries, on a page without that label",
+              book.display(plain) == "Poecile carolinensis (Carolina Chickadee)")
+        check("learning the common name does not add the sound label to the labels as written",
+              book.labels(plain) == ["Poecile carolinensis"])
+
     client = TestClient(srv.create_app(w.settings, w.db))
     a = client.get("/api/analytics").json()
     counts = a["taxon_event_counts"]

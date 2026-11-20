@@ -57,6 +57,18 @@ def label_common_name(label: Optional[str]) -> Optional[str]:
     return common or None
 
 
+def _named_labels(db) -> list:
+    """Every distinct label in the record that carries a common name after an underscore."""
+    try:
+        with db.connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT common_name FROM child_detections WHERE common_name LIKE '%\\_%' ESCAPE '\\'"
+            ).fetchall()
+        return [r[0] for r in rows if r[0]]
+    except Exception:  # noqa: BLE001 - names are a display aid and never block a view
+        return []
+
+
 class TaxonBook:
     """Resolves detections to one identity per taxon, read-only, for counting and display.
 
@@ -101,7 +113,32 @@ class TaxonBook:
                 reference = db.list_species_reference()
             except Exception:  # noqa: BLE001 - a database without the species cache simply has none
                 reference = []
-        return cls(resolver, reference)
+        book = cls(resolver, reference)
+        if db is not None:
+            book.prime_common_names(_named_labels(db))
+        return book
+
+    def prime_common_names(self, labels: Iterable[str]) -> None:
+        """Learn common names from labels that carry one, such as BirdNET "Sci_Common".
+
+        Called once with every such label in the record, so a species is shown
+        with the same common name on every page and in every report, whichever
+        model's labels a page happens to hold. Only the names are learned: the
+        labels are not added to any identity's list of labels as written.
+        """
+        from audtheia.training.candidates import taxon_key
+
+        for label in labels or ():
+            common = label_common_name(label)
+            key = taxon_key(None, label)
+            if not common or key is None:
+                continue
+            ident = self._cache.get((None, label))
+            if ident is None:
+                ident = self._resolve(key, label, None)
+                self._cache[(None, label)] = ident
+            if ident["resolved"]:
+                self._common.setdefault(ident["key"], common)
 
     def close(self) -> None:
         if self._resolver is not None:
