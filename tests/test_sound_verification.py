@@ -265,6 +265,30 @@ def test_downloads(w: World) -> None:
           and not (w.repo.parent / "outside.onnx").exists())
 
 
+def test_status(w: World) -> None:
+    print("\n[5] Re-verify offers only sound events a second model can listen to")
+    from fastapi.testclient import TestClient
+    from audtheia.app import server as srv
+
+    models = w.repo / "models" / "acoustic" / "perch2.0"
+    models.mkdir(parents=True, exist_ok=True)
+    (models / "perch_v2.onnx").write_bytes(b"stand-in")
+    w.settings.raw["desktop_models"]["acoustic_perch"] = {
+        "path": "models/acoustic/perch2.0/perch_v2.onnx", "labels_path": "audtheia/resources/perch/labels.csv",
+        "version": "Perch test", "citation": None}
+    (w.repo / "audtheia" / "resources" / "perch").mkdir(parents=True, exist_ok=True)
+    (w.repo / "audtheia" / "resources" / "perch" / "labels.csv").write_text("h\nA a\n", encoding="utf-8")
+    w.audio_event([("Poecile carolinensis_Carolina Chickadee", None)], first_seen="2026-04-01T10:00:00Z")
+    clipless = w.audio_event([("Poecile carolinensis_Carolina Chickadee", None)], first_seen="2026-04-02T10:00:00Z")
+    with w.db.connect() as conn:
+        conn.execute("UPDATE observations SET audio_clip_path = NULL WHERE id = ?", (clipless["id"],))
+    st = TestClient(srv.create_app(w.settings, w.db)).get("/api/verify/status").json()
+    check("the status says the sound model is set up and names it",
+          st["acoustic_verifier_configured"] is True and st["acoustic_verifier_version"] == "Perch test")
+    check("a gate-cleared sound event with a clip is offered, one with no clip is counted apart",
+          st["audio"]["gate_only"] == 1 and st["audio"]["no_clip"] == 1)
+
+
 def run() -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -272,6 +296,7 @@ def run() -> None:
         test_build(World(root / "b"))
         test_engine(World(root / "e"))
         test_downloads(World(root / "d"))
+        test_status(World(root / "s"))
     print(f"\nAll {_checks} sound verification checks passed.")
 
 

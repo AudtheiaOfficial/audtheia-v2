@@ -4558,13 +4558,16 @@ def create_app(settings, database):
         """
         ctx = _verification_context()
         counts = {"not_run": 0, "pending": 0, "not_verified": 0, "verified": 0}
-        sound = {"gate_only": 0, "pending": 0, "not_verified": 0, "verified": 0}
+        sound = {"gate_only": 0, "pending": 0, "not_verified": 0, "verified": 0, "no_clip": 0}
         for obs in db.list_observations(station_id=station_id):
             c = _verdicts.classify(obs, db.get_observation_verification(obs["id"]))
             if str(obs.get("trigger_source")) == "audio":
                 # A sound event that took the gate, or has no verdict yet, has not
-                # been checked by a second sound model.
+                # been checked by a second sound model. One with no stored clip
+                # never can be, so it is counted apart rather than offered.
                 key = ("gate_only" if c["state"] in ("cleared", "not_cleared") else c["state"])
+                if key == "gate_only" and not obs.get("audio_clip_path"):
+                    key = "no_clip"
                 if key in sound:
                     sound[key] += 1
                 continue
@@ -4621,8 +4624,11 @@ def create_app(settings, database):
             else:
                 state = _verdicts.classify(obs, db.get_observation_verification(obs["id"]))["state"]
                 # Events no second model checked: a visual stand-in verdict, or a
-                # sound event that only took the confidence gate.
+                # sound event that only took the confidence gate and has a clip a
+                # second model can listen to.
                 if state not in (("cleared", "not_cleared") if audio else ("not_run",)):
+                    continue
+                if audio and not obs.get("audio_clip_path"):
                     continue
             groups.setdefault(obs["station_id"], []).append(obs["id"])
 
@@ -4643,9 +4649,23 @@ def create_app(settings, database):
             for key in totals:
                 totals[key] += int(result.get(key, 0))
         events = sum(len(v) for v in groups.values())
-        return {"ran": True, "events": events, **totals,
-                "note": (f"re-verified {events} event(s): {totals['verified']} verified, "
-                         f"{totals['unverified']} not verified, {totals['skipped']} skipped"
+        # Said per check, so an event that could only take the confidence floor is
+        # never counted as verified by a second model.
+        by_check = {"verified": 0, "not_verified": 0, "cleared": 0, "not_cleared": 0, "other": 0}
+        for ids in groups.values():
+            for oid in ids:
+                obs = db.get_observation(oid)
+                state = _verdicts.classify(obs, db.get_observation_verification(oid))["state"] if obs else "other"
+                by_check[state if state in by_check else "other"] += 1
+        parts = []
+        if by_check["verified"] or by_check["not_verified"]:
+            parts.append(f"{by_check['verified']} verified and {by_check['not_verified']} not verified by a second model")
+        if by_check["cleared"] or by_check["not_cleared"]:
+            parts.append(f"{by_check['cleared'] + by_check['not_cleared']} could only take the confidence floor")
+        if by_check["other"]:
+            parts.append(f"{by_check['other']} not checked")
+        return {"ran": True, "events": events, **totals, "by_check": by_check,
+                "note": (f"re-verified {events} event(s): " + "; ".join(parts)
                          if events else "no event matched, so nothing was re-verified")}
 
     @app.post(f"{API_PREFIX}/dream/run")

@@ -3310,6 +3310,11 @@
   // model comes from, its licence and size, and, while downloading, how far it
   // has got. A file already in place whose checksum matches is used without
   // downloading. The model is set up on this computer only.
+  // Finished download jobs that have already refreshed the page. The server keeps
+  // a finished job so its outcome stays readable, so the page refreshes once per
+  // job, not every time it sees the job finished.
+  var downloadJobsRefreshed = {};
+
   function renderModelDownloads(host, slotKey) {
     clear(host);
     var status = el("p", { class: "form-hint", role: "status" });
@@ -3343,7 +3348,11 @@
             setTimeout(function () { if (document.body.contains(host)) { paint(); } }, 1500);
           } else if (job) {
             status.textContent = job.message || "";
-            if (job.state === "done") { setTimeout(function () { loadBrainModels(); }, 800); }
+            var jobId = it.key + ":" + job.started_at;
+            if (job.state === "done" && !downloadJobsRefreshed[jobId]) {
+              downloadJobsRefreshed[jobId] = true;
+              setTimeout(function () { loadBrainModels(); }, 800);
+            }
           } else if (it.configured) {
             status.textContent = "Set up on this computer. Sound events are checked by this model.";
           } else {
@@ -4103,6 +4112,10 @@
             " passed only the confidence floor; re-verifying checks them with " +
             (st.acoustic_verifier_version || "the sound verification model") + ".");
           ready += sounds;
+          if (a.no_clip) {
+            lines.push(fmtNum(a.no_clip) + (a.no_clip === 1 ? " sound event has" : " sound events have") +
+              " no stored clip, so no second model can listen to it; only the confidence floor applies.");
+          }
         }
         if (!st.verifier_configured && !st.acoustic_verifier_configured) {
           lines.push("No desktop verification model is configured, so there is nothing to re-verify with yet. Set one in Brain, Models and Memory.");
