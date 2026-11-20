@@ -592,13 +592,18 @@ CREATE INDEX idx_dream_passes_status ON dream_passes(status);
 -- PATTERNS  (desktop-owned)
 -- One row per candidate hypothesis. Always tagged data_source = 'dream';
 -- never presented as an established finding. effect_size_type travels with
--- effect_size because a bare effect size is uninterpretable.
+-- effect_size because a bare effect size is uninterpretable. A pattern is
+-- withdrawn, never deleted, when an event it rests on is deleted: its figures
+-- were computed from evidence that no longer exists, so it is kept for the
+-- record with when and why it was withdrawn, and is no longer offered.
 -- ============================================================================
 CREATE TABLE patterns (
     id                      TEXT PRIMARY KEY,
     dream_pass_id              TEXT NOT NULL REFERENCES dream_passes(id) ON DELETE CASCADE,
     data_source                 TEXT NOT NULL CHECK (data_source = 'dream'),
-    status                       TEXT NOT NULL DEFAULT 'candidate' CHECK (status IN ('candidate', 'verified', 'rejected')),
+    status                       TEXT NOT NULL DEFAULT 'candidate' CHECK (status IN ('candidate', 'verified', 'rejected', 'withdrawn')),
+    withdrawn_at                 TEXT,            -- UTC ISO8601, set only when status is withdrawn
+    withdrawn_reason             TEXT,            -- why it was withdrawn, for example a supporting event was deleted
     dream_phase                  TEXT NOT NULL CHECK (dream_phase IN ('nrem', 'rem')),
     -- The class of hypothesis, so patterns are filterable by kind rather than
     -- only by free-text description. Nullable so a future class can be added

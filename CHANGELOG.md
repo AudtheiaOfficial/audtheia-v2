@@ -31,7 +31,11 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   as a synonym and its accepted name, agree.
 - **Deleting an event removes it everywhere.** The delete route now also removes
   the event's frame folder and recomputes the site-baseline cells its readings
-  fed. Every other derived view already recomputes from the record.
+  fed, removing a cell left with no reading. A candidate pattern that rested on
+  a deleted event is withdrawn, never deleted: it keeps when and why, including
+  the status it had before, and is no longer offered in Brain or in a report.
+  patterns.csv lists withdrawn patterns. Every other derived view already
+  recomputes from the record.
 
 ### Added
 
@@ -46,23 +50,28 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   decision is the same entry in the same label map the Train tab uses, so it
   applies to the next dataset build and to every display and report from then
   on, without changing the record or any model.
+- **Pattern withdrawal.** The patterns table accepts the status `withdrawn`, with
+  `withdrawn_at` and `withdrawn_reason`. `scripts/migrate_add_pattern_withdrawn.py`
+  brings an existing database forward: it writes a backup first, rebuilds the
+  table in one transaction, keeps every pattern and pattern link unchanged and
+  checks both counts. Run it once with `--check` to see whether it is needed.
+  Until it is run, deleting still works and reports that the migration is
+  needed.
 - **Re-verify.** Brain, Run now, offers "Re-verify events no model checked" once a
   verification model is configured. It replaces only the desktop verdict; the
   observation the station wrote is never changed.
-- `tests/test_identity_and_verification.py` and
-  `tests/test_deletion_consistency.py`, both confined to temporary folders.
+- `tests/test_identity_and_verification.py`, `tests/test_deletion_consistency.py`
+  and `tests/test_migration_pattern_withdrawn.py`, all confined to temporary
+  folders.
 
 ### Changed
 
+- Detection and audio cards stay short: a few-word verification badge and an
+  "unresolved label" badge where it applies. The full verification sentence and
+  the identity each label resolves to are in the event's detail view.
 - The Brain sub-panel "Learning / Fine-tuning / Auditing" is now "Learning and
   Auditing". Its export is now "Export hard cases for outside labelling", with a
   line pointing to the Train tab for training inside Audtheia.
-
-### Known gaps
-
-- A candidate pattern keeps its stored count and description when one of its
-  supporting events is deleted; its links to the deleted event are removed. A
-  site-baseline cell left with no reading after a deletion is not removed.
 
 ## [2.1.0] - 2026-11-07
 

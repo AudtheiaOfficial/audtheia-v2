@@ -201,6 +201,10 @@ class ReportModel:
     stations: list[dict] = field(default_factory=list)
     records: list[ObservationRecord] = field(default_factory=list)
     patterns: list[PatternRecord] = field(default_factory=list)
+    # Patterns withdrawn because an event they rested on was deleted. Never
+    # offered as hypotheses; listed in the CSV and counted in the PDF so the
+    # record of what was once proposed is not lost.
+    withdrawn_patterns: list[PatternRecord] = field(default_factory=list)
     telemetry: list[TelemetryRecord] = field(default_factory=list)
     species_reference: list[dict] = field(default_factory=list)
     analytics: dict = field(default_factory=dict)
@@ -529,9 +533,11 @@ class ReportGenerator:
                 )
             )
 
-        patterns = self._gather_patterns(
+        gathered = self._gather_patterns(
             station_id=station_id, start=start, end=end, in_scope_ids=in_scope_ids
         )
+        patterns = [p for p in gathered if p.pattern.get("status") != "withdrawn"]
+        withdrawn_patterns = [p for p in gathered if p.pattern.get("status") == "withdrawn"]
         telemetry = self._gather_telemetry(stations, start=start)
         species_reference = self._gather_species(records)
 
@@ -554,6 +560,7 @@ class ReportGenerator:
             stations=stations,
             records=records,
             patterns=patterns,
+            withdrawn_patterns=withdrawn_patterns,
             telemetry=telemetry,
             species_reference=species_reference,
             analytics=analytics,
@@ -1049,18 +1056,21 @@ _PATTERN_HEADER = [
     "effect_size", "effect_size_type", "statistic",
     "data_span_start_utc", "data_span_end_utc", "n",
     "p_value", "q_value", "autocorr_adjusted", "model_version", "description",
+    "withdrawn_at_utc", "withdrawn_reason",
 ]
 
 
 def _rows_patterns(model: ReportModel):
-    for prec in model.patterns:
+    for prec in list(model.patterns) + list(model.withdrawn_patterns or []):
         p = prec.pattern
+        framing = "withdrawn" if p.get("status") == "withdrawn" else "candidate_hypothesis"
         yield [
-            p.get("id"), "candidate_hypothesis", p.get("dream_pass_id"), p.get("data_source"), p.get("status"),
+            p.get("id"), framing, p.get("dream_pass_id"), p.get("data_source"), p.get("status"),
             p.get("dream_phase"), p.get("pattern_type"), p.get("confidence"),
             p.get("effect_size"), p.get("effect_size_type"), p.get("statistic"),
             p.get("data_span_start"), p.get("data_span_end"), p.get("n"),
             p.get("p_value"), p.get("q_value"), p.get("autocorr_adjusted"), p.get("model_version"), p.get("description"),
+            p.get("withdrawn_at"), p.get("withdrawn_reason"),
         ]
 
 
@@ -1068,7 +1078,7 @@ _PATTERN_OBS_HEADER = ["pattern_id", "observation_id"]
 
 
 def _rows_pattern_obs(model: ReportModel):
-    for prec in model.patterns:
+    for prec in list(model.patterns) + list(model.withdrawn_patterns or []):
         for oid in prec.supporting_observation_ids:
             yield [prec.pattern.get("id"), oid]
 
@@ -1739,6 +1749,12 @@ class _ReportPdf:
 
     def _patterns_section(self) -> None:
         self._section("Candidate hypotheses from the longitudinal pass")
+        withdrawn = len(self.model.withdrawn_patterns or [])
+        if withdrawn:
+            self._para(
+                f"{withdrawn} {'pattern was' if withdrawn == 1 else 'patterns were'} withdrawn because an event "
+                f"{'it' if withdrawn == 1 else 'they'} rested on was deleted. Withdrawn patterns are not offered "
+                f"here; patterns.csv lists them with when and why.", color=_COLOR_MUTED)
         if not self.model.patterns:
             self._para("The longitudinal pass produced no candidate patterns in scope.",
                        color=_COLOR_MUTED)

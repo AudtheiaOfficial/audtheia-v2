@@ -214,7 +214,14 @@
     return "";
   }
 
-  // The verification line for a card: one plain sentence naming the gate. A pure
+  // Whether any of an event's labels could not be matched to the backbone, for a
+  // short badge on the card; the full explanation is in the event's detail view.
+  function hasUnresolved(dets) {
+    return (dets || []).some(function (d) { return d.identity && d.identity.unresolved; });
+  }
+
+  // The verification badge for a card: a few words naming the gate. The full
+  // sentence, with versions, frames and floors, is in the event's detail view. A pure
   // sound event can only pass an acoustic confidence gate; an event with frames is
   // checked by a second model; an event no model checked is said to be unchecked.
   function verificationBadge(view, v) {
@@ -987,9 +994,12 @@
       if (!window.confirm("Delete " + ids.length + " " + unit + (ids.length > 1 ? "s" : "") +
         " and their stored media? This cannot be undone.")) { return; }
       del.disabled = true;
-      apiSend(ctx.deleteEndpoint, "POST", { ids: ids }).then(function () {
+      apiSend(ctx.deleteEndpoint, "POST", { ids: ids }).then(function (r) {
         // Closing the panel leaves selection mode, clears the ticks, and reloads.
         dock.hide();
+        // The deletion succeeded; a note says what still needs doing, such as the
+        // migration that lets candidate patterns on deleted events be withdrawn.
+        if (r && r.note) { window.alert("Deleted. Note: " + r.note); }
       }).catch(function (e) { del.disabled = false; window.alert("Could not delete: " + e.message); });
     });
 
@@ -1249,6 +1259,13 @@
     var dets = (modality === "audio") ? (obs.audio_detections || []) : (obs.vision_detections || []);
     var fieldCall = dets.map(taxonName).join(", ") || "no resolved taxon";
     context.appendChild(ctxRow("Field call", fieldCall));
+    // The identity each label resolves to, with the label as written kept above
+    // as provenance. Shown here rather than on the card so the card stays short.
+    var idLines = dets.map(function (d) {
+      var note = identityNote(d);
+      return identityName(d) + (note ? " (" + note + ")" : "");
+    }).filter(function (line, i, all) { return line && all.indexOf(line) === i; });
+    if (idLines.length) { context.appendChild(ctxRow("Identified as", idLines.join("; "))); }
     var v = obs.verification;
     if (obs.verification_view && obs.verification_view.reading) {
       context.appendChild(ctxRow("Desktop verification", obs.verification_view.reading));
@@ -2251,9 +2268,9 @@
         var v = obs.verification;
         var view = obs.verification_view;
         var species = (obs.vision_detections || []).map(identityName).join(", ") || "no resolved taxon";
-        var labelNotes = (obs.vision_detections || []).map(identityNote).filter(function (n) { return n; });
         var badges = provenanceBadges(obs.data_source, obs.qc_state);
         badges.push(verificationBadge(view, v));
+        if (hasUnresolved(obs.vision_detections)) { badges.push(badge("unresolved label", "muted")); }
         correctionBadges(obs).forEach(function (b) { badges.push(b); });
         var meta = [
           obs.event_name || obs.id,
@@ -2271,13 +2288,9 @@
         }
         card.appendChild(el("div", { class: "card-meta", text: meta }));
         card.appendChild(el("div", { class: "card-title", text: displaySpecies(obs, species) }));
-        if (labelNotes.length) { card.appendChild(el("div", { class: "card-meta", text: labelNotes.join("; ") })); }
         var ran = view && (view.state === "verified" || view.state === "not_verified") && v && v.rfdetr_version;
         card.appendChild(modelLine([["Screened by", obs.screening_model_version]].concat(ran
           ? [["Desktop verification by", v.rfdetr_version]] : [])));
-        if (view && view.reading) {
-          card.appendChild(el("div", { class: "card-meta", text: "Verification: " + view.reading }));
-        }
         card.appendChild(el("div", { class: "card-stats", text:
           "tracked across " + fmtNum(obs.frame_count) + " frames" +
           "  ·  " + fmtNum(obs.duration, 1) + "s" +
@@ -2386,10 +2399,10 @@
       var grid = el("div", { class: "card-grid" + (ctx.selecting ? " selecting" : "") });
       rows.forEach(function (a) {
         var species = (a.audio_detections || []).map(identityName).join(", ") || "unclassified sound";
-        var aLabelNotes = (a.audio_detections || []).map(identityNote).filter(function (n) { return n; });
         var badges = provenanceBadges(a.data_source, a.qc_state);
         var av = a.verification;
         badges.push(verificationBadge(a.verification_view, av));
+        if (hasUnresolved(a.audio_detections)) { badges.push(badge("unresolved label", "muted")); }
         correctionBadges(a).forEach(function (b) { badges.push(b); });
         var aConfs = (a.audio_detections || [])
           .map(function (d) { return Number(d.confidence); })
@@ -2405,11 +2418,7 @@
           "aria-label": "Open audit for this acoustic detection" });
         head.appendChild(el("div", { class: "card-meta", text: (a.event_name || a.id) + " · " + fmtTime(a.first_seen) }));
         head.appendChild(el("div", { class: "card-title", text: displaySpecies(a, species) }));
-        if (aLabelNotes.length) { head.appendChild(el("div", { class: "card-meta", text: aLabelNotes.join("; ") })); }
         head.appendChild(modelLine([["Heard by", a.acoustic_model_version]]));
-        if (a.verification_view && a.verification_view.reading) {
-          head.appendChild(el("div", { class: "card-meta", text: "Verification: " + a.verification_view.reading }));
-        }
         head.appendChild(el("div", { class: "card-stats", text:
           "true duration: " + fmtNum(a.audio_true_duration_seconds, 1) + "s" +
           (a.audio_capped ? " (stored clip capped)" : "") +
@@ -3405,23 +3414,41 @@
   // can repaint just this without rebuilding the whole panel.
   function paintPatterns(host, learning) {
     clear(host);
-    var patterns = (learning && learning.patterns) || [];
-    if (!patterns.length) { host.appendChild(el("p", { class: "card-note", text: "No candidate patterns yet." })); return; }
-    var grid = el("div", { class: "card-grid" });
-    patterns.forEach(function (p) {
-      grid.appendChild(el("article", { class: "card" }, [
-        el("div", { class: "badge-row" }, [badge("candidate hypothesis", "muted"), badge(p.dream_phase || "", "source"), badge(p.status || "candidate", "status")]),
-        el("div", { class: "card-title", text: p.description || p.pattern_type || "pattern" }),
-        el("div", { class: "card-stats", text:
-          "effect: " + fmtNum(p.effect_size, 2) + " " + (p.effect_size_type || "") +
-          "  n: " + fmtNum(p.n) +
-          "  span: " + fmtTime(p.data_span_start) + " to " + fmtTime(p.data_span_end) }),
-        (p.supporting_observation_ids && p.supporting_observation_ids.length)
-          ? el("div", { class: "card-meta", text: fmtNum(p.supporting_observation_ids.length) + " supporting observations" })
-          : null
-      ]));
-    });
-    host.appendChild(grid);
+    var all = (learning && learning.patterns) || [];
+    // A withdrawn pattern rested on an event that was later deleted. It is kept
+    // for the record but no longer offered, so it is listed apart, with why.
+    var patterns = all.filter(function (p) { return p.status !== "withdrawn"; });
+    var withdrawn = all.filter(function (p) { return p.status === "withdrawn"; });
+    if (!patterns.length) {
+      host.appendChild(el("p", { class: "card-note", text: "No candidate patterns yet." }));
+    } else {
+      var grid = el("div", { class: "card-grid" });
+      patterns.forEach(function (p) {
+        grid.appendChild(el("article", { class: "card" }, [
+          el("div", { class: "badge-row" }, [badge("candidate hypothesis", "muted"), badge(p.dream_phase || "", "source"), badge(p.status || "candidate", "status")]),
+          el("div", { class: "card-title", text: p.description || p.pattern_type || "pattern" }),
+          el("div", { class: "card-stats", text:
+            "effect: " + fmtNum(p.effect_size, 2) + " " + (p.effect_size_type || "") +
+            "  n: " + fmtNum(p.n) +
+            "  span: " + fmtTime(p.data_span_start) + " to " + fmtTime(p.data_span_end) }),
+          (p.supporting_observation_ids && p.supporting_observation_ids.length)
+            ? el("div", { class: "card-meta", text: fmtNum(p.supporting_observation_ids.length) + " supporting observations" })
+            : null
+        ]));
+      });
+      host.appendChild(grid);
+    }
+    if (withdrawn.length) {
+      host.appendChild(el("p", { class: "card-note", text: fmtNum(withdrawn.length) +
+        (withdrawn.length === 1 ? " pattern was" : " patterns were") +
+        " withdrawn because an event it rested on was deleted. Kept for the record, no longer offered as a hypothesis." }));
+      var list = el("div", { class: "kv-list" });
+      withdrawn.forEach(function (p) {
+        list.appendChild(modelKvRow(p.description || p.pattern_type || "pattern",
+          "withdrawn " + fmtTime(p.withdrawn_at) + ": " + (p.withdrawn_reason || "no reason recorded")));
+      });
+      host.appendChild(list);
+    }
   }
 
   function loadBrainLearning() {

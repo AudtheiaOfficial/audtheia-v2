@@ -603,7 +603,12 @@ class Pattern:
     description: str
     created_at: str
     data_source: str = "dream"
-    status: str = "candidate"  # candidate / verified / rejected
+    # candidate / verified / rejected / withdrawn. A pattern is never written as
+    # withdrawn: withdrawal is an update made when an event it rests on is
+    # deleted, which also sets the table's withdrawn_at and withdrawn_reason.
+    # Those two columns are left off this class so a new pattern can still be
+    # written to a database that has not had the withdrawal migration yet.
+    status: str = "candidate"
     # The class of hypothesis, so patterns are filterable by kind.
     pattern_type: Optional[str] = None  # temporal_shift / co_occurrence / envelope_correlation / novel_cluster
     confidence: Optional[float] = None
@@ -1035,10 +1040,16 @@ class Database:
         are read before the rows go, and returned, so the caller can remove those
         files from disk. Ids that do not exist are ignored; the returned
         `deleted` list reflects only rows that were actually present.
+
+        A candidate or expert-verified pattern that rests on a deleted event is
+        withdrawn in the same transaction, before its links are removed, because
+        its figures were computed from evidence that no longer exists. It is kept
+        with when and why, never deleted. patterns_withdrawn counts them; it is
+        None when the database predates withdrawal and needs its migration.
         """
         ids = [i for i in dict.fromkeys(observation_ids) if i]
         if not ids:
-            return {"deleted": [], "media": []}
+            return {"deleted": [], "media": [], "patterns_withdrawn": 0}
         marks = ",".join("?" for _ in ids)
         with self.connect() as conn:
             rows = self._all(
@@ -1054,12 +1065,45 @@ class Database:
                     media.append(r["representative_frame"])
                 if r.get("audio_clip_path"):
                     media.append(r["audio_clip_path"])
+            withdrawn: Optional[int] = 0
             if present:
+                withdrawn = self._withdraw_patterns_resting_on(conn, present)
                 conn.execute(
                     f"DELETE FROM observations WHERE id IN ({','.join('?' for _ in present)})",
                     tuple(present),
                 )
-        return {"deleted": present, "media": media}
+        return {"deleted": present, "media": media, "patterns_withdrawn": withdrawn}
+
+    PATTERN_WITHDRAWN_REASON = "a supporting event was deleted"
+
+    @staticmethod
+    def _patterns_can_withdraw(conn: sqlite3.Connection) -> bool:
+        """Whether the patterns table has the withdrawal columns its migration adds."""
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(patterns)").fetchall()}
+        return "withdrawn_at" in cols and "withdrawn_reason" in cols
+
+    def _withdraw_patterns_resting_on(self, conn: sqlite3.Connection, observation_ids: list[str]) -> Optional[int]:
+        """Withdraw the live patterns linked to these events, inside the caller's transaction.
+
+        A rejected pattern stays rejected. The status a pattern had before is kept
+        in the reason, so an expert's earlier verification is not lost. Returns how
+        many were withdrawn, or None when the database needs its migration first.
+        """
+        if not self._patterns_can_withdraw(conn):
+            return None
+        marks = ",".join("?" for _ in observation_ids)
+        rows = conn.execute(
+            f"SELECT DISTINCT p.id, p.status FROM patterns p JOIN pattern_observations po ON po.pattern_id = p.id "
+            f"WHERE po.observation_id IN ({marks}) AND p.status IN ('candidate', 'verified')",
+            tuple(observation_ids),
+        ).fetchall()
+        now = utc_now_iso()
+        for row in rows:
+            conn.execute(
+                "UPDATE patterns SET status = 'withdrawn', withdrawn_at = ?, withdrawn_reason = ? WHERE id = ?",
+                (now, f"{self.PATTERN_WITHDRAWN_REASON}; status before: {row[1]}", row[0]),
+            )
+        return len(rows)
 
     def salience_counts(self, station_id: str, species_key: Optional[str]) -> dict:
         """Return the novelty and rarity counts for a species, over all history.
@@ -2613,6 +2657,30 @@ class Database:
                 f"ON CONFLICT({conflict}) DO UPDATE SET {updates}",
                 vals,
             )
+
+    def delete_site_baseline(
+        self,
+        station_id: str,
+        period_granularity: str,
+        period_key: str,
+        group_type: str,
+        group_key: str,
+        signal: str,
+    ) -> bool:
+        """Remove one baseline cell by its full natural key.
+
+        Used when the readings a cell summarized have all been deleted, so the
+        site gist never keeps a summary of data that no longer exists. Returns
+        whether a cell was removed.
+        """
+        with self.connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM site_baselines WHERE station_id = ? "
+                "AND period_granularity = ? AND period_key = ? "
+                "AND group_type = ? AND group_key = ? AND signal = ?",
+                (station_id, period_granularity, period_key, group_type, group_key, signal),
+            )
+            return cur.rowcount > 0
 
     def get_site_baseline(
         self,

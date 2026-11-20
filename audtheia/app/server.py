@@ -2125,7 +2125,9 @@ def create_app(settings, database):
         from disk, guarded by the same in-data-directory check the media route
         uses, so nothing outside the data directory is ever touched. The site
         baseline cells the deleted readings fed are recomputed from the readings
-        that remain. Unknown ids are ignored.
+        that remain, and a cell left with none is removed. A candidate pattern
+        that rested on a deleted event is withdrawn with when and why, never
+        deleted. Unknown ids are ignored.
         """
         import shutil
 
@@ -2159,6 +2161,8 @@ def create_app(settings, database):
                     folders_removed += 1
                 except OSError:
                     pass
+        # A cell whose readings were all deleted is removed by the refresh, so the
+        # site gist never summarizes data that no longer exists.
         baselines_refreshed = 0
         if cells:
             try:
@@ -2187,6 +2191,12 @@ def create_app(settings, database):
             "media_removed": media_removed,
             "frame_folders_removed": folders_removed,
             "baseline_cells_refreshed": baselines_refreshed,
+            # Candidate patterns that rested on a deleted event are withdrawn, not
+            # deleted. None means the database needs the withdrawal migration.
+            "patterns_withdrawn": result.get("patterns_withdrawn"),
+            "note": (None if result.get("patterns_withdrawn") is not None else
+                     "candidate patterns could not be withdrawn because the database predates withdrawal; "
+                     "run scripts/migrate_add_pattern_withdrawn.py"),
         }
 
     @app.get(f"{API_PREFIX}/detections/{{observation_id}}")

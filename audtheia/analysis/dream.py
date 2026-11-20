@@ -735,7 +735,7 @@ class DreamEngine:
         cells is an iterable of (station_id, channel, first_seen). Used after events
         are deleted, so each site-baseline cell their readings fed is recomputed
         exactly from the readings still stored. Returns how many cells were
-        recomputed. A cell left with no qualifying reading is not rewritten here.
+        recomputed. A cell left with no qualifying reading is removed.
         """
         touched: set[tuple[str, str, str]] = set()
         for station_id, channel, first_seen in cells:
@@ -789,6 +789,10 @@ class DreamEngine:
                 span_end = r["first_seen"]
 
         if not values or span_start is None or span_end is None:
+            # No qualifying reading is left in this cell, for example after the
+            # events behind it were deleted, so the cell no longer summarizes
+            # anything and is removed rather than left describing deleted data.
+            self._db.delete_site_baseline(station_id, self._granularity, period, "all", "ALL", channel)
             return
 
         center = _median(values)

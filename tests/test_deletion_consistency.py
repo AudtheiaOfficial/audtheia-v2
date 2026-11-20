@@ -15,12 +15,11 @@ view derived from the record no longer counts it:
   - The Brain audit.
   - The candidates for an outside-labelling export of hard cases.
   - The candidates for a Train tab dataset.
-  - A candidate pattern's supporting events.
+  - A candidate pattern's supporting events, and the pattern itself, which is
+    withdrawn with when and why rather than left as a live candidate.
   - The event's frame folder on disk.
-  - The site-baseline cell its environmental reading fed.
-
-The candidate pattern's own stored count and description are not rewritten by a
-deletion; that is a known gap, and this check states it rather than hiding it.
+  - The site-baseline cell its environmental reading fed, recomputed, and a
+    cell left with no reading at all, removed.
 """
 
 from __future__ import annotations
@@ -98,8 +97,14 @@ def run() -> None:
         with w.db.connect() as conn:
             conn.execute("UPDATE child_detections SET confidence = 0.2 WHERE observation_id = ?", (doomed["id"],))
 
+        # A second event alone in its own month, so deleting it leaves its cell empty.
+        lone = w.vision_event([("Aplysina fistularis", "100")], first_seen="2026-04-10T10:00:00Z")
+        w.confirm(lone)
+        reading(w, lone["id"], 25.0)
+
         engine = DreamEngine(settings=w.settings, db=w.db)
-        engine.refresh_cells([(e["station_id"], "water_temp_c", "2026-03-01T10:00:00Z") for e in keep + [doomed]])
+        engine.refresh_cells([(e["station_id"], "water_temp_c", "2026-03-01T10:00:00Z") for e in keep + [doomed]]
+                             + [(lone["station_id"], "water_temp_c", "2026-04-10T10:00:00Z")])
 
         now = utc_now_iso()
         w.db.create_dream_pass(DreamPass(id="pass-1", phase_reached="complete", status="complete",
@@ -110,6 +115,15 @@ def run() -> None:
                             observation_ids=[e["id"] for e in keep + [doomed]])
 
         client = TestClient(srv.create_app(w.settings, w.db))
+        april = [c for c in w.db.list_site_baselines(station_id=lone["station_id"])
+                 if c["signal"] == "water_temp_c" and c["n"] == 1 and c["max_value"] == 25.0]
+        check("the lone event has a baseline cell of its own", len(april) == 1)
+        r = client.post("/api/detections/delete", json={"ids": [lone["id"]]})
+        check("deleting the lone event answers", r.status_code == 200)
+        check("a baseline cell left with no reading is removed",
+              not [c for c in w.db.list_site_baselines(station_id=lone["station_id"])
+                   if c["signal"] == "water_temp_c" and c["period_key"] == april[0]["period_key"]])
+
         before = views(client, w, doomed)
         print("\n[1] The record before the deletion counts the event everywhere")
         check("analytics counts three events", before["events"] == 3 and before["visual_gate_total"] == 3)
@@ -128,6 +142,7 @@ def run() -> None:
         check("the delete route answers", r.status_code == 200)
         check("the delete route removed the frame folder and refreshed the baseline",
               body.get("frame_folders_removed") == 1 and body.get("baseline_cells_refreshed") == 1)
+        check("the delete route reports the withdrawn pattern", body.get("patterns_withdrawn") == 1)
 
         after = views(client, w, doomed)
         print("\n[2] After the deletion no derived view counts it")
@@ -143,8 +158,17 @@ def run() -> None:
         check("the pattern no longer links to it", len(w.db.list_pattern_observations("pat-1")) == 2)
         check("its frame folder is gone", not doomed["dir"].exists())
         check("the other events' frame folders are untouched", all(e["dir"].is_dir() for e in keep))
-        check("known gap, stated: the pattern's stored count is not rewritten by a deletion",
-              w.db.get_pattern("pat-1")["n"] == 3)
+        pat = w.db.get_pattern("pat-1")
+        check("the pattern is withdrawn, not deleted, with when and why",
+              pat["status"] == "withdrawn" and pat["withdrawn_at"]
+              and pat["withdrawn_reason"] == "a supporting event was deleted; status before: candidate")
+        listed = client.get("/api/brain/learning").json()["patterns"]
+        check("Brain receives it marked withdrawn", [p["status"] for p in listed if p["id"] == "pat-1"] == ["withdrawn"])
+        from audtheia.reports import generate as gen
+        model = gen.ReportGenerator(w.settings, w.db)._gather(station_id=None, start=None, end=None,
+                                                              generated_at=utc_now_iso(), tz=None)
+        check("a report does not offer it as a hypothesis but keeps it in the withdrawn list",
+              not model.patterns and [p.pattern["id"] for p in model.withdrawn_patterns] == ["pat-1"])
 
     print(f"\nAll {_checks} deletion consistency checks passed.")
 
