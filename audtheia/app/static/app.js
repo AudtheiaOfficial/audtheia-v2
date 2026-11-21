@@ -1189,8 +1189,73 @@
   // nothing attached to an expert.
   // ----------------------------------------------------------------------
 
+  // Every detection an event holds, whichever list it arrived in.
+  function eventDets(obs) {
+    if (!obs) { return []; }
+    return (obs.vision_detections || []).concat(obs.audio_detections || []);
+  }
+
+  // The species an event holds, each with the detections that name it. An event
+  // stores one detection per species, so a group normally holds one detection;
+  // grouping by identity keeps two labels for the same taxon as one species.
+  function speciesGroups(dets) {
+    var groups = [];
+    var byKey = {};
+    (dets || []).forEach(function (d) {
+      var key = (d.identity && d.identity.key) || identityName(d);
+      if (!byKey[key]) {
+        byKey[key] = { key: key, name: identityName(d), dets: [] };
+        groups.push(byKey[key]);
+      }
+      byKey[key].dets.push(d);
+    });
+    return groups;
+  }
+
+  // An event is reviewed species by species when it holds more than one
+  // detection, because a single verdict could not say which species it meant.
+  function reviewedPerSpecies(obs) {
+    return eventDets(obs).length > 1;
+  }
+
+  // The verdict that stands on one species: the newest across its detections.
+  function groupCorrection(group) {
+    var latest = null;
+    group.dets.forEach(function (d) {
+      var c = d.correction;
+      if (c && (!latest || String(c.corrected_at || "") > String(latest.corrected_at || ""))) { latest = c; }
+    });
+    return latest;
+  }
+
+  // Where the expert stands on a multi-species event: how many species have a
+  // verdict, and the names that survive those verdicts.
+  function speciesReviewState(obs) {
+    var groups = speciesGroups(eventDets(obs));
+    var reviewed = 0, relabelled = 0, rejected = 0;
+    var names = [];
+    groups.forEach(function (g) {
+      var c = groupCorrection(g);
+      if (c) { reviewed += 1; }
+      if (c && c.verdict === "reject") { rejected += 1; return; }
+      if (c && c.verdict === "relabel") {
+        relabelled += 1;
+        names.push(c.corrected_common_name || c.corrected_scientific_name || g.name);
+        return;
+      }
+      names.push(g.name);
+    });
+    return { total: groups.length, reviewed: reviewed, relabelled: relabelled,
+             rejected: rejected, names: names };
+  }
+
   // The name an expert put on this event, or null when nobody has ruled on it.
   function correctedName(obs) {
+    if (reviewedPerSpecies(obs)) {
+      var st = speciesReviewState(obs);
+      if (!st.reviewed) { return null; }
+      return st.names.length ? st.names.join(", ") : null;
+    }
     var c = obs && obs.correction;
     if (!c) { return null; }
     if (c.verdict === "reject") { return null; }
@@ -1200,6 +1265,18 @@
   // The badges a reviewed event carries, appended to the provenance row so the
   // expert's position is visible without opening the card.
   function correctionBadges(obs) {
+    if (reviewedPerSpecies(obs)) {
+      var st = speciesReviewState(obs);
+      if (!st.reviewed) {
+        return (obs && obs.correction) ? [badge("review each species", "muted")] : [];
+      }
+      if (st.reviewed < st.total) {
+        return [badge("expert reviewed " + st.reviewed + " of " + st.total + " species", "muted")];
+      }
+      if (st.rejected === st.total) { return [badge("rejected · none present", "warn")]; }
+      if (st.relabelled || st.rejected) { return [badge("expert identification", "ok")]; }
+      return [badge("expert confirmed", "ok")];
+    }
     var c = obs && obs.correction;
     if (!c) { return []; }
     if (c.verdict === "reject") { return [badge("rejected · not an organism", "warn")]; }
@@ -1212,6 +1289,11 @@
   function displaySpecies(obs, modelSpecies) {
     var name = correctedName(obs);
     if (name) { return name; }
+    if (reviewedPerSpecies(obs)) {
+      var st = speciesReviewState(obs);
+      if (st.total && st.rejected === st.total) { return "no organism present"; }
+      return modelSpecies;
+    }
     if (obs && obs.correction && obs.correction.verdict === "reject") {
       return "no organism present";
     }
@@ -1220,24 +1302,84 @@
 
   // The confidence cell for a card. A corrected or confirmed event reports an
   // expert identification in place of the model's percentage, because the
-  // number no longer describes the claim being made.
+  // number no longer describes the claim being made. A multi-species event does
+  // so only once every species has a verdict.
   function displayConfidence(obs, modelConfidence) {
+    if (reviewedPerSpecies(obs)) {
+      var st = speciesReviewState(obs);
+      if (st.total && st.reviewed === st.total) { return "expert identification"; }
+      return "confidence " + fmtConfidence(modelConfidence);
+    }
     if (obs && obs.correction) { return "expert identification"; }
     return "confidence " + fmtConfidence(modelConfidence);
   }
 
   // A one-line restatement of a stored correction, used to show the reviewer
-  // what they or a colleague said last time.
-  function correctionSummary(c) {
+  // what they or a colleague said last time. `perSpecies` words a rejection as
+  // the one species being absent rather than the whole event.
+  function correctionSummary(c, perSpecies) {
     if (!c) { return "not yet reviewed"; }
     var who = c.corrector || "expert";
     var when = c.corrected_at ? fmtTime(c.corrected_at) : "";
     var what;
-    if (c.verdict === "reject") { what = "not an organism"; }
+    if (c.verdict === "reject") { what = perSpecies ? "not present" : "not an organism"; }
     else if (c.verdict === "relabel") {
       what = "corrected to " + (c.corrected_scientific_name || c.corrected_gbif_usage_key);
     } else { what = "confirmed as identified"; }
     return what + " · " + who + (when ? " · " + when : "");
+  }
+
+  // The species picker. Only a key the backbone returned is ever submitted, so
+  // typing a name and walking away cannot put free text into the record.
+  // onPick(usageKey, name) fires on a choice and onType() whenever the typed
+  // text changes, which voids any earlier choice.
+  function speciesPicker(onPick, onType) {
+    var box = el("div", { class: "correction-search hidden" });
+    var input = el("input", { type: "text", class: "correction-input",
+      placeholder: "Type at least two letters, for example junco" });
+    var results = el("div", { class: "correction-results" });
+    box.appendChild(input);
+    box.appendChild(results);
+
+    var searchTimer = null;
+    input.addEventListener("input", function () {
+      onType();
+      if (searchTimer) { clearTimeout(searchTimer); }
+      var term = input.value.trim();
+      if (term.length < 2) { clear(results); return; }
+      searchTimer = setTimeout(function () {
+        apiGet("/species/search" + query({ q: term })).then(function (data) {
+          clear(results);
+          if (data.index_available === false) {
+            results.appendChild(el("p", { class: "form-hint", text:
+              "The taxonomic index has not been built yet, so a species cannot be chosen. Confirm and reject still work." }));
+            return;
+          }
+          var list = data.results || [];
+          if (!list.length) {
+            results.appendChild(el("p", { class: "form-hint", text: "No matching taxon in the shipped backbone." }));
+            return;
+          }
+          list.forEach(function (r) {
+            var line = r.canonical_name;
+            if (r.status === "SYNONYM" && r.accepted_name) {
+              line += "  (synonym of " + r.accepted_name + ")";
+            }
+            var opt = el("button", { type: "button", class: "correction-result", text: line });
+            opt.addEventListener("click", function () {
+              input.value = r.canonical_name;
+              clear(results);
+              onPick(r.usage_key, r.accepted_name || r.canonical_name);
+            });
+            results.appendChild(opt);
+          });
+        }).catch(function (e) {
+          clear(results);
+          results.appendChild(el("p", { class: "form-hint", text: "Species search failed: " + e.message }));
+        });
+      }, 150);
+    });
+    return box;
   }
 
   // The correction control block, shared by the Detections and Audio audits.
@@ -1275,121 +1417,173 @@
     } else {
       context.appendChild(ctxRow("Desktop verification", "not verified"));
     }
-    context.appendChild(ctxRow("Expert review", correctionSummary(obs.correction)));
+    var perSpecies = dets.length > 1;
+    if (perSpecies) {
+      var st = speciesReviewState(obs);
+      context.appendChild(ctxRow("Expert review", st.reviewed + " of " + st.total + " species reviewed"));
+      if (obs.correction) {
+        // An older verdict on the whole event, saved before species could be
+        // judged one by one. It names no species, so it is shown as history and
+        // is not counted for any of them.
+        context.appendChild(ctxRow("Earlier review", correctionSummary(obs.correction) +
+          ", given to the whole event, so it is not counted for any one species"));
+      }
+    } else {
+      context.appendChild(ctxRow("Expert review", correctionSummary(obs.correction)));
+    }
     wrap.appendChild(context);
 
-    var chosen = null;
-    var chosenKey = null;
     var status = el("p", { class: "form-hint", text: "" });
-    var searchBox = el("div", { class: "correction-search hidden" });
+    var saveBtn = el("button", { type: "button", class: "btn btn-primary", text: "Save review" });
+    saveBtn.disabled = true;
 
-    var buttons = el("div", { class: "correction-actions" });
-    var defs = [
-      { verdict: "confirm", label: "Correct" },
-      { verdict: "relabel", label: "Not this species" },
-      { verdict: "reject", label: "Not an organism" }
-    ];
-    var btns = {};
-    defs.forEach(function (d) {
-      var b = el("button", { type: "button", class: "btn correction-btn", text: d.label });
-      b.addEventListener("click", function () {
-        chosen = d.verdict;
-        Object.keys(btns).forEach(function (k) { btns[k].classList.remove("selected"); });
-        b.classList.add("selected");
-        if (d.verdict === "relabel") {
-          searchBox.classList.remove("hidden");
-          status.textContent = "Search for the correct species, then choose it from the list.";
-        } else {
-          searchBox.classList.add("hidden");
-          chosenKey = null;
-          status.textContent = "";
-        }
-        saveBtn.disabled = !canSave();
+    // One set of controls: a verdict, and a species when the verdict is a
+    // relabel. `target` is the list of detections a save writes against, or
+    // null for the whole event.
+    function makeControls(target, labels) {
+      var ctl = { target: target, chosen: null, chosenKey: null, btns: {} };
+      ctl.row = el("div", { class: "correction-actions" });
+      ctl.hint = el("p", { class: "form-hint", text: "" });
+      ctl.search = speciesPicker(function (key, name) {
+        ctl.chosenKey = key;
+        ctl.hint.textContent = "Will record " + name + ".";
+        refreshSave();
+      }, function () {
+        ctl.chosenKey = null;
+        refreshSave();
       });
-      btns[d.verdict] = b;
-      buttons.appendChild(b);
-    });
-
-    // The species picker. Only a key the backbone returned is ever submitted,
-    // so typing a name and walking away cannot put free text into the record.
-    var input = el("input", { type: "text", class: "correction-input",
-      placeholder: "Type at least two letters, for example junco" });
-    var results = el("div", { class: "correction-results" });
-    searchBox.appendChild(input);
-    searchBox.appendChild(results);
-
-    var searchTimer = null;
-    input.addEventListener("input", function () {
-      chosenKey = null;
-      saveBtn.disabled = !canSave();
-      if (searchTimer) { clearTimeout(searchTimer); }
-      var term = input.value.trim();
-      if (term.length < 2) { clear(results); return; }
-      searchTimer = setTimeout(function () {
-        apiGet("/species/search" + query({ q: term })).then(function (data) {
-          clear(results);
-          if (data.index_available === false) {
-            results.appendChild(el("p", { class: "form-hint", text:
-              "The taxonomic index has not been built yet, so a species cannot be chosen. Confirm and reject still work." }));
-            return;
+      [
+        { verdict: "confirm", label: "Correct" },
+        { verdict: "relabel", label: "Not this species" },
+        { verdict: "reject", label: labels.reject }
+      ].forEach(function (d) {
+        var b = el("button", { type: "button", class: "btn correction-btn", text: d.label });
+        b.addEventListener("click", function () {
+          ctl.chosen = d.verdict;
+          Object.keys(ctl.btns).forEach(function (k) { ctl.btns[k].classList.remove("selected"); });
+          b.classList.add("selected");
+          if (d.verdict === "relabel") {
+            ctl.search.classList.remove("hidden");
+            ctl.hint.textContent = "Search for the correct species, then choose it from the list.";
+          } else {
+            ctl.search.classList.add("hidden");
+            ctl.chosenKey = null;
+            ctl.hint.textContent = "";
           }
-          var list = data.results || [];
-          if (!list.length) {
-            results.appendChild(el("p", { class: "form-hint", text: "No matching taxon in the shipped backbone." }));
-            return;
-          }
-          list.forEach(function (r) {
-            var line = r.canonical_name;
-            if (r.status === "SYNONYM" && r.accepted_name) {
-              line += "  (synonym of " + r.accepted_name + ")";
-            }
-            var opt = el("button", { type: "button", class: "correction-result", text: line });
-            opt.addEventListener("click", function () {
-              chosenKey = r.usage_key;
-              input.value = r.canonical_name;
-              clear(results);
-              status.textContent = "Will record " + (r.accepted_name || r.canonical_name) + ".";
-              saveBtn.disabled = !canSave();
-            });
-            results.appendChild(opt);
-          });
-        }).catch(function (e) {
-          clear(results);
-          results.appendChild(el("p", { class: "form-hint", text: "Species search failed: " + e.message }));
+          refreshSave();
         });
-      }, 150);
-    });
+        ctl.btns[d.verdict] = b;
+        ctl.row.appendChild(b);
+      });
+      return ctl;
+    }
 
-    function canSave() {
-      if (!chosen) { return false; }
-      if (chosen === "relabel") { return !!chosenKey; }
+    function ready(ctl) {
+      if (!ctl.chosen) { return false; }
+      if (ctl.chosen === "relabel") { return !!ctl.chosenKey; }
       return true;
     }
 
-    var saveBtn = el("button", { type: "button", class: "btn btn-primary", text: "Save review" });
-    saveBtn.disabled = true;
+    var controls = [];
+    function refreshSave() {
+      var any = false, blocked = false;
+      controls.forEach(function (ctl) {
+        if (!ctl.chosen) { return; }
+        if (ready(ctl)) { any = true; } else { blocked = true; }
+      });
+      saveBtn.disabled = !any || blocked;
+    }
+
+    if (perSpecies) {
+      wrap.appendChild(el("p", { class: "form-hint", text:
+        "This event holds more than one species, so judge each one on its own. You may save some now and the rest later." }));
+      var list = el("div", { class: "species-review-list" });
+      speciesGroups(dets).forEach(function (g) {
+        var ctl = makeControls(g.dets, { reject: "Not present" });
+        ctl.group = g;
+        var item = el("div", { class: "species-review" });
+        item.appendChild(el("div", { class: "species-review-name", text: g.name }));
+        ctl.current = el("div", { class: "species-review-state", text: correctionSummary(groupCorrection(g), true) });
+        item.appendChild(ctl.current);
+        item.appendChild(ctl.row);
+        item.appendChild(ctl.search);
+        item.appendChild(ctl.hint);
+        list.appendChild(item);
+        controls.push(ctl);
+      });
+      wrap.appendChild(list);
+    } else {
+      var single = makeControls(null, { reject: "Not an organism" });
+      controls.push(single);
+      wrap.appendChild(single.row);
+      wrap.appendChild(single.search);
+      wrap.appendChild(single.hint);
+    }
+
+    function post(ctl, detectionId) {
+      return apiSend("/observations/" + encodeURIComponent(obs.id) + "/correct", "POST", {
+        verdict: ctl.chosen,
+        modality: modality,
+        detection_id: detectionId,
+        gbif_usage_key: (ctl.chosen === "relabel") ? ctl.chosenKey : null
+      });
+    }
+
     saveBtn.addEventListener("click", function () {
-      if (!canSave()) { return; }
+      var pending = controls.filter(ready);
+      if (!pending.length) { return; }
       saveBtn.disabled = true;
       status.textContent = "Saving.";
-      apiSend("/observations/" + encodeURIComponent(obs.id) + "/correct", "POST", {
-        verdict: chosen,
-        modality: modality,
-        gbif_usage_key: (chosen === "relabel") ? chosenKey : null
-      }).then(function (data) {
+      // Saved one after another so the review history keeps the order the
+      // reviewer worked in.
+      var chain = Promise.resolve();
+      pending.forEach(function (ctl) {
+        if (!ctl.target) {
+          chain = chain.then(function () {
+            return post(ctl, null).then(function (data) { obs.correction = data.correction; });
+          });
+          return;
+        }
+        ctl.target.forEach(function (d) {
+          chain = chain.then(function () {
+            return post(ctl, d.id).then(function (data) { d.correction = data.correction; });
+          });
+        });
+      });
+      chain.then(function () {
         // Update the record in hand so the modal and the card behind it both
         // reflect the new state without a reload.
-        obs.correction = data.correction;
-        status.textContent = "Saved · " + correctionSummary(data.correction);
-        if (onSaved) { onSaved(data.correction); }
+        if (perSpecies) {
+          controls.forEach(function (ctl) {
+            ctl.current.textContent = correctionSummary(groupCorrection(ctl.group), true);
+          });
+          var after = speciesReviewState(obs);
+          status.textContent = "Saved · " + after.reviewed + " of " + after.total + " species reviewed";
+        } else {
+          status.textContent = "Saved · " + correctionSummary(obs.correction);
+        }
+        // Clear the choices just saved, so a second press cannot save them twice.
+        controls.forEach(function (ctl) {
+          ctl.chosen = null;
+          ctl.chosenKey = null;
+          Object.keys(ctl.btns).forEach(function (k) { ctl.btns[k].classList.remove("selected"); });
+          ctl.search.classList.add("hidden");
+          ctl.hint.textContent = "";
+        });
+        refreshSave();
+        if (onSaved) { onSaved(obs.correction); }
       }).catch(function (e) {
+        // Anything saved before the failure stays saved, so show it.
+        if (perSpecies) {
+          controls.forEach(function (ctl) {
+            ctl.current.textContent = correctionSummary(groupCorrection(ctl.group), true);
+          });
+        }
         status.textContent = "Could not save: " + e.message;
-        saveBtn.disabled = false;
+        refreshSave();
       });
     });
 
-    wrap.appendChild(buttons);
-    wrap.appendChild(searchBox);
     var footer = el("div", { class: "correction-footer" });
     footer.appendChild(saveBtn);
     wrap.appendChild(footer);

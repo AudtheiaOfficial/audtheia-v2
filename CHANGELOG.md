@@ -36,6 +36,15 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
   the status it had before, and is no longer offered in Brain or in a report.
   patterns.csv lists withdrawn patterns. Every other derived view already
   recomputes from the record.
+- **Events with more than one species are reviewed species by species.** The
+  review panel used to offer one verdict for the whole event, so confirming a
+  clip with two birds in it read as confirming both. Such an event now lists
+  each species with its own Correct, Not this species and Not present, each
+  saved against that species' own detection, and some can be saved now and the
+  rest later. The card shows how many species have a verdict. The server
+  refuses a whole-event verdict once an event holds more than one detection; an
+  older one is kept as history and counted for no species, as model trust
+  already did.
 
 ### Added
 

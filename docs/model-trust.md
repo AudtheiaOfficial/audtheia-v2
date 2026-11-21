@@ -59,7 +59,11 @@ A correction that names a specific detection judges that detection's predicted
 species. A correction on the whole event names no species, so it is applied only
 when the event has a single detection, where the target is unambiguous. On a
 multi-taxon event an event-level verdict is left uncounted rather than guessed
-onto a species, because a fabricated attribution is worse than a missing one. A
+onto a species, because a fabricated attribution is worse than a missing one.
+The review panel therefore asks for a verdict on each species of such an event,
+saved against that species' own detection, and the server refuses a verdict on
+the whole event once it holds more than one detection. An older whole-event
+verdict on such an event is kept as history and still counts for nothing. A
 detection-level verdict always takes precedence over an event-level one for the
 same detection. A detection with no resolved species contributes to nothing,
 since an accuracy per species needs a species.

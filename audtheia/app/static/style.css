@@ -2466,6 +2466,34 @@ textarea:hover {
   gap: var(--space-2);
 }
 
+/* Review species by species, for an event that holds more than one. Each
+   species is its own bordered block with its name, the verdict that stands on
+   it, and its own controls, so a verdict can never be read as covering a
+   neighbour. */
+.species-review-list {
+  display: grid;
+  gap: var(--space-3);
+  margin: var(--space-2) 0 0 0;
+}
+
+.species-review {
+  padding: var(--space-3);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface, transparent);
+}
+
+.species-review-name {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.species-review-state {
+  margin: 2px 0 var(--space-2) 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted, var(--text));
+}
+
 /* The naming controls on a species profile: one row per label that still needs
    an expert decision, set below the profile's figures. */
 .species-naming {

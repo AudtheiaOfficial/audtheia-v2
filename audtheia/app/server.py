@@ -2021,6 +2021,25 @@ def create_app(settings, database):
         for c in children:
             c["identity"] = book.identify(c)
 
+    def _attach_corrections(observation_id: str, children: list) -> None:
+        """Give each detection the expert verdict that currently stands on it, in place.
+
+        A verdict on one detection is a verdict on one species, because an event
+        stores one detection per species. Only verdicts that name a detection are
+        attached here; a verdict on the whole event stays on the event itself.
+        """
+        try:
+            rows = db.corrections_for_observation(observation_id)
+        except sqlite3.OperationalError:
+            rows = []
+        latest: dict = {}
+        for row in rows:
+            target = row.get("detection_id")
+            if target is not None and target not in latest:
+                latest[target] = row
+        for c in children:
+            c["correction"] = latest.get(c.get("id"))
+
     def _describe_identities(book, items: list, field_name: str) -> None:
         """Replace each attached identity with its display form, once every label is known.
 
@@ -2120,6 +2139,7 @@ def create_app(settings, database):
                 item = dict(obs)
                 children = db.list_child_detections(obs["id"])
                 _attach_identity(book, children)
+                _attach_corrections(obs["id"], children)
                 item["vision_detections"] = [c for c in children if c.get("modality") == "vision"]
                 item["verification"] = db.get_observation_verification(obs["id"])
                 item["verification_view"] = _verification_view(obs, item["verification"], children, ctx, book)
@@ -2813,13 +2833,24 @@ def create_app(settings, database):
             raise HTTPException(status_code=400, detail="modality must be vision or audio")
 
         detection_id = (request.detection_id or "").strip() or None
+        children = db.list_child_detections(observation_id)
         if detection_id is not None:
-            known = {c["id"] for c in db.list_child_detections(observation_id)}
+            known = {c["id"] for c in children}
             if detection_id not in known:
                 raise HTTPException(
                     status_code=400,
                     detail=f"detection {detection_id} does not belong to observation {observation_id}",
                 )
+        elif len(children) > 1:
+            # A verdict on the whole event cannot say which species it is about,
+            # so on an event with more than one detection it would read as a
+            # judgement on every species at once. Each species is judged on its
+            # own detection instead, which is what model trust, the training
+            # export and the longitudinal pass all read.
+            raise HTTPException(
+                status_code=400,
+                detail="this event holds more than one detection, so review each species on its own",
+            )
 
         usage_key = (request.gbif_usage_key or "").strip() or None
         if verdict == "reject" and usage_key is not None:
@@ -2893,6 +2924,7 @@ def create_app(settings, database):
                 item = dict(obs)
                 children = db.list_child_detections(obs["id"])
                 _attach_identity(book, children)
+                _attach_corrections(obs["id"], children)
                 item["audio_detections"] = [c for c in children if c.get("modality") == "audio"]
                 item["verification"] = db.get_observation_verification(obs["id"])
                 item["verification_view"] = _verification_view(obs, item["verification"], children, ctx, book)
