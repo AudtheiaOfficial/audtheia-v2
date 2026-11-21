@@ -2409,10 +2409,16 @@ textarea:hover {
 .audit-cell.frame-accurate { box-shadow: inset 0 0 0 2px var(--ok, #2f7a55); }
 
 /* The two per-frame verdict buttons: neutral until chosen, then the chosen one
-   fills to make the current verdict obvious across a long strip. */
-.frame-review { display: flex; gap: 4px; margin-top: 4px; }
+   fills to make the current verdict obvious across a long strip. The box tool
+   wraps onto its own full-width line beneath them, and no label can run past
+   the edge of its tile. */
+.frame-review { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .frame-review-btn {
   flex: 1 1 0;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   padding: 2px 4px;
   font-size: var(--text-xs, 11px);
   font-family: var(--font-sans);
@@ -2423,6 +2429,7 @@ textarea:hover {
   cursor: pointer;
 }
 .frame-review-btn:hover { border-color: var(--text-muted); }
+.frame-review-btn.box-edit { flex: 1 0 100%; }
 .frame-review-btn[disabled] { opacity: 0.5; cursor: default; }
 .frame-review-btn.acc.is-on { background: var(--ok, #2f7a55); border-color: var(--ok, #2f7a55); color: #fff; }
 .frame-review-btn.bad.is-on { background: var(--warn, #b5522f); border-color: var(--warn, #b5522f); color: #fff; }

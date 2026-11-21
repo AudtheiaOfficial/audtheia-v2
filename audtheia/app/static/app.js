@@ -1636,7 +1636,9 @@
     paint();
     rowEl.appendChild(accBtn);
     rowEl.appendChild(badBtn);
-    var boxBtn = el("button", { type: "button", class: "frame-review-btn", text: "Boxes",
+    // The box tool sits on its own line under the two verdicts, so all three
+    // controls fit a frame tile however narrow the strip is.
+    var boxBtn = el("button", { type: "button", class: "frame-review-btn box-edit", text: "Edit boxes",
       title: "Adjust, remove or add boxes on this frame for training" });
     boxBtn.addEventListener("click", function () { openBoxEditor(obsId, f); });
     rowEl.appendChild(boxBtn);
