@@ -4,9 +4,10 @@ Path: tests/test_bioclip_verification.py
 
 Runs in a temporary repository with its own settings, database, data folder and
 models folder, so nothing here can reach a real installation's data, database,
-reports, models or training environments. A small ONNX encoder built here
-stands in for BioCLIP 2: it embeds a picture as its average colour, and each
-"species" is a colour, so the right answer is known exactly. Proves:
+reports, models or training environments. A scripted encoder stands in for
+BioCLIP 2's exported image encoder: it embeds a picture as its average colour,
+and each "species" is a colour, so the right answer is known exactly. It needs
+neither ONNX nor ONNX Runtime, so the checks run wherever the suite runs. Proves:
 
   - The organism is cropped from the box saved with each frame, resized and
     normalised as the sidecar says, and matched against every candidate name
@@ -58,25 +59,23 @@ def check(label: str, condition: bool) -> None:
     print(f"  ok  {label}")
 
 
-def colour_encoder(path: Path) -> None:
-    """An ONNX model that embeds a picture as its mean colour."""
-    import onnx
-    from onnx import TensorProto, helper
+class ColourSession:
+    """Stands in for the exported encoder: a picture's embedding is its mean colour."""
 
-    inp = helper.make_tensor_value_info("pixels", TensorProto.FLOAT, ["batch", 3, SIZE, SIZE])
-    out = helper.make_tensor_value_info("embedding", TensorProto.FLOAT, ["batch", 3])
-    axes = helper.make_tensor("axes", TensorProto.INT64, [2], [2, 3])
-    node = helper.make_node("ReduceMean", ["pixels", "axes"], ["embedding"], keepdims=0)
-    graph = helper.make_graph([node], "colour", [inp], [out], initializer=[axes])
-    model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 18)])
-    model.ir_version = 8
-    onnx.save(model, str(path))
+    class _Input:
+        name = "pixels"
+
+    def get_inputs(self):
+        return [self._Input()]
+
+    def run(self, names, feeds):
+        return [np.asarray(feeds["pixels"], dtype=np.float32).mean(axis=(2, 3))]
 
 
 def prepared_files(root: Path, names: list, vectors: list) -> None:
     out = root / OUT_DIR
     out.mkdir(parents=True, exist_ok=True)
-    colour_encoder(out / "bioclip2_visual.onnx")
+    (out / "bioclip2_visual.onnx").write_bytes(b"stand-in encoder")
     emb = np.asarray(vectors, dtype=np.float32)
     emb /= np.linalg.norm(emb, axis=1, keepdims=True)
     np.save(out / "text_embeddings.npy", emb)
@@ -109,7 +108,7 @@ def test_adapter(w: World) -> None:
     check("an unconfigured verifier is not built", bio.build_bioclip_verifier(w.settings) is None)
     configure(w.settings)
     check("a prepared verifier is reported as configured", bio.bioclip_configured(w.settings))
-    verifier = bio.build_bioclip_verifier(w.settings)
+    verifier = bio.build_bioclip_verifier(w.settings, session=ColourSession())
     folder = w.root / "event"
     folder.mkdir()
     box = [10.0, 8.0, 40.0, 30.0]
@@ -166,7 +165,8 @@ def test_engine(w: World) -> None:
     ev = w.vision_event([("Poecile carolinensis", None)], frames=4, verified=None)
     for i in range(4):
         paint_frame(Path(ev["dir"]) / f"frame_{i:06d}.jpg", [10, 8, 40, 30], RED, BLUE)
-    engine = VerifyEngine(settings=w.settings, db=w.db, verifier=bio.build_bioclip_verifier(w.settings),
+    engine = VerifyEngine(settings=w.settings, db=w.db,
+                          verifier=bio.build_bioclip_verifier(w.settings, session=ColourSession()),
                           interpreter=NullInterpreter(), identify=taxa.identity_function(w.settings))
     engine.process(ev["id"])
     v = w.db.get_observation_verification(ev["id"])
