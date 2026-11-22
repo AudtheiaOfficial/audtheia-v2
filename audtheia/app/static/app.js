@@ -1333,7 +1333,7 @@
   // typing a name and walking away cannot put free text into the record.
   // onPick(usageKey, name) fires on a choice and onType() whenever the typed
   // text changes, which voids any earlier choice.
-  function speciesPicker(onPick, onType) {
+  function reviewSpeciesPicker(onPick, onType) {
     var box = el("div", { class: "correction-search hidden" });
     var input = el("input", { type: "text", class: "correction-input",
       placeholder: "Type at least two letters, for example junco" });
@@ -1444,7 +1444,7 @@
       var ctl = { target: target, chosen: null, chosenKey: null, btns: {} };
       ctl.row = el("div", { class: "correction-actions" });
       ctl.hint = el("p", { class: "form-hint", text: "" });
-      ctl.search = speciesPicker(function (key, name) {
+      ctl.search = reviewSpeciesPicker(function (key, name) {
         ctl.chosenKey = key;
         ctl.hint.textContent = "Will record " + name + ".";
         refreshSave();
