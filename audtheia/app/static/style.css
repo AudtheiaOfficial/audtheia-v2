@@ -2399,6 +2399,13 @@ textarea:hover {
 .clip-hint { font-size: var(--text-xs); color: var(--text-muted); }
 
 .audit-thumb-wrap { margin-bottom: 4px; cursor: zoom-in; }
+/* A frame holds its space before its image arrives. Without a height every
+   unloaded frame counts as on screen, so the browser fetches the whole strip at
+   once instead of only the frames in view. Once loaded the image keeps its own
+   proportions. */
+.audit-thumb-wrap .detection-frame { aspect-ratio: auto 16 / 9; }
+.audit-more { display: block; margin: var(--space-2) auto 0 auto; }
+.audit-more[hidden] { display: none; }
 .audit-cell-meta { font-family: var(--font-mono); color: var(--text-muted); }
 
 /* A frame the expert marked inaccurate is dimmed and outlined so a mixed track
@@ -2828,6 +2835,7 @@ textarea:hover {
   min-width: 11rem;
 }
 
+.species-step [hidden],
 .train-controls [hidden],
 .train-advanced [hidden],
 .form-field[hidden] {

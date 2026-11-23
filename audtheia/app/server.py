@@ -4623,6 +4623,27 @@ def create_app(settings, database):
                 else "no eligible observation was awaiting verification, or none fell in the desktop verifier's target group")
         return {"ran": True, "verified": verified, "stations": len(stations), "note": note}
 
+    def _disagreement_now_resolved(obs, verification, book) -> bool:
+        """Whether a recorded disagreement no longer stands.
+
+        True for an event the second model did not verify because its call could
+        not be matched to the field call, when the two now resolve to the same
+        taxon. That happens when the field label was not yet matched to a species
+        at verification time, such as a screening model's own class name mapped
+        later in Species profiles. Re-verifying such an event lets the verifier
+        compare the two again; the stored verdict is never changed by reading it.
+        """
+        c = _verdicts.classify(obs, verification)
+        if c["state"] != "not_verified" or c["reason"] not in ("disagrees", "no_field_call"):
+            return False
+        audio = str(obs.get("trigger_source")) == "audio"
+        field = _verdicts._field_identity(db.list_child_detections(obs["id"]), book, audio)
+        v = verification or {}
+        if not (v.get("rfdetr_scientific_name") or v.get("rfdetr_gbif_usage_key")):
+            return False
+        ver = book.identify_label(v.get("rfdetr_scientific_name"), v.get("rfdetr_gbif_usage_key"))
+        return bool(field and ver and str(field.get("key")).lower() == str(ver.get("key")).lower())
+
     @app.get(f"{API_PREFIX}/verify/status")
     def verify_status(station_id: Optional[str] = Query(default=None)):
         """Whether a desktop verification model is configured, and how many events no model checked.
@@ -4634,6 +4655,12 @@ def create_app(settings, database):
         ctx = _verification_context()
         counts = {"not_run": 0, "pending": 0, "not_verified": 0, "verified": 0}
         sound = {"gate_only": 0, "pending": 0, "not_verified": 0, "verified": 0, "no_clip": 0}
+        now_resolved = 0
+        with _taxon_book() as book:
+            for obs in db.list_observations(station_id=station_id):
+                verification = db.get_observation_verification(obs["id"])
+                if _disagreement_now_resolved(obs, verification, book):
+                    now_resolved += 1
         for obs in db.list_observations(station_id=station_id):
             c = _verdicts.classify(obs, db.get_observation_verification(obs["id"]))
             if str(obs.get("trigger_source")) == "audio":
@@ -4652,7 +4679,7 @@ def create_app(settings, database):
                 "verifier_version": ctx.get("verifier_version"), "visual": counts,
                 "acoustic_verifier_configured": bool(ctx.get("acoustic_verifier_configured")),
                 "acoustic_verifier_version": ctx.get("acoustic_verifier_version"), "audio": sound,
-                "floors": ctx.get("floors")}
+                "now_resolved": now_resolved, "floors": ctx.get("floors")}
 
     @app.post(f"{API_PREFIX}/verify/rerun")
     def verify_rerun(request: dict = Body(default={})):
@@ -4661,7 +4688,10 @@ def create_app(settings, database):
         scope "not_run" (the default) re-verifies the events no second model
         checked: visual events with no real verdict, and, when a sound verification
         model is configured, sound events that took only the confidence gate.
-        scope "ids" re-verifies the observation_ids given. It uses the
+        scope "now_resolved" re-verifies the events recorded as disagreeing whose
+        field call and verifier call now resolve to the same taxon, as after a
+        screening label is mapped to a species. scope "ids" re-verifies the
+        observation_ids given. It uses the
         verification engine's force path: the new verdict replaces the old one in
         the desktop-owned verification table, and the station-owned observation row
         is never touched. Refused when no verification model is configured, because
@@ -4677,10 +4707,16 @@ def create_app(settings, database):
             wanted = [str(i) for i in (request.get("observation_ids") or []) if i]
             if not wanted:
                 raise HTTPException(status_code=422, detail="give the observation_ids to re-verify")
-        elif scope == "not_run":
+        elif scope in ("not_run", "now_resolved"):
             wanted = []
         else:
-            raise HTTPException(status_code=422, detail="scope must be 'not_run' or 'ids'")
+            raise HTTPException(status_code=422, detail="scope must be 'not_run', 'now_resolved' or 'ids'")
+        resolved_ids: set = set()
+        if scope == "now_resolved":
+            with _taxon_book() as book:
+                for obs in db.list_observations(station_id=station_id):
+                    if _disagreement_now_resolved(obs, db.get_observation_verification(obs["id"]), book):
+                        resolved_ids.add(obs["id"])
 
         ctx = _verification_context()
         visual_ready = bool(ctx.get("verifier_configured"))
@@ -4695,6 +4731,9 @@ def create_app(settings, database):
                 continue
             if scope == "ids":
                 if obs["id"] not in wanted:
+                    continue
+            elif scope == "now_resolved":
+                if obs["id"] not in resolved_ids:
                     continue
             else:
                 state = _verdicts.classify(obs, db.get_observation_verification(obs["id"]))["state"]

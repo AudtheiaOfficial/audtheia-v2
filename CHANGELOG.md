@@ -9,6 +9,25 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
+- **Long tracks no longer flood the frame review.** A frame held no height until
+  its image arrived, so the browser treated every frame of a track as on screen
+  and requested all of them at once. A track of a thousand full-size frames
+  then exhausted the browser's request limit, frames stopped loading and
+  verdicts failed with "Failed to fetch". Frames now keep their space before
+  loading, the strip adds 60 frames at a time with a button for the next set,
+  and the playback of a track longer than 150 frames waits for Play. Mark all
+  Accurate still marks every frame, including those not shown yet.
+- **The review panel's species search works again.** It shared a function
+  name with the box tool's search, so the box tool's version replaced it: the
+  search box showed program text as its hint and never hid. Each now has its
+  own name, and a check fails whenever two top-level functions in the page
+  script share one.
+- **Re-verify events whose labels now match.** An event verified while its
+  field label was not yet matched to a species, such as a screening model's
+  own class name, was recorded as disagreeing with the second model even when
+  both named the same bird. Once the label is mapped, Brain, Learning and
+  Auditing counts such events and re-verifies only those; genuine
+  disagreements are left alone.
 - **Verification is reported per gate, never pooled.** An event with frames is
   checked by a second model; a pure sound event can only pass the acoustic
   confidence gate, a weaker check. Reports, the CSV bundle, Analytics and the

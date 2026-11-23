@@ -126,6 +126,8 @@ Each frame is cropped to the box the screening model saved with it, with a ten p
 
 Each station chooses its visual verifier in Settings, Models, under "Which desktop model verifies this station's frames". Left at the default, a station uses RF-DETR when one is set and BioCLIP 2 otherwise.
 
+The verifier compares its call with the field call by species identity. A screening model's own class name, such as `tufted-titmouse`, has no identity until it is matched to a species in Brain, Species profiles, so an event verified before that is recorded as not verified, the second model's call differing from the field call, even when both name the same bird. After the label is mapped, Brain, Learning and Auditing offers Re-verify events whose labels now match. It counts only events recorded as disagreeing whose two calls now name the same species, and re-verifies those; real disagreements are left as they are. Mapping every class of a screening model once, before capturing, avoids this.
+
 ### The desktop sound verifier
 
 A pure sound event has no frame for the visual verifier, so on its own it can only pass a confidence floor set on the field model's strongest call. The desktop sound verifier adds a second, independent check. It is Google DeepMind's Perch 2.0 (van Merrienboer et al., 2025), a supervised bioacoustics model trained on 14,795 classes: 14,597 species of birds, mammals, amphibians and insects, and 198 general sound classes. It is released under the Apache License 2.0.

@@ -1604,6 +1604,14 @@
   // leaks. The box drawer is the same one the card and strip use, so a frame in
   // the clip is drawn identically, coloured and labelled by species.
   var CLIP_FPS = 5;
+  // A track longer than this many frames does not start playing by itself. Each
+  // step of the playback asks for a full-size frame, so a long track would keep
+  // the local server busy for as long as the window stays open.
+  var CLIP_AUTOPLAY_MAX = 150;
+  // Frames added to the review strip at a time. A long track can hold over a
+  // thousand full-size frames, and asking for all of them at once floods the
+  // browser and the local server until requests start to fail.
+  var FRAME_PAGE = 60;
   function detectionClip(frames) {
     if (!frames || !frames.length) { return null; }
     var ordered = frames.slice().sort(function (a, b) { return (a.index || 0) - (b.index || 0); });
@@ -1651,7 +1659,7 @@
         playBtn, counter,
         el("span", { class: "clip-hint", text: "reconstructed from this event's saved frames" })
       ]));
-      start();
+      if (ordered.length <= CLIP_AUTOPLAY_MAX) { start(); } else { stop(); }
     }
     return { el: wrap, stop: stop };
   }
@@ -2122,7 +2130,7 @@
     // frames Inaccurate (a later per-frame verdict wins). It reads as plain text
     // set apart from the buttons, per the review layout.
     var cap = el("div", { class: "card-note" }, [
-      el("span", { text: frames.length + " frames · scroll to review · click a frame to enlarge · mark each Accurate or Inaccurate · " })
+      el("span", { text: frames.length + " frames, shown " + FRAME_PAGE + " at a time · scroll to review · click a frame to enlarge · mark each Accurate or Inaccurate · " })
     ]);
     var markAll = el("span", { class: "link-inline", text: "mark all Accurate", role: "button", tabindex: "0" });
     function doMarkAll() {
@@ -2131,6 +2139,9 @@
       markAll.textContent = "marking all accurate...";
       apiSend("/detections/" + encodeURIComponent(obsId) + "/frames/review-all", "POST", { verdict: "accurate" })
         .then(function (res) {
+          // Frames not shown yet take the verdict too, so they appear marked
+          // when their page is added.
+          frames.forEach(function (f) { f.review = "accurate"; });
           painters.forEach(function (fn) { fn(); });
           if (onReviewed) { onReviewed(res.review_summary); }
           markAll.textContent = "all marked Accurate";
@@ -2142,7 +2153,7 @@
     if (obsId && frames.length) { cap.appendChild(markAll); }
     wrap.appendChild(cap);
     var strip = el("div", { class: "audit-strip" });
-    frames.forEach(function (f) {
+    function addCell(f) {
       var src = API + "/media" + query({ path: f.path });
       var boxes = (f.bbox_w != null) ? [{
         bbox_x: f.bbox_x, bbox_y: f.bbox_y, bbox_w: f.bbox_w, bbox_h: f.bbox_h,
@@ -2163,8 +2174,20 @@
         cell.appendChild(frameReviewButtons(f, obsId, cell, onReviewed, painters));
       }
       strip.appendChild(cell);
-    });
+    }
+    var shown = 0;
+    var more = el("button", { type: "button", class: "btn btn-small audit-more" });
+    function showMore() {
+      var end = Math.min(frames.length, shown + FRAME_PAGE);
+      for (; shown < end; shown += 1) { addCell(frames[shown]); }
+      var left = frames.length - shown;
+      more.textContent = "Show the next " + Math.min(FRAME_PAGE, left) + " frames · " + left + " not shown yet";
+      more.hidden = left <= 0;
+    }
+    more.addEventListener("click", showMore);
+    showMore();
     wrap.appendChild(strip);
+    wrap.appendChild(more);
     return wrap;
   }
 
@@ -4349,10 +4372,18 @@
     var box = el("div", { class: "species-step" });
     var note = el("p", { class: "card-note", text: "Checking which events no second model has checked." });
     var btn = el("button", { type: "button", class: "btn", text: "Re-verify events no model checked" });
+    // A second action for events judged to disagree only because the field label
+    // was not yet matched to a species. It appears only when there are some.
+    var matchNote = el("p", { class: "card-note", text: "" });
+    var matchBtn = el("button", { type: "button", class: "btn", text: "Re-verify events whose labels now match" });
     var out = el("p", { class: "card-note", role: "status", text: "" });
     btn.disabled = true;
+    matchNote.hidden = true;
+    matchBtn.hidden = true;
     box.appendChild(note);
     box.appendChild(btn);
+    box.appendChild(matchNote);
+    box.appendChild(matchBtn);
     box.appendChild(out);
 
     function paint() {
@@ -4389,18 +4420,29 @@
         }
         note.textContent = lines.join(" ");
         btn.disabled = !ready;
+        var resolved = st.now_resolved || 0;
+        matchNote.hidden = matchBtn.hidden = !resolved;
+        matchBtn.disabled = !resolved;
+        if (resolved) {
+          matchNote.textContent = fmtNum(resolved) + (resolved === 1 ? " event was" : " events were") +
+            " recorded as disagreeing with the second model, but the field call and the second model's call now" +
+            " name the same species, usually because a model label was matched to a species after the event was" +
+            " verified. Re-verifying compares them again.";
+        }
       }).catch(function (e) { note.textContent = "Could not read the verification status: " + e.message; });
     }
 
-    btn.addEventListener("click", function () {
-      btn.disabled = true;
+    function rerun(scope, button) {
+      btn.disabled = matchBtn.disabled = true;
       out.textContent = "Re-verifying.";
-      apiSend("/verify/rerun", "POST", { scope: "not_run", station_id: state.stationId || null }).then(function (r) {
+      apiSend("/verify/rerun", "POST", { scope: scope, station_id: state.stationId || null }).then(function (r) {
         out.textContent = (r && r.note) || "Done.";
         paint();
         if (typeof onAfterRun === "function") { onAfterRun(); }
       }).catch(function (e) { out.textContent = "Could not re-verify: " + e.message; paint(); });
-    });
+    }
+    btn.addEventListener("click", function () { rerun("not_run"); });
+    matchBtn.addEventListener("click", function () { rerun("now_resolved"); });
     paint();
     return box;
   }
