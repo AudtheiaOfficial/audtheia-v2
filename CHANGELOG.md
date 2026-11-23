@@ -9,14 +9,46 @@ and this project aims to follow [Semantic Versioning](https://semver.org/spec/v2
 
 ### Fixed
 
-- **Long tracks no longer flood the frame review.** A frame held no height until
-  its image arrived, so the browser treated every frame of a track as on screen
-  and requested all of them at once. A track of a thousand full-size frames
-  then exhausted the browser's request limit, frames stopped loading and
-  verdicts failed with "Failed to fetch". Frames now keep their space before
-  loading, the strip adds 60 frames at a time with a button for the next set,
-  and the playback of a track longer than 150 frames waits for Play. Mark all
-  Accurate still marks every frame, including those not shown yet.
+- **A box is never stored under a bare class number.** A detection model can
+  output more classes than its labels name; RF-DETR sizes its output to the
+  largest class id plus one. A box whose top class had no name was stored with
+  the number as its species, such as "40". Such a box is now left out before
+  boxes are merged, on the desktop and on a field station, and the desktop
+  verifier counts a frame whose top class has no name as recognising nothing.
+- **Capture detects alone and verifies when it ends.** Starting a capture
+  loaded the desktop verifier, the sound verifier and the language model, and
+  verified new events every few seconds on the same processor as detection, so
+  starting was slow and detection slowed down. A capture now loads only its
+  screening model; its events are verified in the background once it ends,
+  whether its source runs out or it is stopped. A capture whose source has run
+  out shows as finished. A second Start while the first is still opening the
+  source is refused and the panel shows the station as starting; closing the
+  panel during a start no longer leaves it out of step. A web audio source is
+  downloaded in the background, with the panel showing it as starting and any
+  failure to open it.
+- **Lists stay still while they refresh.** Detections and Audio re-read every
+  few seconds and redrew every card even when nothing had changed, so audio
+  players reset, box labels flickered and the page could jump. A list is now
+  redrawn only when its content changes and keeps its height while it is. A
+  refresh overtaken by a delete is dropped, so a deleted event no longer shows
+  for a moment as "no resolved taxon", and stored frames and clips, which never
+  change, are kept by the browser instead of fetched again.
+- **Frames load only when in view.** A frame held no height until its image
+  arrived, so the browser treated every frame of a list or a review strip as on
+  screen and requested all of them at once. A track of a thousand full-size
+  frames exhausted the browser's request limit, frames stopped loading and
+  verdicts failed with "Failed to fetch", and the queued images held up other
+  requests such as opening Delete. Frames now keep their space before loading,
+  so only those in view are fetched, and the review strip is one scrollable
+  list again.
+- **Frame verdicts are immediate.** A verdict shows at once and is saved in
+  the background, and returns to its earlier state with the reason if the save
+  fails. The server keeps a long track's parsed frame index instead of reading
+  it again for every verdict. Every track's playback starts by itself again.
+- **Training keeps the frames whose boxes an expert edited.** Frames were
+  spread evenly along a track up to the per-event limit, which passed over
+  most redrawn boxes in a long track. Edited frames are now kept first, and
+  win over a look-alike unedited frame.
 - **The review panel's species search works again.** It shared a function
   name with the box tool's search, so the box tool's version replaced it: the
   search box showed program text as its hint and never hid. Each now has its

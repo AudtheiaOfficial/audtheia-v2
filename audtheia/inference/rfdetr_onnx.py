@@ -164,6 +164,11 @@ class RFDETRVerifier:
         confidence = float(scores[query, class_id])
         if confidence < self._score_threshold:
             return dict(_EMPTY_DETECTION)
+        # A top class the label map does not name is not a taxon this verifier can
+        # report, so the frame counts as scored with nothing recognised rather
+        # than as a call under a bare number.
+        if self._class_names and int(class_id) not in self._class_names:
+            return dict(_EMPTY_DETECTION)
         return {
             "gbif_usage_key": None,
             "scientific_name": self._class_names.get(int(class_id), str(int(class_id))),

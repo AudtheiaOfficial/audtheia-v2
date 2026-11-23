@@ -172,6 +172,28 @@ class DesktopStation:
             interpreter=NullInterpreter(),
         )
 
+    @classmethod
+    def build_capture(cls, settings, *, station_id: Optional[str] = None) -> "DesktopStation":
+        """Wire a station for visual capture only, loading nothing but what detects.
+
+        Capture needs the station's screening model, which the monitor loads, and
+        the database. The desktop verifier, the sound verifier and the language
+        model are large and run on the same processor as detection, so loading
+        them here slowed the start of every capture and, verifying while frames
+        were still arriving, slowed detection itself. They are left out; the
+        events a capture produces are verified once it ends, by
+        verify_after_capture, with a station built in full.
+        """
+        station = cls._resolve_station(settings, station_id)
+        db = Database(settings.db_path(), **settings.database_kwargs())
+        return cls(
+            settings=settings,
+            station=station,
+            db=db,
+            verifier=NullVerifier(),
+            interpreter=NullInterpreter(),
+        )
+
     @staticmethod
     def _resolve_station(settings, station_id: Optional[str]) -> dict:
         if station_id is not None:
@@ -413,13 +435,19 @@ class DesktopStation:
         )
         return {"captured": captured, "controlled": controlled, "verified": verified, "dream": dream, "report": report}
 
-    def start_background(self, *, verify_interval_seconds: float = DEFAULT_VERIFY_INTERVAL_SECONDS) -> "LiveCapture":
+    def start_background(self, *, verify_interval_seconds: float = DEFAULT_VERIFY_INTERVAL_SECONDS,
+                         verify: bool = True, on_finish=None) -> "LiveCapture":
         """Start capture and the processing scheduler in background threads, with no
         web server, and return a handle that stops both.
 
         This is what the desktop interface uses to run capture on demand: the same
         monitor and scheduler serve() runs, but without binding a second server,
         since the interface is already being served by the running process.
+
+        With verify off, the scheduler quality-controls events as they arrive but
+        leaves verification for later, so detection has the processor to itself.
+        on_finish, when given, is called once from the scheduler thread after the
+        capture ends, whether its source ran out or it was stopped.
         """
         self._ensure_station_registered()
         stop = threading.Event()
@@ -428,7 +456,7 @@ class DesktopStation:
         scheduler = threading.Thread(
             target=self._scheduler_loop,
             args=(stop, verify_interval_seconds),
-            kwargs={"run_qc": True},
+            kwargs={"run_qc": True, "verify": verify, "monitor": monitor, "on_finish": on_finish},
             name="audtheia-desktop-capture",
             daemon=True,
         )
@@ -533,13 +561,17 @@ class DesktopStation:
             monitor.stop()
             scheduler.join(timeout=5.0)
 
-    def _scheduler_loop(self, stop: threading.Event, verify_interval_seconds: float, *, run_qc: bool = False) -> None:
+    def _scheduler_loop(self, stop: threading.Event, verify_interval_seconds: float, *, run_qc: bool = False,
+                        verify: bool = True, monitor=None, on_finish=None) -> None:
         dream_period = self._schedule_seconds(self._settings.raw.get("schedules", {}).get("dream_pass", {}).get("schedule"))
         report_period = self._schedule_seconds(self._settings.raw.get("schedules", {}).get("reports", {}).get("schedule"))
         elapsed = 0.0
         last_dream = 0.0
         last_report = 0.0
         while not stop.is_set():
+            # A capture whose source has run out has ended. The loop makes one
+            # last pass for its final events and then hands over to on_finish.
+            ended = monitor is not None and not _monitor_alive(monitor)
             try:
                 # Finalize quality control before verifying, so a desktop station
                 # (which has no Pi to run QC before sync) promotes its own events
@@ -547,7 +579,8 @@ class DesktopStation:
                 # already quality-controls upstream is unaffected.
                 if run_qc:
                     self.qc_pending()
-                self.verify_pending()
+                if verify:
+                    self.verify_pending()
                 if elapsed - last_dream >= dream_period:
                     self.dream_once()
                     last_dream = elapsed
@@ -556,12 +589,56 @@ class DesktopStation:
                     last_report = elapsed
             except Exception:  # noqa: BLE001 - one bad cycle must not stop the station
                 logger.exception("a desktop scheduler cycle failed; continuing")
+            if ended:
+                break
             stop.wait(verify_interval_seconds)
             elapsed += verify_interval_seconds
+        if monitor is not None:
+            # A stopped capture writes its last open tracks as it shuts down, so
+            # quality control runs once more after the monitor has finished.
+            _wait_for_monitor(monitor)
+            if run_qc:
+                try:
+                    self.qc_pending()
+                except Exception:  # noqa: BLE001 - the hand-over below must still run
+                    logger.exception("quality control after capture failed")
+        if on_finish is not None:
+            try:
+                on_finish()
+            except Exception:  # noqa: BLE001 - a failed hand-over must not crash the thread
+                logger.exception("the step after capture could not start")
+
+    def verify_after_capture(self) -> int:
+        """Verify every event waiting for it, until none is left.
+
+        Runs after a capture ends, with the station built in full. Repeats while
+        a sweep still advances records, so events written while it ran are not
+        missed. Returns how many records were verified in all.
+        """
+        total = 0
+        while True:
+            self.qc_pending()
+            done = self.verify_pending()
+            total += done
+            if not done:
+                return total
 
     @staticmethod
     def _schedule_seconds(schedule: Optional[str]) -> float:
         return float(_SCHEDULE_SECONDS.get((schedule or "daily").lower(), _SCHEDULE_SECONDS["daily"]))
+
+
+def _monitor_alive(monitor) -> bool:
+    """Whether a monitor's capture thread is still running."""
+    thread = getattr(monitor, "_producer_thread", None)
+    return bool(thread is not None and thread.is_alive())
+
+
+def _wait_for_monitor(monitor, timeout: float = 120.0) -> None:
+    """Wait for a monitor's capture thread to finish writing, within a bound."""
+    thread = getattr(monitor, "_producer_thread", None)
+    if thread is not None:
+        thread.join(timeout=timeout)
 
 
 class LiveCapture:
@@ -578,7 +655,8 @@ class LiveCapture:
         self._stop = stop
 
     def running(self) -> bool:
-        return not self._stop.is_set()
+        """Running until stopped, or until its source runs out."""
+        return not self._stop.is_set() and _monitor_alive(self._monitor)
 
     def stop(self) -> None:
         self._stop.set()

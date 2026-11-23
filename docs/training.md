@@ -19,7 +19,7 @@ The tab has five sections: Dataset, Train, Runs, Results and Models.
 5. **Rare classes.** For each class below the threshold choose to keep it with a warning, leave it out, or merge it into its genus or family through the backbone.
 6. Press **Build dataset**. A folder is written under the datasets directory with a COCO layout and a YOLO text layout for images, or WAV windows with a table for sounds, plus a manifest recording every choice, the seed and the origin of every label. Building the same selection again finds the first dataset.
 
-**Boxes.** Boxes on saved frames are the model's own unless an expert changes them. In Detections, open an event's frames and press **Edit boxes** under a frame to redraw or remove the model's box, or to draw a box the model missed with its species. These changes are your own record, used only when building datasets, and the captured frame never changes. A dataset built afterwards uses them and counts them as expert-drawn.
+**Boxes.** Boxes on saved frames are the model's own unless an expert changes them. In Detections, open an event's frames and press **Edit boxes** under a frame to redraw or remove the model's box, or to draw a box the model missed with its species. These changes are your own record, used only when building datasets, and the captured frame never changes. A dataset built afterwards uses them and counts them as expert-drawn. When an event has more frames than a dataset keeps per event, the frames you edited are kept first and the remaining places are spread along the rest of the track, so your boxes are used even in a long track.
 
 ## Installing the training components
 

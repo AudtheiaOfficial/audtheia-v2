@@ -93,7 +93,7 @@ The reference setup ships a station already set to `webcam:0`, so you can start 
 
 ### Step 2: Start capturing
 
-Open **Detections**, set your source, then press **Capture** and **Start**. Detections appear below as they happen, each with its frame and species label, exactly as in the demo above. Press Start again to stop. That is all it takes.
+Open **Detections**, set your source, then press **Capture** and **Start**. Detections appear below as they happen, each with its frame and species label, exactly as in the demo above. Press Stop to end the capture early; a video file or web video also ends on its own. While a capture runs, detection has the processor to itself; once it ends, the desktop verification model checks its new events in the background, and the panel shows "verifying the last capture" until it has. A web audio source is downloaded in full before listening starts, so the panel shows the station as starting meanwhile. That is all it takes.
 
 ---
 

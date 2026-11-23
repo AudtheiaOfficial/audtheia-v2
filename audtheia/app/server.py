@@ -1041,6 +1041,22 @@ _CAPTURE_JOBS: dict = {}
 # from the vision jobs so a station can run one, the other, or both at once.
 _AUDIO_CAPTURE_JOBS: dict = {}
 
+# Stations whose capture is being started: the source is still being opened, so
+# there is no running job to report yet. Held so a second Start, for example
+# from a panel reopened while the first was opening, is refused instead of
+# racing it, and so the panel can show the station as starting.
+_CAPTURE_STARTING: set = set()
+_capture_lock = threading.Lock()
+# Stations whose capture ended while the verification after an earlier capture
+# was still running; that verification makes one more pass before it finishes.
+_VERIFY_AGAIN: set = set()
+# Stations whose audio source is being opened. A web address is downloaded in
+# full before listening starts, which can take minutes for a long recording, so
+# the source is opened in the background and the panel shows the station as
+# starting; a failure to open it is kept here for the panel to show.
+_AUDIO_STARTING: set = set()
+_AUDIO_START_ERRORS: dict = {}
+
 
 def _new_station_dict(station_id: str, name: str, environment: str, habitat: Optional[str]) -> dict:
     """A complete, valid station configuration with sensible defaults.
@@ -2021,6 +2037,16 @@ def create_app(settings, database):
         for c in children:
             c["identity"] = book.identify(c)
 
+    def _deleted_meanwhile(obs: dict, children: list) -> bool:
+        """Whether an event in a page being built was deleted while it was read.
+
+        A page reads its events first and each event's detections after, so an
+        event deleted in between came back with no detections and showed for a
+        moment as "no resolved taxon". Only an event with no detections is checked
+        again, so the extra read is rare.
+        """
+        return not children and db.get_observation(obs["id"]) is None
+
     def _attach_corrections(observation_id: str, children: list) -> None:
         """Give each detection the expert verdict that currently stands on it, in place.
 
@@ -2138,6 +2164,8 @@ def create_app(settings, database):
             for obs in rows:
                 item = dict(obs)
                 children = db.list_child_detections(obs["id"])
+                if _deleted_meanwhile(obs, children):
+                    continue
                 _attach_identity(book, children)
                 _attach_corrections(obs["id"], children)
                 item["vision_detections"] = [c for c in children if c.get("modality") == "vision"]
@@ -2278,6 +2306,9 @@ def create_app(settings, database):
             "event_trust": _event_trust(obs, children, db.event_trust_index()),
         }
 
+    _frames_cache: dict = {}
+    _frames_cache_lock = threading.Lock()
+
     def _event_frames_on_disk(obs):
         """Read an event's saved frames and per-frame species distribution.
 
@@ -2306,8 +2337,21 @@ def create_app(settings, database):
             except (OSError, json.JSONDecodeError):
                 manifest = None
 
-        frames = []
         index_file = event_dir / "annotations.jsonl"
+        # A long track's index runs to thousands of lines, and every frame verdict
+        # needs it, so a parsed index is kept until its file changes. Each caller
+        # gets its own copies, so one cannot alter what another reads.
+        try:
+            st = index_file.stat()
+            cache_key = (str(index_file), st.st_mtime_ns, st.st_size)
+        except OSError:
+            cache_key = None
+        cached = _frames_cache.get(str(index_file)) if cache_key else None
+        if cached is not None and cached[0] == cache_key:
+            frames_c, dist_c = cached[1], cached[2]
+            return manifest, [dict(f) for f in frames_c], [dict(d) for d in dist_c]
+
+        frames = []
         if index_file.is_file():
             try:
                 lines = index_file.read_text(encoding="utf-8").splitlines()
@@ -2357,6 +2401,12 @@ def create_app(settings, database):
             {"class_name": name, "count": n}
             for name, n in sorted(dist_counts.items(), key=lambda kv: (-kv[1], kv[0]))
         ]
+        if cache_key is not None:
+            with _frames_cache_lock:
+                if len(_frames_cache) >= 32:
+                    _frames_cache.pop(next(iter(_frames_cache)))
+                _frames_cache[str(index_file)] = (cache_key, [dict(f) for f in frames],
+                                                  [dict(d) for d in distribution])
         return manifest, frames, distribution
 
     def _frame_review_summary(observation_id, frames, distribution):
@@ -2923,6 +2973,8 @@ def create_app(settings, database):
             for obs in rows:
                 item = dict(obs)
                 children = db.list_child_detections(obs["id"])
+                if _deleted_meanwhile(obs, children):
+                    continue
                 _attach_identity(book, children)
                 _attach_corrections(obs["id"], children)
                 item["audio_detections"] = [c for c in children if c.get("modality") == "audio"]
@@ -4910,7 +4962,11 @@ def create_app(settings, database):
         # "audio/x-wav" mimetypes guesses, which some browsers refuse to play in
         # an <audio> element (the clip appears as 0:00 and never starts).
         media_type = "audio/wav" if target.suffix.lower() == ".wav" else None
-        return FileResponse(str(target), media_type=media_type)
+        # A stored frame or clip is never changed after it is written, so the
+        # browser may keep it. Without this, every refresh of a list asked for
+        # every card's full-size frame again.
+        return FileResponse(str(target), media_type=media_type,
+                            headers={"Cache-Control": "private, max-age=86400"})
 
     # -- settings (a read view, and a guarded edit for allowlisted fields) --
 
@@ -5479,18 +5535,48 @@ def create_app(settings, database):
                 detail="this station has no desktop detector model in place. Edit the station and set its Desktop screening model (an ONNX file under models/); capture needs it to detect.",
             )
 
-        job = _CAPTURE_JOBS.get(station_id)
-        if job and job.running():
-            raise HTTPException(status_code=409, detail="capture is already running for this station")
+        with _capture_lock:
+            job = _CAPTURE_JOBS.get(station_id)
+            if station_id in _CAPTURE_STARTING:
+                raise HTTPException(status_code=409, detail="capture is already starting for this station")
+            if job and job.running():
+                raise HTTPException(status_code=409, detail="capture is already running for this station")
+            _CAPTURE_STARTING.add(station_id)
         try:
             from audtheia.app.orchestrator import DesktopStation
 
-            desktop = DesktopStation.build(settings, station_id=station_id)
-            live = desktop.start_background()
+            # Capture loads only what detects. The second model and the language
+            # model verify the new events once the capture ends, so they neither
+            # delay the start nor compete with detection for the processor.
+            desktop = DesktopStation.build_capture(settings, station_id=station_id)
+            live = desktop.start_background(verify=False, on_finish=lambda: _verify_after_capture(station_id))
+            _CAPTURE_JOBS[station_id] = live
         except Exception as exc:  # noqa: BLE001 - reported as a clear client error
             raise HTTPException(status_code=422, detail=f"could not start capture: {exc}") from exc
-        _CAPTURE_JOBS[station_id] = live
-        return {"state": "running", "note": "capturing from the source; detections appear as the model finds them."}
+        finally:
+            with _capture_lock:
+                _CAPTURE_STARTING.discard(station_id)
+        return {"state": "running", "note": "capturing from the source; detections appear as the model finds them, "
+                                            "and are verified by the second model once the capture ends."}
+
+    def _verify_after_capture(station_id: str) -> None:
+        """Verify, in the background, the events a capture produced, once it has ended."""
+        def _target(update):
+            from audtheia.app.orchestrator import DesktopStation
+
+            total = 0
+            while True:
+                with _capture_lock:
+                    _VERIFY_AGAIN.discard(station_id)
+                update(message="verifying the events from the last capture")
+                total += DesktopStation.build(settings, station_id=station_id).verify_after_capture()
+                with _capture_lock:
+                    if station_id not in _VERIFY_AGAIN:
+                        return {"verified": total}
+
+        if not _start_background_job("verify_after_capture_" + station_id, _target):
+            with _capture_lock:
+                _VERIFY_AGAIN.add(station_id)
 
     @app.post(f"{API_PREFIX}/capture/{{station_id}}/stop")
     def stop_capture(station_id):
@@ -5515,18 +5601,30 @@ def create_app(settings, database):
         source = ((station.get("capture", {}) or {}).get("source", {}) or {}).get("audio")
         if not source:
             raise HTTPException(status_code=422, detail="set a desktop audio source for this station first (Audio, Set audio source)")
-        job = _AUDIO_CAPTURE_JOBS.get(station_id)
-        if job and job.running():
-            raise HTTPException(status_code=409, detail="audio capture is already running for this station")
-        try:
-            from audtheia.app.orchestrator import DesktopStation
+        with _capture_lock:
+            if station_id in _AUDIO_STARTING:
+                raise HTTPException(status_code=409, detail="audio capture is already starting for this station")
+            job = _AUDIO_CAPTURE_JOBS.get(station_id)
+            if job and job.running():
+                raise HTTPException(status_code=409, detail="audio capture is already running for this station")
+            _AUDIO_STARTING.add(station_id)
+            _AUDIO_START_ERRORS.pop(station_id, None)
 
-            desktop = DesktopStation.build_audio(settings, station_id=station_id)
-            live = desktop.start_audio_background()
-        except Exception as exc:  # noqa: BLE001 - reported as a clear client error
-            raise HTTPException(status_code=422, detail=f"could not start audio capture: {exc}") from exc
-        _AUDIO_CAPTURE_JOBS[station_id] = live
-        return {"state": "running", "note": "listening to the source; acoustic detections appear as the model recognizes calls."}
+        def _open() -> None:
+            try:
+                from audtheia.app.orchestrator import DesktopStation
+
+                desktop = DesktopStation.build_audio(settings, station_id=station_id)
+                _AUDIO_CAPTURE_JOBS[station_id] = desktop.start_audio_background()
+            except Exception as exc:  # noqa: BLE001 - kept for the panel to show
+                _AUDIO_START_ERRORS[station_id] = f"could not start audio capture: {exc}"
+            finally:
+                with _capture_lock:
+                    _AUDIO_STARTING.discard(station_id)
+
+        threading.Thread(target=_open, name="audtheia-audio-open-" + station_id, daemon=True).start()
+        return {"state": "starting", "note": "opening the audio source; a web address is downloaded in full first, "
+                                             "so a long recording takes a while before listening starts."}
 
     @app.post(f"{API_PREFIX}/capture/{{station_id}}/audio/stop")
     def stop_audio_capture(station_id):
@@ -5547,7 +5645,15 @@ def create_app(settings, database):
         """Which stations are currently capturing (vision and audio) on the desktop."""
         running = [sid for sid, job in _CAPTURE_JOBS.items() if job.running()]
         running_audio = [sid for sid, job in _AUDIO_CAPTURE_JOBS.items() if job.running()]
-        return {"running": running, "running_audio": running_audio}
+        with _capture_lock:
+            starting = sorted(_CAPTURE_STARTING)
+        verifying = [sid for sid in _CAPTURE_JOBS
+                     if _job_snapshot("verify_after_capture_" + sid).get("status") == "running"]
+        with _capture_lock:
+            starting_audio = sorted(_AUDIO_STARTING)
+            audio_errors = dict(_AUDIO_START_ERRORS)
+        return {"running": running, "running_audio": running_audio, "starting": starting, "verifying": verifying,
+                "starting_audio": starting_audio, "audio_start_errors": audio_errors}
 
     # -- static frontend (served locally, present from a later step) ------
 

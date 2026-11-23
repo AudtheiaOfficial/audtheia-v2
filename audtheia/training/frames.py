@@ -263,11 +263,24 @@ def thin_frames(
     near_duplicate_hamming: int,
     hasher: Callable[[Path], int] = average_hash,
 ) -> dict:
-    """Keep at most max_frames spread along the track, then drop near-duplicates.
+    """Keep at most max_frames, then drop near-duplicates.
 
-    A frame whose file is missing or unreadable is dropped and counted, never fatal.
+    Frames whose boxes an expert redrew, removed or added come first, because
+    they are the most trustworthy labels the event has; spreading the frames
+    evenly along a long track would otherwise pass over most of them. The
+    remaining places are spread evenly along the rest of the track. Expert
+    frames are also checked first for near-duplicates, so where two frames look
+    alike the expert's is the one kept. A frame whose file is missing or
+    unreadable is dropped and counted, never fatal.
     """
-    spread = _spread(frames, max_frames)
+    if max_frames and max_frames > 0:
+        edited = [f for f in frames if f.get("box_edited")]
+        others = [f for f in frames if not f.get("box_edited")]
+        first = _spread(edited, max_frames)
+        room = max_frames - len(first)
+        spread = first + (_spread(others, room) if room > 0 else [])
+    else:
+        spread = list(frames)
     kept: list = []
     hashes: list = []
     missing = 0
@@ -290,4 +303,6 @@ def thin_frames(
         frame = dict(frame)
         frame["path"] = resolved
         kept.append(frame)
+    # Back in track order, whichever were chosen first.
+    kept.sort(key=lambda f: int(f["rec"].get("index", 0)))
     return {"frames": kept, "missing": missing, "near_duplicates": duplicates}

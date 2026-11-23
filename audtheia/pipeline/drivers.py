@@ -469,7 +469,7 @@ class OnnxYoloDetector:
         class_ids = np.argmax(class_scores, axis=1)
         confidences = class_scores[np.arange(class_scores.shape[0]), class_ids]
 
-        keep = confidences >= self._conf
+        keep = (confidences >= self._conf) & _named(class_ids, self._class_names)
         if not np.any(keep):
             return []
         boxes, class_ids, confidences = boxes[keep], class_ids[keep], confidences[keep]
@@ -608,7 +608,7 @@ class OnnxRfDetrDetector:
         class_ids = np.argmax(scores, axis=1)
         confidences = scores[np.arange(scores.shape[0]), class_ids]
 
-        keep = confidences >= self._conf
+        keep = (confidences >= self._conf) & _named(class_ids, self._class_names)
         if not np.any(keep):
             return []
         boxes = boxes_t[keep]
@@ -799,7 +799,7 @@ def _yolo_raw_to_detections(output, scale, pad, orig_w, orig_h, class_names, con
     class_scores = pred[:, 4:]
     class_ids = np.argmax(class_scores, axis=1)
     confidences = class_scores[np.arange(class_scores.shape[0]), class_ids]
-    keep = confidences >= conf
+    keep = (confidences >= conf) & _named(class_ids, class_names)
     if not np.any(keep):
         return []
     boxes, class_ids, confidences = boxes[keep], class_ids[keep], confidences[keep]
@@ -854,6 +854,23 @@ def _single_output(outputs):
         return None
 
 
+def _named(class_ids, class_names: dict) -> np.ndarray:
+    """Which of these class ids the model's label map names.
+
+    A detection model can output more classes than it has names for: RF-DETR
+    sizes its head to the largest class id plus one, and a label map may name
+    only some of the classes the model was trained on. A box whose top class has
+    no name is not a species Audtheia can record, so it is left out before boxes
+    are merged and is never stored under a bare number. Choosing the best named
+    class instead could put a wrong name on an organism the model saw as an
+    unnamed class. With no label map at all, nothing is left out.
+    """
+    ids = np.asarray(class_ids)
+    if not class_names:
+        return np.ones(ids.shape[0], dtype=bool)
+    return np.isin(ids.astype(np.int64), np.fromiter((int(k) for k in class_names), dtype=np.int64))
+
+
 def _looks_like_raw_yolo(arr, num_classes: int) -> bool:
     """Whether an output tensor is a raw YOLO prediction rather than decoded boxes.
 
@@ -884,6 +901,8 @@ def _hailo_nms_to_detections(outputs, scale, pad, orig_w, orig_h, in_w, in_h, cl
 
     def _emit(cid, x1, y1, x2, y2, score):
         if score < conf:
+            return
+        if class_names and int(cid) not in class_names:
             return
         mx1, my1, mx2, my2 = _map_box(x1, y1, x2, y2, scale, pad, orig_w, orig_h)
         out.append(RawDetection(x1=mx1, y1=my1, x2=mx2, y2=my2, confidence=float(score),

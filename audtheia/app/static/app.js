@@ -113,10 +113,17 @@
   // show a clear message instead of rendering half a view.
   // Surface the backend's own message on failure (FastAPI returns it under
   // "detail"), so a person sees why a request was refused, not just its status.
+  // The thrown error carries the HTTP status, so a caller can tell an
+  // out-of-date screen (409) from a real failure.
   function apiError(r) {
+    function fail(message) {
+      var err = new Error(message);
+      err.status = r.status;
+      throw err;
+    }
     return r.json().then(
-      function (data) { throw new Error(data && data.detail ? data.detail : "request failed (" + r.status + ")"); },
-      function () { throw new Error("request failed (" + r.status + ")"); }
+      function (data) { fail(data && data.detail ? data.detail : "request failed (" + r.status + ")"); },
+      function () { fail("request failed (" + r.status + ")"); }
     );
   }
 
@@ -843,6 +850,9 @@
       Promise.all([apiGet("/settings"), apiGet("/capture/status")]).then(function (res) {
         var cfg = res[0].config || {};
         var running = (isAudio ? res[1].running_audio : res[1].running) || [];
+        var starting = (isAudio ? res[1].starting_audio : res[1].starting) || [];
+        var startErrors = isAudio ? (res[1].audio_start_errors || {}) : {};
+        var verifying = isAudio ? [] : (res[1].verifying || []);
         clear(body);
         var stations = cfg.stations || [];
         if (!stations.length) {
@@ -856,27 +866,47 @@
           var src = (st.capture && st.capture.source) || {};
           var sourceVal = isAudio ? src.audio : src.video;
           var isRun = running.indexOf(st.station_id) !== -1;
-          var toggle = el("button", { type: "button", class: "btn btn-small" + (isRun ? "" : " btn-primary"), text: isRun ? "Stop" : "Start" });
-          if (!sourceVal && !isRun) { toggle.disabled = true; }
+          // A station whose source is still opening shows as starting, so a panel
+          // reopened in the meantime offers neither a second Start nor a Stop
+          // that has nothing to stop yet.
+          var isStarting = !isRun && starting.indexOf(st.station_id) !== -1;
+          var isVerifying = !isRun && !isStarting && verifying.indexOf(st.station_id) !== -1;
+          var toggle = el("button", { type: "button", class: "btn btn-small" + (isRun || isStarting ? "" : " btn-primary"),
+            text: isRun ? "Stop" : (isStarting ? "Starting" : "Start") });
+          if ((!sourceVal && !isRun) || isStarting) { toggle.disabled = true; }
+          if (isStarting) { setTimeout(function () { if (body.isConnected) { load(false); } }, 1500); }
           toggle.addEventListener("click", function () {
             toggle.disabled = true;
+            toggle.textContent = isRun ? "Stopping" : "Starting";
             var url = "/capture/" + encodeURIComponent(st.station_id) + (isAudio ? "/audio" : "") + (isRun ? "/stop" : "/start");
             apiSend(url, "POST").then(function (r) {
               if (r && r.warning) { window.alert(r.warning); }
               load(false);
               reload();
-            }).catch(function (e) { toggle.disabled = false; window.alert("Could not " + (isRun ? "stop" : "start") + " capture: " + e.message); });
+            }).catch(function (e) {
+              // Already running or already starting means the state on screen was
+              // out of date, for example after the panel was closed during a
+              // start; showing the current state is the answer, not an error.
+              if (e && e.status === 409) { load(false); return; }
+              toggle.disabled = false;
+              toggle.textContent = isRun ? "Stop" : "Start";
+              window.alert("Could not " + (isRun ? "stop" : "start") + " capture: " + e.message);
+            });
           });
           var hint = isAudio ? "no audio source, use Set audio source" : "no video source, use Set capture source";
           body.appendChild(el("div", { class: "capture-row" }, [
             el("span", { class: "capture-row-name", text: (st.station_name || st.station_id) + " . " + (sourceVal || hint) }),
             isRun ? badge(isAudio ? "listening" : "capturing", "source") : null,
+            isVerifying ? badge("verifying the last capture", "muted") : null,
             toggle
           ]));
+          if (startErrors[st.station_id] && !isRun && !isStarting) {
+            body.appendChild(el("p", { class: "form-hint", text: startErrors[st.station_id] }));
+          }
         });
         body.appendChild(el("p", { class: "form-hint", text: isAudio
           ? "Start opens the audio source and runs this station's acoustic model; detections appear below as sounds are recognized. The model must be placed under models/acoustic/ and set on the station, with its labels file."
-          : "Start opens the source and runs detection; detections appear below as they are found. A desktop model must be set for anything to be detected." }));
+          : "Start opens the source and runs detection; detections appear below as they are found. A desktop model must be set for anything to be detected. While a capture runs, detection has the processor to itself; the second model verifies its events once it ends." }));
       }).catch(function (e) { clear(body); body.appendChild(el("p", { class: "card-note", text: "Could not load capture: " + e.message })); });
     }
 
@@ -994,13 +1024,22 @@
       if (!window.confirm("Delete " + ids.length + " " + unit + (ids.length > 1 ? "s" : "") +
         " and their stored media? This cannot be undone.")) { return; }
       del.disabled = true;
+      ctx.deleting = true;
+      invalidateList(ctx);
       apiSend(ctx.deleteEndpoint, "POST", { ids: ids }).then(function (r) {
+        ctx.deleting = false;
+        invalidateList(ctx);
         // Closing the panel leaves selection mode, clears the ticks, and reloads.
         dock.hide();
         // The deletion succeeded; a note says what still needs doing, such as the
         // migration that lets candidate patterns on deleted events be withdrawn.
         if (r && r.note) { window.alert("Deleted. Note: " + r.note); }
-      }).catch(function (e) { del.disabled = false; window.alert("Could not delete: " + e.message); });
+      }).catch(function (e) {
+        ctx.deleting = false;
+        invalidateList(ctx);
+        del.disabled = false;
+        window.alert("Could not delete: " + e.message);
+      });
     });
 
     panel.appendChild(el("div", { class: "delete-panel-row" }, [selectAll, count, del]));
@@ -1604,14 +1643,6 @@
   // leaks. The box drawer is the same one the card and strip use, so a frame in
   // the clip is drawn identically, coloured and labelled by species.
   var CLIP_FPS = 5;
-  // A track longer than this many frames does not start playing by itself. Each
-  // step of the playback asks for a full-size frame, so a long track would keep
-  // the local server busy for as long as the window stays open.
-  var CLIP_AUTOPLAY_MAX = 150;
-  // Frames added to the review strip at a time. A long track can hold over a
-  // thousand full-size frames, and asking for all of them at once floods the
-  // browser and the local server until requests start to fail.
-  var FRAME_PAGE = 60;
   function detectionClip(frames) {
     if (!frames || !frames.length) { return null; }
     var ordered = frames.slice().sort(function (a, b) { return (a.index || 0) - (b.index || 0); });
@@ -1659,7 +1690,7 @@
         playBtn, counter,
         el("span", { class: "clip-hint", text: "reconstructed from this event's saved frames" })
       ]));
-      if (ordered.length <= CLIP_AUTOPLAY_MAX) { start(); } else { stop(); }
+      start();
     }
     return { el: wrap, stop: stop };
   }
@@ -1821,17 +1852,27 @@
     // Let a "mark all accurate" action set this frame and repaint it, so the
     // whole strip reflects the bulk verdict without rebuilding.
     if (painters) { painters.push(function () { f.review = "accurate"; paint(); }); }
+    // The verdict shows at once and is saved in the background. If the save
+    // fails the frame returns to what it was and says why, so the screen never
+    // shows a verdict that is not stored. Saves of one frame go out in order.
+    var queue = Promise.resolve();
     function send(target) {
+      var before = f.review;
       var verdict = (f.review === target) ? "cleared" : target;
-      accBtn.disabled = badBtn.disabled = true;
-      apiSend("/detections/" + encodeURIComponent(obsId) + "/frames/" + f.index + "/review", "POST",
-        { verdict: verdict }).then(function (res) {
-          f.review = (verdict === "cleared") ? null : verdict;
-          paint();
-          if (onReviewed) { onReviewed(res.review_summary); }
-        }).catch(function (e) {
-          cell.appendChild(el("div", { class: "frame-review-err", text: e.message }));
-        }).then(function () { accBtn.disabled = badBtn.disabled = false; });
+      f.review = (verdict === "cleared") ? null : verdict;
+      paint();
+      var err = cell.querySelector(".frame-review-err");
+      if (err) { err.parentNode.removeChild(err); }
+      queue = queue.then(function () {
+        return apiSend("/detections/" + encodeURIComponent(obsId) + "/frames/" + f.index + "/review", "POST",
+          { verdict: verdict }).then(function (res) {
+            if (onReviewed) { onReviewed(res.review_summary); }
+          }).catch(function (e) {
+            f.review = before;
+            paint();
+            cell.appendChild(el("div", { class: "frame-review-err", text: "Not saved: " + e.message }));
+          });
+      });
     }
     accBtn.addEventListener("click", function () { send("accurate"); });
     badBtn.addEventListener("click", function () { send("inaccurate"); });
@@ -2130,7 +2171,7 @@
     // frames Inaccurate (a later per-frame verdict wins). It reads as plain text
     // set apart from the buttons, per the review layout.
     var cap = el("div", { class: "card-note" }, [
-      el("span", { text: frames.length + " frames, shown " + FRAME_PAGE + " at a time · scroll to review · click a frame to enlarge · mark each Accurate or Inaccurate · " })
+      el("span", { text: frames.length + " frames · scroll to review · click a frame to enlarge · mark each Accurate or Inaccurate · " })
     ]);
     var markAll = el("span", { class: "link-inline", text: "mark all Accurate", role: "button", tabindex: "0" });
     function doMarkAll() {
@@ -2139,9 +2180,6 @@
       markAll.textContent = "marking all accurate...";
       apiSend("/detections/" + encodeURIComponent(obsId) + "/frames/review-all", "POST", { verdict: "accurate" })
         .then(function (res) {
-          // Frames not shown yet take the verdict too, so they appear marked
-          // when their page is added.
-          frames.forEach(function (f) { f.review = "accurate"; });
           painters.forEach(function (fn) { fn(); });
           if (onReviewed) { onReviewed(res.review_summary); }
           markAll.textContent = "all marked Accurate";
@@ -2175,19 +2213,10 @@
       }
       strip.appendChild(cell);
     }
-    var shown = 0;
-    var more = el("button", { type: "button", class: "btn btn-small audit-more" });
-    function showMore() {
-      var end = Math.min(frames.length, shown + FRAME_PAGE);
-      for (; shown < end; shown += 1) { addCell(frames[shown]); }
-      var left = frames.length - shown;
-      more.textContent = "Show the next " + Math.min(FRAME_PAGE, left) + " frames · " + left + " not shown yet";
-      more.hidden = left <= 0;
-    }
-    more.addEventListener("click", showMore);
-    showMore();
+    // Every frame is placed at once and each holds its space before its image
+    // arrives, so the browser fetches only the frames scrolled into view.
+    frames.forEach(addCell);
     wrap.appendChild(strip);
-    wrap.appendChild(more);
     return wrap;
   }
 
@@ -2376,6 +2405,10 @@
           function (a) { return !a.paused && !a.ended; }
         );
         if (playing) { return; }
+        // A slow read is not stacked with another, and nothing is re-read while
+        // a delete is being carried out.
+        var listCtx = name === "detections" ? state.det : (name === "audio" ? state.aud : null);
+        if (listCtx && (listCtx.inflight > 0 || listCtx.deleting)) { return; }
         loaders[name]();
       }, POLL_INTERVAL_MS);
     }
@@ -2462,13 +2495,13 @@
       .then(function (list) { populateSpecies(ctx, list || []); })
       .catch(function () {});
 
-    apiGet(ctx.listEndpoint + query({
+    fetchListPage(ctx, host, {
       station_id: ctx.stationId,
       species: ctx.speciesFilter,
       model: ctx.modelFilter,
       limit: ctx.pageSize,
       offset: ctx.pageOffset
-    })).then(function (resp) {
+    }, function (resp) {
       clear(host);
       var rows = (resp && resp.items) || [];
       var total = (resp && resp.total) || 0;
@@ -2523,8 +2556,39 @@
       host.appendChild(grid);
       host.appendChild(pager(ctx, total));
       updateDeleteUI(ctx);
-    }).catch(function (e) { setState(host, "empty-state", "Could not load detections: " + e.message); });
+    }, "Could not load detections: ");
   };
+
+  // Fetch one page of a list and redraw it only when it changed. Detections and
+  // Audio re-read every few seconds; redrawing unchanged cards rebuilt every
+  // image, box label and audio player, so labels flickered, players reset to
+  // 0:00, and the page lost its height for a moment and threw the scroll. A
+  // response that a newer request or a delete has overtaken is dropped, so it
+  // cannot paint an event that no longer exists, and the list keeps its height
+  // while it is redrawn.
+  function fetchListPage(ctx, host, params, render, failText) {
+    var seq = (ctx.seq = (ctx.seq || 0) + 1);
+    ctx.inflight = (ctx.inflight || 0) + 1;
+    apiGet(ctx.listEndpoint + query(params)).then(function (resp) {
+      if (seq !== ctx.seq) { return; }
+      var key = JSON.stringify([params, resp, !!ctx.selecting, ctx.selection]);
+      if (key === ctx.lastKey && host.hasChildNodes()) { return; }
+      ctx.lastKey = key;
+      var held = host.offsetHeight;
+      if (held) { host.style.minHeight = held + "px"; }
+      try { render(resp); } finally { host.style.minHeight = ""; }
+    }).catch(function (e) {
+      if (seq !== ctx.seq) { return; }
+      ctx.lastKey = null;
+      setState(host, "empty-state", failText + e.message);
+    }).then(function () { ctx.inflight -= 1; });
+  }
+
+  // Make the next list read count as new, and drop any read already on its way.
+  function invalidateList(ctx) {
+    ctx.seq = (ctx.seq || 0) + 1;
+    ctx.lastKey = null;
+  }
 
   // The bottom-of-list pager: a page-size selector (20/40/80/100/200/All), a
   // "start–end of total" readout, and Prev/Next. Changing the size or turning a
@@ -2595,13 +2659,13 @@
       .then(function (list) { populateSpecies(ctx, list || []); })
       .catch(function () {});
 
-    apiGet(ctx.listEndpoint + query({
+    fetchListPage(ctx, host, {
       station_id: ctx.stationId,
       species: ctx.speciesFilter,
       model: ctx.modelFilter,
       limit: ctx.pageSize,
       offset: ctx.pageOffset
-    })).then(function (resp) {
+    }, function (resp) {
       clear(host);
       var rows = (resp && resp.items) || [];
       var total = (resp && resp.total) || 0;
@@ -2664,7 +2728,7 @@
       host.appendChild(grid);
       host.appendChild(pager(ctx, total));
       updateDeleteUI(ctx);
-    }).catch(function (e) { setState(host, "empty-state", "Could not load audio: " + e.message); });
+    }, "Could not load audio: ");
   };
 
   // The audio-audit modal: the acoustic analogue of the frame audit. It replays
